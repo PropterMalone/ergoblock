@@ -1,0 +1,16 @@
+# Build artifacts
+*.zip
+bluesky-temp-block.zip
+ergoblock.zip
+
+# Local scripts
+resize-icons.ps1
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+.vscode/
+*.swp
+*.swo
