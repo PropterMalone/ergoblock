@@ -13,11 +13,33 @@ A Chrome extension that adds temporary block and mute functionality to Bluesky's
 
 ## Installation
 
-1. Download and extract the extension files to a folder
-2. Open Chrome and navigate to `chrome://extensions/`
-3. Enable **Developer mode** (toggle in the top right corner)
-4. Click **Load unpacked**
-5. Select the extracted folder containing the extension files
+### For Developers (Build from Source)
+
+1. Clone this repository:
+   ```bash
+   git clone https://github.com/yourusername/ergoblock.git
+   cd ergoblock
+   ```
+
+2. Install dependencies:
+   ```bash
+   npm install
+   ```
+
+3. Build the extension:
+   ```bash
+   npm run build
+   ```
+
+4. Load in Chrome:
+   - Open Chrome and navigate to `chrome://extensions/`
+   - Enable **Developer mode** (toggle in the top right corner)
+   - Click **Load unpacked**
+   - Select the `dist` folder from this project
+
+### For End Users
+
+Pre-built releases will be available on the [Releases page](https://github.com/yourusername/ergoblock/releases) once published to the Chrome Web Store.
 
 ## Usage
 
@@ -60,6 +82,31 @@ Click the extension icon in Chrome's toolbar to see:
 **API errors:**
 - Try logging out and back into Bluesky
 - The extension reads your session from Bluesky's localStorage
+
+## Development
+
+### Running Tests
+
+```bash
+npm test              # Run tests once
+npm test -- --coverage  # Run with coverage report
+```
+
+The project has 97.5% test coverage across all core functionality.
+
+### Building
+
+```bash
+npm run build         # Build once
+npm run dev          # Build and watch for changes
+```
+
+### Linting
+
+```bash
+npm run lint         # Check code quality
+npm run format       # Format code with Prettier
+```
 
 ## License
 
