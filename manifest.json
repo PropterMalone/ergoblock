@@ -12,7 +12,7 @@
   "content_scripts": [
     {
       "matches": ["https://bsky.app/*"],
-      "js": ["storage.js", "api.js", "content.js"],
+      "js": ["content.js"],
       "run_at": "document_idle"
     }
   ],

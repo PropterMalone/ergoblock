@@ -10,16 +10,20 @@ async function build() {
     const entryPoints = ['src/background.ts', 'src/content.ts', 'src/popup.ts', 'src/options.ts'];
 
     for (const entry of entryPoints) {
+      // Use IIFE for background/content (Chrome isolated contexts)
+      // Use ESM for popup/options (HTML pages support ES modules)
+      const isBackgroundOrContent = entry.includes('background') || entry.includes('content');
+
       await esbuild.build({
         entryPoints: [entry],
         bundle: true,
-        format: 'esm',
+        format: isBackgroundOrContent ? 'iife' : 'esm',
         target: 'es2020',
         outdir: 'dist',
         outExtension: { '.js': '.js' },
         sourcemap: false,
         minify: false,
-        external: ['chrome'],
+        platform: 'browser',
       });
     }
 

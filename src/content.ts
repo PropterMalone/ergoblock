@@ -2,6 +2,9 @@
 // Content script for Bluesky Temp Block & Mute
 // Injects menu options into Bluesky's dropdown menus
 
+import { getProfile, blockUser, muteUser, getSession } from './api.js';
+import { addTempBlock, addTempMute } from './storage.js';
+
 (function () {
   'use strict';
 
@@ -350,7 +353,7 @@
     try {
       // Get the user's DID from their profile
       console.log('[TempBlock] Getting profile...');
-      const profile = await window.BlueskyAPI.getProfile(handle);
+      const profile = await getProfile(handle);
       console.log('[TempBlock] Got profile:', profile);
       if (!profile?.did) {
         throw new Error('Could not get user profile');
@@ -358,12 +361,12 @@
 
       // Block the user via API
       console.log('[TempBlock] Blocking user with DID:', profile.did);
-      const blockResult = await window.BlueskyAPI.blockUser(profile.did);
+      const blockResult = await blockUser(profile.did);
       console.log('[TempBlock] Block result:', blockResult);
 
       // Store in temp blocks with custom duration
       console.log('[TempBlock] Storing temp block...');
-      await window.TempBlockStorage.addTempBlock(profile.did, profile.handle, durationMs);
+      await addTempBlock(profile.did, profile.handle, durationMs);
       console.log('[TempBlock] Stored temp block');
 
       closeMenus();
@@ -382,16 +385,16 @@
     console.log('[TempBlock] handleTempMute called for:', handle, 'duration:', durationLabel);
     try {
       // Get the user's DID from their profile
-      const profile = await window.BlueskyAPI.getProfile(handle);
+      const profile = await getProfile(handle);
       if (!profile?.did) {
         throw new Error('Could not get user profile');
       }
 
       // Mute the user via API
-      await window.BlueskyAPI.muteUser(profile.did);
+      await muteUser(profile.did);
 
       // Store in temp mutes with custom duration
-      await window.TempBlockStorage.addTempMute(profile.did, profile.handle, durationMs);
+      await addTempMute(profile.did, profile.handle, durationMs);
 
       closeMenus();
       showToast(`Temporarily muted @${profile.handle} for ${durationLabel}`);
@@ -524,7 +527,7 @@
    * Send auth token to background worker for expiration handling
    */
   function syncAuthToBackground() {
-    const session = window.BlueskyAPI?.getSession?.();
+    const session = getSession();
     if (session?.accessJwt && session?.did && session?.pdsUrl) {
       chrome.runtime.sendMessage({
         type: 'SET_AUTH_TOKEN',

@@ -19,10 +19,6 @@ fs.copyFileSync(path.join(__dirname, '..', 'popup.html'), path.join(distDir, 'po
 // Copy options.html
 fs.copyFileSync(path.join(__dirname, '..', 'options.html'), path.join(distDir, 'options.html'));
 
-// Copy api.js and storage.js (needed by content script)
-fs.copyFileSync(path.join(__dirname, '..', 'api.js'), path.join(distDir, 'api.js'));
-fs.copyFileSync(path.join(__dirname, '..', 'storage.js'), path.join(distDir, 'storage.js'));
-
 // Copy icons folder
 const iconsDir = path.join(__dirname, '..', 'icons');
 const distIconsDir = path.join(distDir, 'icons');
