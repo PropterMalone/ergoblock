@@ -4,9 +4,6 @@
 import { getSession, getProfile, blockUser, muteUser } from './api.js';
 import { addTempBlock, addTempMute } from './storage.js';
 
-const MENU_ITEM_SELECTOR = '[data-testid="profileHeaderDropdownBtn"]';
-const POST_MENU_SELECTOR = '[data-testid="postDropdownBtn"]';
-
 let currentObserver: MutationObserver | null = null;
 let lastClickedElement: HTMLElement | null = null;
 
@@ -93,7 +90,11 @@ function extractUserFromMenu(menuElement: Element): { handle: string } | null {
 /**
  * Create a menu item element matching Bluesky's style
  */
-function createMenuItem(text: string, icon: string, onClick: () => Promise<void> | void): HTMLElement {
+function createMenuItem(
+  text: string,
+  icon: string,
+  onClick: () => Promise<void> | void
+): HTMLElement {
   const item = document.createElement('div');
   item.setAttribute('role', 'menuitem');
   item.setAttribute('tabindex', '0');
@@ -345,7 +346,11 @@ function closeMenus(): void {
 /**
  * Handle temp block action
  */
-async function handleTempBlock(handle: string, durationMs: number, durationLabel: string): Promise<void> {
+async function handleTempBlock(
+  handle: string,
+  durationMs: number,
+  durationLabel: string
+): Promise<void> {
   console.log('[TempBlock] handleTempBlock called for:', handle, 'duration:', durationLabel);
   try {
     // Get the user's DID from their profile
@@ -378,7 +383,11 @@ async function handleTempBlock(handle: string, durationMs: number, durationLabel
 /**
  * Handle temp mute action
  */
-async function handleTempMute(handle: string, durationMs: number, durationLabel: string): Promise<void> {
+async function handleTempMute(
+  handle: string,
+  durationMs: number,
+  durationLabel: string
+): Promise<void> {
   console.log('[TempBlock] handleTempMute called for:', handle, 'duration:', durationLabel);
   try {
     // Get the user's DID from their profile
@@ -443,14 +452,18 @@ function injectMenuItems(menu: Element): void {
   separator.setAttribute('data-temp-block-injected', 'true');
 
   const tempMuteItem = createMenuItem('Temp Mute...', '⏱️', () => {
-    closeMenus();
-    showDurationPicker('mute', userInfo!.handle);
+    if (userInfo?.handle) {
+      closeMenus();
+      showDurationPicker('mute', userInfo.handle);
+    }
   });
   tempMuteItem.setAttribute('data-temp-block-injected', 'true');
 
   const tempBlockItem = createMenuItem('Temp Block...', '⏱️', () => {
-    closeMenus();
-    showDurationPicker('block', userInfo!.handle);
+    if (userInfo?.handle) {
+      closeMenus();
+      showDurationPicker('block', userInfo.handle);
+    }
   });
   tempBlockItem.setAttribute('data-temp-block-injected', 'true');
 

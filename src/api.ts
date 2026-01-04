@@ -1,4 +1,3 @@
-/* eslint-disable no-undef */
 // AT Protocol API helpers for Bluesky
 // Handles block/mute/unblock/unmute operations
 
@@ -104,7 +103,6 @@ export function getSession(): BskySession | null {
           'did' in session &&
           session.did
         ) {
-          const validSession = session as BskyAccount; // Safe cast after check
           console.log('[TempBlock] Found session for:', validSession.handle || validSession.did);
           // Normalize the PDS URL
           let pdsUrl = validSession.pdsUrl || validSession.service || BSKY_PDS_DEFAULT;
@@ -115,8 +113,14 @@ export function getSession(): BskySession | null {
             pdsUrl = 'https://' + pdsUrl;
           }
           console.log('[TempBlock] Using PDS URL:', pdsUrl);
+
+          if (!validSession.accessJwt) {
+            console.error('[TempBlock] Session found but accessJwt is missing');
+            return null;
+          }
+
           return {
-            accessJwt: validSession.accessJwt!,
+            accessJwt: validSession.accessJwt,
             refreshJwt: validSession.refreshJwt,
             did: validSession.did,
             handle: validSession.handle || '',
@@ -166,8 +170,12 @@ async function apiRequest<T>(
     }
   }
 
+  if (!base) {
+    throw new Error('Could not determine base URL for API request');
+  }
+
   // Normalize base URL - remove trailing slashes
-  base = base!.replace(/\/+$/, '');
+  base = base.replace(/\/+$/, '');
 
   const url = `${base}/xrpc/${endpoint}`;
   console.log('[TempBlock] API request:', method, url);
