@@ -1,71 +1,87 @@
-<!DOCTYPE html>
+<!doctype html>
 <html>
-<head>
-  <title>Generate Extension Icons</title>
-  <style>
-    body { font-family: sans-serif; padding: 20px; }
-    canvas { border: 1px solid #ccc; margin: 10px; }
-    .icon-row { margin: 20px 0; }
-    a { display: inline-block; margin: 10px; padding: 10px 20px; background: #0085ff; color: white; text-decoration: none; border-radius: 5px; }
-  </style>
-</head>
-<body>
-  <h1>Extension Icon Generator</h1>
-  <p>Right-click each icon and "Save image as..." to the icons folder:</p>
+  <head>
+    <title>Generate Extension Icons</title>
+    <style>
+      body {
+        font-family: sans-serif;
+        padding: 20px;
+      }
+      canvas {
+        border: 1px solid #ccc;
+        margin: 10px;
+      }
+      .icon-row {
+        margin: 20px 0;
+      }
+      a {
+        display: inline-block;
+        margin: 10px;
+        padding: 10px 20px;
+        background: #0085ff;
+        color: white;
+        text-decoration: none;
+        border-radius: 5px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Extension Icon Generator</h1>
+    <p>Right-click each icon and "Save image as..." to the icons folder:</p>
 
-  <div class="icon-row">
-    <h3>icon16.png</h3>
-    <canvas id="icon16" width="16" height="16"></canvas>
-  </div>
+    <div class="icon-row">
+      <h3>icon16.png</h3>
+      <canvas id="icon16" width="16" height="16"></canvas>
+    </div>
 
-  <div class="icon-row">
-    <h3>icon48.png</h3>
-    <canvas id="icon48" width="48" height="48"></canvas>
-  </div>
+    <div class="icon-row">
+      <h3>icon48.png</h3>
+      <canvas id="icon48" width="48" height="48"></canvas>
+    </div>
 
-  <div class="icon-row">
-    <h3>icon128.png</h3>
-    <canvas id="icon128" width="128" height="128"></canvas>
-  </div>
+    <div class="icon-row">
+      <h3>icon128.png</h3>
+      <canvas id="icon128" width="128" height="128"></canvas>
+    </div>
 
-  <script>
-    function drawIcon(canvas) {
-      const ctx = canvas.getContext('2d');
-      const size = canvas.width;
-      const center = size / 2;
-      const radius = size * 0.4;
+    <script>
+      function drawIcon(canvas) {
+        const ctx = canvas.getContext('2d');
+        const size = canvas.width;
+        const center = size / 2;
+        const radius = size * 0.4;
 
-      // Blue circle background
-      ctx.beginPath();
-      ctx.arc(center, center, size * 0.45, 0, Math.PI * 2);
-      ctx.fillStyle = '#0085ff';
-      ctx.fill();
+        // Blue circle background
+        ctx.beginPath();
+        ctx.arc(center, center, size * 0.45, 0, Math.PI * 2);
+        ctx.fillStyle = '#0085ff';
+        ctx.fill();
 
-      // White clock face
-      ctx.beginPath();
-      ctx.arc(center, center, radius, 0, Math.PI * 2);
-      ctx.strokeStyle = 'white';
-      ctx.lineWidth = size * 0.08;
-      ctx.stroke();
+        // White clock face
+        ctx.beginPath();
+        ctx.arc(center, center, radius, 0, Math.PI * 2);
+        ctx.strokeStyle = 'white';
+        ctx.lineWidth = size * 0.08;
+        ctx.stroke();
 
-      // Clock hands
-      ctx.beginPath();
-      ctx.moveTo(center, center);
-      ctx.lineTo(center, center - radius * 0.6);
-      ctx.strokeStyle = 'white';
-      ctx.lineWidth = size * 0.1;
-      ctx.lineCap = 'round';
-      ctx.stroke();
+        // Clock hands
+        ctx.beginPath();
+        ctx.moveTo(center, center);
+        ctx.lineTo(center, center - radius * 0.6);
+        ctx.strokeStyle = 'white';
+        ctx.lineWidth = size * 0.1;
+        ctx.lineCap = 'round';
+        ctx.stroke();
 
-      ctx.beginPath();
-      ctx.moveTo(center, center);
-      ctx.lineTo(center + radius * 0.4, center);
-      ctx.stroke();
-    }
+        ctx.beginPath();
+        ctx.moveTo(center, center);
+        ctx.lineTo(center + radius * 0.4, center);
+        ctx.stroke();
+      }
 
-    drawIcon(document.getElementById('icon16'));
-    drawIcon(document.getElementById('icon48'));
-    drawIcon(document.getElementById('icon128'));
-  </script>
-</body>
+      drawIcon(document.getElementById('icon16'));
+      drawIcon(document.getElementById('icon48'));
+      drawIcon(document.getElementById('icon128'));
+    </script>
+  </body>
 </html>

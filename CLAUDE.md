@@ -55,7 +55,7 @@ Uses `MutationObserver` to detect when menus open (`[role="menu"]`). Tracks `las
 
 ## CI/CD Pipeline
 
-- **Checks**: Lint, Format, and Tests must pass on every PR.
+- **Checks**: Lint (ESLint), Format (Prettier), and Tests (Vitest) must pass on every PR.
 - **Version Bump**: PRs are blocked unless `package.json` version is incremented.
 - **Releases**: Merging to `main` with a new version automatically tags the repo and creates a GitHub Release with a production `.zip`.
 
