@@ -10,8 +10,22 @@ if (!fs.existsSync(distDir)) {
   fs.mkdirSync(distDir, { recursive: true });
 }
 
-// Copy manifest.json
-fs.copyFileSync(path.join(__dirname, '..', 'manifest.json'), path.join(distDir, 'manifest.json'));
+// Copy and transform manifest.json
+const manifestPath = path.join(__dirname, '..', 'manifest.json');
+const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+
+// Update content scripts to use bundled file
+if (manifest.content_scripts) {
+  manifest.content_scripts = manifest.content_scripts.map(script => ({
+    ...script,
+    js: ['content.js']
+  }));
+}
+
+fs.writeFileSync(
+  path.join(distDir, 'manifest.json'),
+  JSON.stringify(manifest, null, 2)
+);
 
 // Copy popup.html
 fs.copyFileSync(path.join(__dirname, '..', 'popup.html'), path.join(distDir, 'popup.html'));

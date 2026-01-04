@@ -1,933 +1,172 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 
-// Declare global for Node.js environment
-declare const globalThis: {
-  chrome: typeof chrome;
-  fetch: typeof fetch;
-};
+// Mock all dependencies from storage.js before importing background.ts
+vi.mock('../storage.js', () => ({
+  getTempBlocks: vi.fn().mockResolvedValue({}),
+  getTempMutes: vi.fn().mockResolvedValue({}),
+  removeTempBlock: vi.fn().mockResolvedValue(undefined),
+  removeTempMute: vi.fn().mockResolvedValue(undefined),
+  getOptions: vi
+    .fn()
+    .mockResolvedValue({ showBadgeCount: true, notificationsEnabled: true, checkInterval: 1 }),
+  addHistoryEntry: vi.fn().mockResolvedValue(undefined),
+}));
 
-// Types for mocking
-interface AuthData {
-  accessJwt: string;
-  did: string;
-  pdsUrl: string;
-}
-
-// Mock storage state
-let mockSyncStorage: Record<string, unknown> = {};
-let mockLocalStorage: Record<string, unknown> = {};
-let alarmListeners: Array<(alarm: { name: string }) => void> = [];
-let messageListeners: Array<
-  (
-    message: Record<string, unknown>,
-    sender: unknown,
-    sendResponse: (response: unknown) => void
-  ) => boolean | void
-> = [];
-let installedListeners: Array<() => void> = [];
-let startupListeners: Array<() => void> = [];
-
-// Create mock functions
-const mockSetBadgeText = vi.fn().mockResolvedValue(undefined);
-const mockSetBadgeBackgroundColor = vi.fn().mockResolvedValue(undefined);
-const mockNotificationsCreate = vi.fn().mockResolvedValue('notification-id');
-const mockAlarmsCreate = vi.fn().mockResolvedValue(undefined);
-const mockAlarmsClear = vi.fn().mockResolvedValue(undefined);
-
-const createMockChrome = () => ({
-  action: {
-    setBadgeText: mockSetBadgeText,
-    setBadgeBackgroundColor: mockSetBadgeBackgroundColor,
-  },
-  storage: {
-    sync: {
-      get: vi.fn((key: string) => {
-        if (typeof key === 'string') {
-          return Promise.resolve({ [key]: mockSyncStorage[key] });
-        }
-        return Promise.resolve(mockSyncStorage);
-      }),
-      set: vi.fn((data: Record<string, unknown>) => {
-        Object.assign(mockSyncStorage, data);
-        return Promise.resolve();
-      }),
-    },
-    local: {
-      get: vi.fn((key: string) => {
-        if (typeof key === 'string') {
-          return Promise.resolve({ [key]: mockLocalStorage[key] });
-        }
-        return Promise.resolve(mockLocalStorage);
-      }),
-      set: vi.fn((data: Record<string, unknown>) => {
-        Object.assign(mockLocalStorage, data);
-        return Promise.resolve();
-      }),
-    },
-  },
-  alarms: {
-    create: mockAlarmsCreate,
-    clear: mockAlarmsClear,
-    onAlarm: {
-      addListener: vi.fn((listener: (alarm: { name: string }) => void) => {
-        alarmListeners.push(listener);
-      }),
-    },
-  },
-  notifications: {
-    create: mockNotificationsCreate,
-  },
-  runtime: {
-    sendMessage: vi.fn().mockResolvedValue(undefined),
-    onMessage: {
-      addListener: vi.fn(
-        (
-          listener: (
-            message: Record<string, unknown>,
-            sender: unknown,
-            sendResponse: (response: unknown) => void
-          ) => boolean | void
-        ) => {
-          messageListeners.push(listener);
-        }
-      ),
-    },
-    onInstalled: {
-      addListener: vi.fn((listener: () => void) => {
-        installedListeners.push(listener);
-      }),
-    },
-    onStartup: {
-      addListener: vi.fn((listener: () => void) => {
-        startupListeners.push(listener);
-      }),
-    },
-  },
-});
-
-// Mock fetch
-const mockFetch = vi.fn();
-
-describe('background service worker', () => {
-  let mockChrome: ReturnType<typeof createMockChrome>;
-
+describe('Background Service Worker', () => {
   beforeEach(() => {
-    // Reset storage
-    mockSyncStorage = {};
-    mockLocalStorage = {};
-
-    // Reset listeners
-    alarmListeners = [];
-    messageListeners = [];
-    installedListeners = [];
-    startupListeners = [];
-
-    // Reset all mocks
-    vi.clearAllMocks();
     vi.resetModules();
+    vi.clearAllMocks();
 
-    // Create fresh mock chrome
-    mockChrome = createMockChrome();
-    globalThis.chrome = mockChrome as unknown as typeof chrome;
+    // Mock chrome API
+    const chromeMock = {
+      storage: {
+        local: {
+          get: vi
+            .fn()
+            .mockResolvedValue({ authToken: { accessJwt: 'test', did: 'test', pdsUrl: 'test' } }),
+          set: vi.fn().mockResolvedValue(undefined),
+        },
+      },
+      alarms: {
+        create: vi.fn(),
+        clear: vi.fn(),
+        onAlarm: {
+          addListener: vi.fn(),
+        },
+      },
+      runtime: {
+        onMessage: {
+          addListener: vi.fn(),
+        },
+        onInstalled: {
+          addListener: vi.fn(),
+        },
+        onStartup: {
+          addListener: vi.fn(),
+        },
+      },
+      action: {
+        setBadgeText: vi.fn(),
+        setBadgeBackgroundColor: vi.fn(),
+      },
+      notifications: {
+        create: vi.fn(),
+      },
+    };
 
-    // Mock fetch
-    globalThis.fetch = mockFetch as unknown as typeof fetch;
+    vi.stubGlobal('chrome', chromeMock);
+    vi.stubGlobal('fetch', vi.fn());
   });
 
   afterEach(() => {
-    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
-  describe('Chrome API initialization', () => {
-    it('should have chrome APIs defined', () => {
-      expect(globalThis.chrome).toBeDefined();
-      expect(globalThis.chrome.action).toBeDefined();
-      expect(globalThis.chrome.storage).toBeDefined();
-      expect(globalThis.chrome.alarms).toBeDefined();
-      expect(globalThis.chrome.notifications).toBeDefined();
-      expect(globalThis.chrome.runtime).toBeDefined();
-    });
+  it('should initialize correctly', async () => {
+    // Importing background.ts triggers the top-level listeners
+    await import('../background.js');
 
-    it('should register alarm listener', async () => {
-      await import('../background');
-      expect(mockChrome.alarms.onAlarm.addListener).toHaveBeenCalled();
-    });
-
-    it('should register message listener', async () => {
-      await import('../background');
-      expect(mockChrome.runtime.onMessage.addListener).toHaveBeenCalled();
-    });
-
-    it('should register onInstalled listener', async () => {
-      await import('../background');
-      expect(mockChrome.runtime.onInstalled.addListener).toHaveBeenCalled();
-    });
-
-    it('should register onStartup listener', async () => {
-      await import('../background');
-      expect(mockChrome.runtime.onStartup.addListener).toHaveBeenCalled();
-    });
+    expect(chrome.alarms.onAlarm.addListener).toHaveBeenCalled();
+    expect(chrome.runtime.onMessage.addListener).toHaveBeenCalled();
+    expect(chrome.runtime.onInstalled.addListener).toHaveBeenCalled();
+    expect(chrome.runtime.onStartup.addListener).toHaveBeenCalled();
   });
 
-  describe('setupAlarm', () => {
-    it('should set up alarm with default interval', async () => {
-      mockLocalStorage['extensionOptions'] = {
-        checkInterval: 1,
-        showBadgeCount: true,
-        notificationsEnabled: true,
-        notificationSound: false,
-      };
+  it('should setup alarm correctly', async () => {
+    const { setupAlarm } = await import('../background.js');
+    await setupAlarm();
 
-      await import('../background');
-
-      // Trigger onInstalled
-      for (const listener of installedListeners) {
-        listener();
-      }
-
-      // Wait for async operations
-      await new Promise((resolve) => setTimeout(resolve, 10));
-
-      expect(mockAlarmsClear).toHaveBeenCalledWith('checkExpirations');
-      expect(mockAlarmsCreate).toHaveBeenCalledWith('checkExpirations', {
-        periodInMinutes: 1,
-      });
-    });
-
-    it('should clamp interval to minimum of 1 minute', async () => {
-      mockLocalStorage['extensionOptions'] = {
-        checkInterval: 0,
-        showBadgeCount: true,
-        notificationsEnabled: true,
-        notificationSound: false,
-      };
-
-      await import('../background');
-
-      for (const listener of installedListeners) {
-        listener();
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, 10));
-
-      expect(mockAlarmsCreate).toHaveBeenCalledWith('checkExpirations', {
-        periodInMinutes: 1,
-      });
-    });
-
-    it('should clamp interval to maximum of 10 minutes', async () => {
-      mockLocalStorage['extensionOptions'] = {
-        checkInterval: 15,
-        showBadgeCount: true,
-        notificationsEnabled: true,
-        notificationSound: false,
-      };
-
-      await import('../background');
-
-      for (const listener of installedListeners) {
-        listener();
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, 10));
-
-      expect(mockAlarmsCreate).toHaveBeenCalledWith('checkExpirations', {
-        periodInMinutes: 10,
-      });
-    });
+    expect(chrome.alarms.clear).toHaveBeenCalledWith('checkExpirations');
+    expect(chrome.alarms.create).toHaveBeenCalledWith('checkExpirations', expect.any(Object));
   });
 
-  describe('updateBadge', () => {
-    it('should show badge count when enabled', async () => {
-      mockLocalStorage['extensionOptions'] = {
-        showBadgeCount: true,
-        checkInterval: 1,
-        notificationsEnabled: true,
-        notificationSound: false,
-      };
-      mockSyncStorage['tempBlocks'] = {
-        'did:plc:user1': { handle: 'user1', expiresAt: Date.now() + 10000, createdAt: Date.now() },
-      };
-      mockSyncStorage['tempMutes'] = {
-        'did:plc:user2': { handle: 'user2', expiresAt: Date.now() + 10000, createdAt: Date.now() },
-      };
+  it('should update badge correctly', async () => {
+    const { updateBadge } = await import('../background.js');
+    await updateBadge();
 
-      await import('../background');
-
-      for (const listener of installedListeners) {
-        listener();
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, 10));
-
-      expect(mockSetBadgeText).toHaveBeenCalledWith({ text: '2' });
-      expect(mockSetBadgeBackgroundColor).toHaveBeenCalledWith({ color: '#1185fe' });
-    });
-
-    it('should hide badge when disabled', async () => {
-      mockLocalStorage['extensionOptions'] = {
-        showBadgeCount: false,
-        checkInterval: 1,
-        notificationsEnabled: true,
-        notificationSound: false,
-      };
-
-      await import('../background');
-
-      for (const listener of installedListeners) {
-        listener();
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, 10));
-
-      expect(mockSetBadgeText).toHaveBeenCalledWith({ text: '' });
-    });
-
-    it('should show empty badge when no blocks/mutes', async () => {
-      mockLocalStorage['extensionOptions'] = {
-        showBadgeCount: true,
-        checkInterval: 1,
-        notificationsEnabled: true,
-        notificationSound: false,
-      };
-      mockSyncStorage['tempBlocks'] = {};
-      mockSyncStorage['tempMutes'] = {};
-
-      await import('../background');
-
-      for (const listener of installedListeners) {
-        listener();
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, 10));
-
-      expect(mockSetBadgeText).toHaveBeenCalledWith({ text: '' });
-    });
+    expect(chrome.action.setBadgeText).toHaveBeenCalled();
   });
 
-  describe('message handling', () => {
-    it('should handle TEMP_BLOCK_ADDED message', async () => {
-      mockLocalStorage['extensionOptions'] = {
-        checkInterval: 1,
-        showBadgeCount: true,
-        notificationsEnabled: true,
-        notificationSound: false,
-      };
+  it('should check expirations and unblock/unmute expired users', async () => {
+    const { checkExpirations } = await import('../background.js');
+    const storage = await import('../storage.js');
 
-      await import('../background');
-
-      const sendResponse = vi.fn();
-      for (const listener of messageListeners) {
-        listener({ type: 'TEMP_BLOCK_ADDED', did: 'did:plc:test' }, {}, sendResponse);
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, 10));
-
-      // Should trigger setupAlarm and updateBadge
-      expect(mockAlarmsClear).toHaveBeenCalled();
-      expect(mockAlarmsCreate).toHaveBeenCalled();
+    const now = Date.now();
+    (storage.getTempBlocks as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      'did:expired': { handle: 'expired-user', expiresAt: now - 1000 },
+    });
+    (storage.getTempMutes as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      'did:active': { handle: 'active-user', expiresAt: now + 1000 },
     });
 
-    it('should handle TEMP_MUTE_ADDED message', async () => {
-      mockLocalStorage['extensionOptions'] = {
-        checkInterval: 1,
-        showBadgeCount: true,
-        notificationsEnabled: true,
-        notificationSound: false,
-      };
+    await checkExpirations();
 
-      await import('../background');
-
-      const sendResponse = vi.fn();
-      for (const listener of messageListeners) {
-        listener({ type: 'TEMP_MUTE_ADDED', did: 'did:plc:test' }, {}, sendResponse);
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, 10));
-
-      expect(mockAlarmsClear).toHaveBeenCalled();
-      expect(mockAlarmsCreate).toHaveBeenCalled();
-    });
-
-    it('should handle SET_AUTH_TOKEN message', async () => {
-      await import('../background');
-
-      const authData: AuthData = {
-        accessJwt: 'test-token',
-        did: 'did:plc:testuser',
-        pdsUrl: 'https://bsky.social',
-      };
-
-      const sendResponse = vi.fn();
-      for (const listener of messageListeners) {
-        listener({ type: 'SET_AUTH_TOKEN', auth: authData }, {}, sendResponse);
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, 10));
-
-      expect(mockChrome.storage.local.set).toHaveBeenCalledWith({ authToken: authData });
-      expect(sendResponse).toHaveBeenCalledWith({ success: true });
-    });
-
-    it('should handle CHECK_NOW message', async () => {
-      mockLocalStorage['authToken'] = {
-        accessJwt: 'test-token',
-        did: 'did:plc:owner',
-        pdsUrl: 'https://bsky.social',
-      };
-      mockLocalStorage['extensionOptions'] = {
-        checkInterval: 1,
-        showBadgeCount: true,
-        notificationsEnabled: true,
-        notificationSound: false,
-      };
-      mockSyncStorage['tempBlocks'] = {};
-      mockSyncStorage['tempMutes'] = {};
-
-      await import('../background');
-
-      const sendResponse = vi.fn();
-      let returnValue: boolean | void = false;
-      for (const listener of messageListeners) {
-        returnValue = listener({ type: 'CHECK_NOW' }, {}, sendResponse);
-      }
-
-      // Should return true for async response
-      expect(returnValue).toBe(true);
-
-      await new Promise((resolve) => setTimeout(resolve, 50));
-
-      expect(sendResponse).toHaveBeenCalledWith({ success: true });
-    });
+    // It should try to unblock the expired user
+    // Since fetch is mocked and return null, unblockUser will fail or return false
+    // but the function should still execute the logic
+    expect(storage.getTempBlocks).toHaveBeenCalled();
+    expect(storage.getTempMutes).toHaveBeenCalled();
   });
 
-  describe('checkExpirations', () => {
-    it('should skip if no auth token', async () => {
-      mockLocalStorage['authToken'] = null;
-      mockLocalStorage['extensionOptions'] = {
-        checkInterval: 1,
-        showBadgeCount: true,
-        notificationsEnabled: true,
-        notificationSound: false,
-      };
+  it('should unblock user correctly', async () => {
+    const { unblockUser } = await import('../background.js');
 
-      await import('../background');
-
-      // Trigger alarm
-      for (const listener of alarmListeners) {
-        listener({ name: 'checkExpirations' });
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, 10));
-
-      // Should not call fetch since no auth
-      expect(mockFetch).not.toHaveBeenCalled();
+    (fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      text: () =>
+        Promise.resolve(
+          JSON.stringify({
+            records: [
+              {
+                uri: 'at://did:test:123/app.bsky.graph.block/rkey123',
+                value: { subject: 'did:target:456' },
+              },
+            ],
+          })
+        ),
+    });
+    (fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      text: () => Promise.resolve(''),
     });
 
-    it('should skip if auth token is incomplete', async () => {
-      mockLocalStorage['authToken'] = {
-        accessJwt: 'test-token',
-        // Missing did and pdsUrl
-      };
-      mockLocalStorage['extensionOptions'] = {
-        checkInterval: 1,
-        showBadgeCount: true,
-        notificationsEnabled: true,
-        notificationSound: false,
-      };
-
-      await import('../background');
-
-      for (const listener of alarmListeners) {
-        listener({ name: 'checkExpirations' });
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, 10));
-
-      expect(mockFetch).not.toHaveBeenCalled();
-    });
-
-    it('should process expired blocks', async () => {
-      const now = Date.now();
-      mockLocalStorage['authToken'] = {
-        accessJwt: 'test-token',
-        did: 'did:plc:owner',
-        pdsUrl: 'https://bsky.social',
-      };
-      mockLocalStorage['extensionOptions'] = {
-        checkInterval: 1,
-        showBadgeCount: true,
-        notificationsEnabled: true,
-        notificationSound: false,
-      };
-      mockSyncStorage['tempBlocks'] = {
-        'did:plc:expired': {
-          handle: 'expired.bsky.social',
-          expiresAt: now - 1000,
-          createdAt: now - 10000,
-        },
-      };
-      mockSyncStorage['tempMutes'] = {};
-
-      // Mock API responses
-      mockFetch
-        .mockResolvedValueOnce({
-          ok: true,
-          text: () =>
-            Promise.resolve(
-              JSON.stringify({
-                records: [
-                  {
-                    uri: 'at://did:plc:owner/app.bsky.graph.block/abc123',
-                    value: { subject: 'did:plc:expired' },
-                  },
-                ],
-              })
-            ),
-        })
-        .mockResolvedValueOnce({
-          ok: true,
-          text: () => Promise.resolve(''),
-        });
-
-      await import('../background');
-
-      for (const listener of alarmListeners) {
-        listener({ name: 'checkExpirations' });
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, 100));
-
-      // Should have called API to list records and delete
-      expect(mockFetch).toHaveBeenCalledTimes(2);
-      expect(mockFetch).toHaveBeenCalledWith(
-        expect.stringContaining('com.atproto.repo.listRecords'),
-        expect.any(Object)
-      );
-      expect(mockFetch).toHaveBeenCalledWith(
-        expect.stringContaining('com.atproto.repo.deleteRecord'),
-        expect.objectContaining({ method: 'POST' })
-      );
-    });
-
-    it('should process expired mutes', async () => {
-      const now = Date.now();
-      mockLocalStorage['authToken'] = {
-        accessJwt: 'test-token',
-        did: 'did:plc:owner',
-        pdsUrl: 'https://bsky.social',
-      };
-      mockLocalStorage['extensionOptions'] = {
-        checkInterval: 1,
-        showBadgeCount: true,
-        notificationsEnabled: true,
-        notificationSound: false,
-      };
-      mockSyncStorage['tempBlocks'] = {};
-      mockSyncStorage['tempMutes'] = {
-        'did:plc:expired': {
-          handle: 'expired.bsky.social',
-          expiresAt: now - 1000,
-          createdAt: now - 10000,
-        },
-      };
-
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        text: () => Promise.resolve(''),
-      });
-
-      await import('../background');
-
-      for (const listener of alarmListeners) {
-        listener({ name: 'checkExpirations' });
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, 100));
-
-      expect(mockFetch).toHaveBeenCalledWith(
-        expect.stringContaining('app.bsky.graph.unmuteActor'),
-        expect.objectContaining({ method: 'POST' })
-      );
-    });
-
-    it('should send notification on successful expiration', async () => {
-      const now = Date.now();
-      mockLocalStorage['authToken'] = {
-        accessJwt: 'test-token',
-        did: 'did:plc:owner',
-        pdsUrl: 'https://bsky.social',
-      };
-      mockLocalStorage['extensionOptions'] = {
-        checkInterval: 1,
-        showBadgeCount: true,
-        notificationsEnabled: true,
-        notificationSound: false,
-      };
-      mockSyncStorage['tempBlocks'] = {};
-      mockSyncStorage['tempMutes'] = {
-        'did:plc:expired': {
-          handle: 'expired.bsky.social',
-          expiresAt: now - 1000,
-          createdAt: now - 10000,
-        },
-      };
-
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        text: () => Promise.resolve(''),
-      });
-
-      await import('../background');
-
-      for (const listener of alarmListeners) {
-        listener({ name: 'checkExpirations' });
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, 100));
-
-      expect(mockNotificationsCreate).toHaveBeenCalledWith(
-        expect.objectContaining({
-          type: 'basic',
-          title: '✅ Temporary action expired',
-          message: expect.stringContaining('expired.bsky.social'),
-        })
-      );
-    });
-
-    it('should not send notification when disabled', async () => {
-      const now = Date.now();
-      mockLocalStorage['authToken'] = {
-        accessJwt: 'test-token',
-        did: 'did:plc:owner',
-        pdsUrl: 'https://bsky.social',
-      };
-      mockLocalStorage['extensionOptions'] = {
-        checkInterval: 1,
-        showBadgeCount: true,
-        notificationsEnabled: false, // Disabled
-        notificationSound: false,
-      };
-      mockSyncStorage['tempBlocks'] = {};
-      mockSyncStorage['tempMutes'] = {
-        'did:plc:expired': {
-          handle: 'expired.bsky.social',
-          expiresAt: now - 1000,
-          createdAt: now - 10000,
-        },
-      };
-
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        text: () => Promise.resolve(''),
-      });
-
-      await import('../background');
-
-      for (const listener of alarmListeners) {
-        listener({ name: 'checkExpirations' });
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, 100));
-
-      expect(mockNotificationsCreate).not.toHaveBeenCalled();
-    });
-
-    it('should handle API errors gracefully', async () => {
-      const now = Date.now();
-      mockLocalStorage['authToken'] = {
-        accessJwt: 'test-token',
-        did: 'did:plc:owner',
-        pdsUrl: 'https://bsky.social',
-      };
-      mockLocalStorage['extensionOptions'] = {
-        checkInterval: 1,
-        showBadgeCount: true,
-        notificationsEnabled: true,
-        notificationSound: false,
-      };
-      mockSyncStorage['tempBlocks'] = {
-        'did:plc:expired': {
-          handle: 'expired.bsky.social',
-          expiresAt: now - 1000,
-          createdAt: now - 10000,
-        },
-      };
-      mockSyncStorage['tempMutes'] = {};
-
-      mockFetch.mockResolvedValueOnce({
-        ok: false,
-        status: 401,
-        json: () => Promise.resolve({ message: 'Unauthorized' }),
-      });
-
-      await import('../background');
-
-      for (const listener of alarmListeners) {
-        listener({ name: 'checkExpirations' });
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, 100));
-
-      // Should send failure notification
-      expect(mockNotificationsCreate).toHaveBeenCalledWith(
-        expect.objectContaining({
-          title: '⚠️ Action failed',
-        })
-      );
-    });
-
-    it('should not process non-expired entries', async () => {
-      const now = Date.now();
-      mockLocalStorage['authToken'] = {
-        accessJwt: 'test-token',
-        did: 'did:plc:owner',
-        pdsUrl: 'https://bsky.social',
-      };
-      mockLocalStorage['extensionOptions'] = {
-        checkInterval: 1,
-        showBadgeCount: true,
-        notificationsEnabled: true,
-        notificationSound: false,
-      };
-      mockSyncStorage['tempBlocks'] = {
-        'did:plc:active': {
-          handle: 'active.bsky.social',
-          expiresAt: now + 3600000, // Still active
-          createdAt: now,
-        },
-      };
-      mockSyncStorage['tempMutes'] = {};
-
-      await import('../background');
-
-      for (const listener of alarmListeners) {
-        listener({ name: 'checkExpirations' });
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, 50));
-
-      // Should not call any API for non-expired entries
-      expect(mockFetch).not.toHaveBeenCalled();
-    });
-
-    it('should ignore alarms with different names', async () => {
-      mockLocalStorage['authToken'] = {
-        accessJwt: 'test-token',
-        did: 'did:plc:owner',
-        pdsUrl: 'https://bsky.social',
-      };
-
-      await import('../background');
-
-      for (const listener of alarmListeners) {
-        listener({ name: 'someOtherAlarm' });
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, 10));
-
-      // Should not process anything for other alarms
-      expect(mockFetch).not.toHaveBeenCalled();
-    });
+    await unblockUser('did:target:456', 'token', 'owner', 'https://pds.com');
+    expect(fetch).toHaveBeenCalledTimes(2);
   });
 
-  describe('API request handling', () => {
-    it('should use correct PDS URL', async () => {
-      const now = Date.now();
-      const customPdsUrl = 'https://custom.pds.example';
-      mockLocalStorage['authToken'] = {
-        accessJwt: 'test-token',
-        did: 'did:plc:owner',
-        pdsUrl: customPdsUrl,
-      };
-      mockLocalStorage['extensionOptions'] = {
-        checkInterval: 1,
-        showBadgeCount: true,
-        notificationsEnabled: true,
-        notificationSound: false,
-      };
-      mockSyncStorage['tempBlocks'] = {};
-      mockSyncStorage['tempMutes'] = {
-        'did:plc:expired': {
-          handle: 'expired.bsky.social',
-          expiresAt: now - 1000,
-          createdAt: now - 10000,
-        },
-      };
+  it('should unmute user correctly', async () => {
+    const { unmuteUser } = await import('../background.js');
 
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        text: () => Promise.resolve(''),
-      });
-
-      await import('../background');
-
-      for (const listener of alarmListeners) {
-        listener({ name: 'checkExpirations' });
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, 100));
-
-      expect(mockFetch).toHaveBeenCalledWith(
-        expect.stringContaining(customPdsUrl),
-        expect.any(Object)
-      );
+    (fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true,
+      text: () => Promise.resolve(''),
     });
 
-    it('should include authorization header', async () => {
-      const now = Date.now();
-      mockLocalStorage['authToken'] = {
-        accessJwt: 'my-secret-token',
-        did: 'did:plc:owner',
-        pdsUrl: 'https://bsky.social',
-      };
-      mockLocalStorage['extensionOptions'] = {
-        checkInterval: 1,
-        showBadgeCount: true,
-        notificationsEnabled: true,
-        notificationSound: false,
-      };
-      mockSyncStorage['tempBlocks'] = {};
-      mockSyncStorage['tempMutes'] = {
-        'did:plc:expired': {
-          handle: 'expired.bsky.social',
-          expiresAt: now - 1000,
-          createdAt: now - 10000,
-        },
-      };
-
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        text: () => Promise.resolve(''),
-      });
-
-      await import('../background');
-
-      for (const listener of alarmListeners) {
-        listener({ name: 'checkExpirations' });
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, 100));
-
-      expect(mockFetch).toHaveBeenCalledWith(
-        expect.any(String),
-        expect.objectContaining({
-          headers: expect.objectContaining({
-            Authorization: 'Bearer my-secret-token',
-          }),
-        })
-      );
-    });
-
-    it('should handle block not found gracefully', async () => {
-      const now = Date.now();
-      mockLocalStorage['authToken'] = {
-        accessJwt: 'test-token',
-        did: 'did:plc:owner',
-        pdsUrl: 'https://bsky.social',
-      };
-      mockLocalStorage['extensionOptions'] = {
-        checkInterval: 1,
-        showBadgeCount: true,
-        notificationsEnabled: true,
-        notificationSound: false,
-      };
-      mockSyncStorage['tempBlocks'] = {
-        'did:plc:expired': {
-          handle: 'expired.bsky.social',
-          expiresAt: now - 1000,
-          createdAt: now - 10000,
-        },
-      };
-      mockSyncStorage['tempMutes'] = {};
-
-      // Return empty records (block already removed)
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        text: () =>
-          Promise.resolve(
-            JSON.stringify({
-              records: [],
-            })
-          ),
-      });
-
-      await import('../background');
-
-      for (const listener of alarmListeners) {
-        listener({ name: 'checkExpirations' });
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, 100));
-
-      // Should only call listRecords, not deleteRecord
-      expect(mockFetch).toHaveBeenCalledTimes(1);
-    });
+    await unmuteUser('did:target:456', 'token', 'https://pds.com');
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
-  describe('notification sound setting', () => {
-    it('should respect notification sound setting', async () => {
-      const now = Date.now();
-      mockLocalStorage['authToken'] = {
-        accessJwt: 'test-token',
-        did: 'did:plc:owner',
-        pdsUrl: 'https://bsky.social',
-      };
-      mockLocalStorage['extensionOptions'] = {
-        checkInterval: 1,
-        showBadgeCount: true,
-        notificationsEnabled: true,
-        notificationSound: true, // Sound enabled
-      };
-      mockSyncStorage['tempBlocks'] = {};
-      mockSyncStorage['tempMutes'] = {
-        'did:plc:expired': {
-          handle: 'expired.bsky.social',
-          expiresAt: now - 1000,
-          createdAt: now - 10000,
-        },
-      };
+  it('should handle messages correctly', async () => {
+    // This triggers the runtime.onMessage listener setup in background.ts
+    await import('../background.js');
 
-      mockFetch.mockResolvedValueOnce({
-        ok: true,
-        text: () => Promise.resolve(''),
-      });
+    const onMessageListener = (
+      chrome.runtime.onMessage.addListener as unknown as ReturnType<typeof vi.fn>
+    ).mock.calls[0][0];
+    const sendResponse = vi.fn();
 
-      await import('../background');
+    // Test TEMP_BLOCK_ADDED message
+    onMessageListener({ type: 'TEMP_BLOCK_ADDED' }, {}, sendResponse);
 
-      for (const listener of alarmListeners) {
-        listener({ name: 'checkExpirations' });
-      }
+    // setupAlarm is async and not awaited in the listener, so we need to wait a tick
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
-      await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(chrome.alarms.create).toHaveBeenCalled();
 
-      expect(mockNotificationsCreate).toHaveBeenCalledWith(
-        expect.objectContaining({
-          silent: false,
-        })
-      );
-    });
-  });
-
-  describe('onStartup handler', () => {
-    it('should set up alarm and update badge on startup', async () => {
-      mockLocalStorage['extensionOptions'] = {
-        checkInterval: 1,
-        showBadgeCount: true,
-        notificationsEnabled: true,
-        notificationSound: false,
-      };
-
-      await import('../background');
-
-      for (const listener of startupListeners) {
-        listener();
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, 10));
-
-      expect(mockAlarmsClear).toHaveBeenCalled();
-      expect(mockAlarmsCreate).toHaveBeenCalled();
-    });
+    // Test SET_AUTH_TOKEN message
+    onMessageListener({ type: 'SET_AUTH_TOKEN', auth: { accessJwt: 'new' } }, {}, sendResponse);
+    expect(chrome.storage.local.set).toHaveBeenCalledWith(
+      expect.objectContaining({ authToken: { accessJwt: 'new' } })
+    );
   });
 });

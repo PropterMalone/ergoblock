@@ -1,4 +1,3 @@
-/* eslint-disable */
 // Popup script for Bluesky Temp Block & Mute
 
 const STORAGE_KEYS = {
@@ -6,12 +5,17 @@ const STORAGE_KEYS = {
   TEMP_MUTES: 'tempMutes',
 };
 
+interface TempItem {
+  handle: string;
+  expiresAt: number;
+}
+
 let currentTab = 'blocks';
 
 /**
  * Format remaining time
  */
-function formatTimeRemaining(expiresAt) {
+function formatTimeRemaining(expiresAt: number): string {
   const now = Date.now();
   const remaining = expiresAt - now;
 
@@ -31,7 +35,7 @@ function formatTimeRemaining(expiresAt) {
 /**
  * Create an item element
  */
-function createItemElement(did, data, type) {
+function createItemElement(did: string, data: TempItem, type: string): HTMLElement {
   const item = document.createElement('div');
   item.className = 'item';
   item.innerHTML = `
@@ -51,10 +55,12 @@ function createItemElement(did, data, type) {
 /**
  * Render the blocks list
  */
-async function renderBlocks() {
+async function renderBlocks(): Promise<void> {
   const list = document.getElementById('blocks-list');
+  if (!list) return;
+
   const result = await chrome.storage.sync.get(STORAGE_KEYS.TEMP_BLOCKS);
-  const blocks = result[STORAGE_KEYS.TEMP_BLOCKS] || {};
+  const blocks = (result[STORAGE_KEYS.TEMP_BLOCKS] || {}) as Record<string, TempItem>;
 
   const entries = Object.entries(blocks);
 
@@ -77,10 +83,12 @@ async function renderBlocks() {
 /**
  * Render the mutes list
  */
-async function renderMutes() {
+async function renderMutes(): Promise<void> {
   const list = document.getElementById('mutes-list');
+  if (!list) return;
+
   const result = await chrome.storage.sync.get(STORAGE_KEYS.TEMP_MUTES);
-  const mutes = result[STORAGE_KEYS.TEMP_MUTES] || {};
+  const mutes = (result[STORAGE_KEYS.TEMP_MUTES] || {}) as Record<string, TempItem>;
 
   const entries = Object.entries(mutes);
 
@@ -103,10 +111,10 @@ async function renderMutes() {
 /**
  * Remove a temp block or mute
  */
-async function removeItem(did, type) {
+async function removeItem(did: string, type: string): Promise<void> {
   const key = type === 'block' ? STORAGE_KEYS.TEMP_BLOCKS : STORAGE_KEYS.TEMP_MUTES;
   const result = await chrome.storage.sync.get(key);
-  const items = result[key] || {};
+  const items = (result[key] || {}) as Record<string, TempItem>;
 
   delete items[did];
   await chrome.storage.sync.set({ [key]: items });
@@ -124,24 +132,29 @@ async function removeItem(did, type) {
 /**
  * Switch tabs
  */
-function switchTab(tab) {
+function switchTab(tab: string): void {
   currentTab = tab;
 
   // Update tab styles
   document.querySelectorAll('.tab').forEach((t) => {
-    t.classList.toggle('active', t.dataset.tab === tab);
+    const el = t as HTMLElement;
+    el.classList.toggle('active', el.dataset.tab === tab);
   });
 
   // Show/hide lists
-  document.getElementById('blocks-list').style.display = tab === 'blocks' ? 'block' : 'none';
-  document.getElementById('mutes-list').style.display = tab === 'mutes' ? 'block' : 'none';
+  const blocksList = document.getElementById('blocks-list');
+  const mutesList = document.getElementById('mutes-list');
+  if (blocksList) blocksList.style.display = tab === 'blocks' ? 'block' : 'none';
+  if (mutesList) mutesList.style.display = tab === 'mutes' ? 'block' : 'none';
 }
 
 /**
  * Update status message
  */
-function updateStatus(message) {
+function updateStatus(message: string): void {
   const status = document.getElementById('status');
+  if (!status) return;
+
   status.textContent = message;
   setTimeout(() => {
     status.textContent = '';
@@ -151,7 +164,7 @@ function updateStatus(message) {
 /**
  * Check expirations now
  */
-async function checkNow() {
+async function checkNow(): Promise<void> {
   updateStatus('Checking expirations...');
 
   try {
@@ -162,7 +175,7 @@ async function checkNow() {
     renderBlocks();
     renderMutes();
   } catch (error) {
-    updateStatus('Error: ' + error.message);
+    updateStatus('Error: ' + (error instanceof Error ? error.message : String(error)));
   }
 }
 
@@ -173,18 +186,29 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Tab switching
   document.querySelectorAll('.tab').forEach((tab) => {
-    tab.addEventListener('click', () => switchTab(tab.dataset.tab));
+    tab.addEventListener('click', () => {
+      const el = tab as HTMLElement;
+      if (el.dataset.tab) {
+        switchTab(el.dataset.tab);
+      }
+    });
   });
 
   // Check now button
-  document.getElementById('check-now').addEventListener('click', checkNow);
+  const checkNowBtn = document.getElementById('check-now');
+  if (checkNowBtn) {
+    checkNowBtn.addEventListener('click', checkNow);
+  }
 
   // Remove buttons (delegated)
   document.addEventListener('click', (e) => {
-    if (e.target.classList.contains('btn-remove')) {
-      const did = e.target.dataset.did;
-      const type = e.target.dataset.type;
-      removeItem(did, type);
+    const target = e.target as HTMLElement;
+    if (target.classList.contains('btn-remove')) {
+      const did = target.dataset.did;
+      const type = target.dataset.type;
+      if (did && type) {
+        removeItem(did, type);
+      }
     }
   });
 });

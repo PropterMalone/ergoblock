@@ -45,3 +45,47 @@ export type NotificationType =
   | 'expired_failure'
   | 'rate_limited'
   | 'auth_error';
+
+export interface BskySession {
+  accessJwt: string;
+  refreshJwt?: string;
+  did: string;
+  handle: string;
+  pdsUrl: string;
+  service?: string; // For compatibility
+}
+
+export interface BskyAccount {
+  did: string;
+  handle?: string;
+  accessJwt?: string;
+  refreshJwt?: string;
+  service?: string;
+  pdsUrl?: string;
+}
+
+export interface StorageStructure {
+  session?: {
+    currentAccount?: BskyAccount;
+    accounts?: BskyAccount[];
+  };
+  currentAccount?: BskyAccount;
+  accounts?: BskyAccount[];
+  accessJwt?: string;
+  did?: string;
+  handle?: string;
+  service?: string;
+  pdsUrl?: string;
+}
+
+export interface ListRecordsResponse {
+  records?: Array<{
+    uri: string;
+    value: { subject: string };
+  }>;
+}
+
+export interface Profile {
+  did: string;
+  handle: string;
+}

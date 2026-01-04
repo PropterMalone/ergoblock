@@ -2,6 +2,10 @@
 *.zip
 bluesky-temp-block.zip
 ergoblock.zip
+dist/
+
+# Dependencies
+node_modules/
 
 # Local scripts
 resize-icons.ps1

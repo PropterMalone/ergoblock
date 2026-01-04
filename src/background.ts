@@ -6,6 +6,7 @@ import {
   getOptions,
   addHistoryEntry,
 } from './storage.js';
+import { ListRecordsResponse } from './types.js';
 
 const ALARM_NAME = 'checkExpirations';
 
@@ -15,19 +16,12 @@ interface AuthData {
   pdsUrl: string;
 }
 
-interface ListRecordsResponse {
-  records?: Array<{
-    uri: string;
-    value: { subject: string };
-  }>;
-}
-
 async function getAuthToken(): Promise<AuthData | null> {
   const result = await chrome.storage.local.get('authToken');
   return (result.authToken as AuthData) || null;
 }
 
-async function apiRequest<T>(
+export async function apiRequest<T>(
   endpoint: string,
   method: string,
   body: Record<string, unknown> | null,
@@ -62,7 +56,7 @@ async function apiRequest<T>(
   return text ? (JSON.parse(text) as T) : null;
 }
 
-async function unblockUser(
+export async function unblockUser(
   did: string,
   token: string,
   ownerDid: string,
@@ -98,12 +92,12 @@ async function unblockUser(
   return true;
 }
 
-async function unmuteUser(did: string, token: string, pdsUrl: string): Promise<boolean> {
+export async function unmuteUser(did: string, token: string, pdsUrl: string): Promise<boolean> {
   await apiRequest('app.bsky.graph.unmuteActor', 'POST', { actor: did }, token, pdsUrl);
   return true;
 }
 
-async function updateBadge(): Promise<void> {
+export async function updateBadge(): Promise<void> {
   const options = await getOptions();
   if (!options.showBadgeCount) {
     await chrome.action.setBadgeText({ text: '' });
@@ -118,7 +112,7 @@ async function updateBadge(): Promise<void> {
   await chrome.action.setBadgeBackgroundColor({ color: '#1185fe' });
 }
 
-async function sendNotification(
+export async function sendNotification(
   type: 'expired_success' | 'expired_failure',
   handle: string,
   action: 'block' | 'mute',
@@ -149,7 +143,7 @@ async function sendNotification(
   });
 }
 
-async function checkExpirations(): Promise<void> {
+export async function checkExpirations(): Promise<void> {
   console.log('[ErgoBlock BG] Checking expirations...');
 
   const auth = await getAuthToken();
@@ -251,7 +245,7 @@ async function checkExpirations(): Promise<void> {
   console.log('[ErgoBlock BG] Expiration check complete');
 }
 
-async function setupAlarm(): Promise<void> {
+export async function setupAlarm(): Promise<void> {
   const options = await getOptions();
   const intervalMinutes = Math.max(1, Math.min(10, options.checkInterval));
 

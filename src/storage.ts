@@ -34,7 +34,7 @@ interface TempBlocksMap {
  */
 export async function getTempBlocks(): Promise<TempBlocksMap> {
   const result = await chrome.storage.sync.get(STORAGE_KEYS.TEMP_BLOCKS);
-  return result[STORAGE_KEYS.TEMP_BLOCKS] || {};
+  return (result[STORAGE_KEYS.TEMP_BLOCKS] as TempBlocksMap) || {};
 }
 
 /**
@@ -42,7 +42,7 @@ export async function getTempBlocks(): Promise<TempBlocksMap> {
  */
 export async function getTempMutes(): Promise<TempBlocksMap> {
   const result = await chrome.storage.sync.get(STORAGE_KEYS.TEMP_MUTES);
-  return result[STORAGE_KEYS.TEMP_MUTES] || {};
+  return (result[STORAGE_KEYS.TEMP_MUTES] as TempBlocksMap) || {};
 }
 
 /**
@@ -126,7 +126,7 @@ export async function removeTempMute(did: string): Promise<void> {
  */
 export async function getOptions(): Promise<ExtensionOptions> {
   const result = await chrome.storage.local.get(STORAGE_KEYS.OPTIONS);
-  return result[STORAGE_KEYS.OPTIONS] || DEFAULT_OPTIONS;
+  return (result[STORAGE_KEYS.OPTIONS] as ExtensionOptions) || DEFAULT_OPTIONS;
 }
 
 /**

@@ -1,10 +1,12 @@
 import js from '@eslint/js';
 import tsPlugin from '@typescript-eslint/eslint-plugin';
 import tsParser from '@typescript-eslint/parser';
+import globals from 'globals';
+import prettierConfig from 'eslint-config-prettier';
 
 export default [
   {
-    ignores: ['node_modules/', 'dist/', 'coverage/', 'src/content.ts', 'src/popup.ts'],
+    ignores: ['node_modules/', 'dist/', 'coverage/'],
   },
   {
     files: ['src/**/*.ts'],
@@ -15,18 +17,8 @@ export default [
         sourceType: 'module',
       },
       globals: {
-        console: 'readonly',
+        ...globals.browser,
         chrome: 'readonly',
-        fetch: 'readonly',
-        document: 'readonly',
-        confirm: 'readonly',
-        setTimeout: 'readonly',
-        HTMLSelectElement: 'readonly',
-        HTMLInputElement: 'readonly',
-        HTMLButtonElement: 'readonly',
-        HTMLSpanElement: 'readonly',
-        HTMLDivElement: 'readonly',
-        RequestInit: 'readonly',
       },
     },
     plugins: {
@@ -35,8 +27,16 @@ export default [
     rules: {
       ...js.configs.recommended.rules,
       ...tsPlugin.configs.recommended.rules,
+      ...prettierConfig.rules,
       'no-unused-vars': 'off',
-      '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
+      'no-undef': 'off',
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        {
+          argsIgnorePattern: '^_',
+          caughtErrorsIgnorePattern: '^_',
+        },
+      ],
     },
   },
 ];
