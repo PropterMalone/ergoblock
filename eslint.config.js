@@ -39,4 +39,16 @@ export default [
       ],
     },
   },
+  {
+    files: ['scripts/**/*.js', '*.js'],
+    languageOptions: {
+      globals: {
+        ...globals.node,
+      },
+    },
+    rules: {
+      ...js.configs.recommended.rules,
+      ...prettierConfig.rules,
+    },
+  },
 ];

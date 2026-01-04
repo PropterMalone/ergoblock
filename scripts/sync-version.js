@@ -10,7 +10,9 @@ const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
 const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
 
 if (manifest.version !== packageJson.version) {
-  console.log(`Syncing manifest.json version (${manifest.version}) to package.json version (${packageJson.version})`);
+  console.log(
+    `Syncing manifest.json version (${manifest.version}) to package.json version (${packageJson.version})`
+  );
   manifest.version = packageJson.version;
   fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + '\n');
 }

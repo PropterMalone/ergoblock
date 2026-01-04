@@ -33,7 +33,7 @@ jobs:
         run: npm run type-check
 
       - name: Check code formatting
-        run: npx prettier --check "src/**/*.{ts,js}" "*.{json,js,html}" ".github/**/*.yml"
+        run: npm run format:check
 
       - name: Run tests with coverage
         run: npm test -- --coverage > coverage_output.txt 2>&1 || (cat coverage_output.txt && exit 1)

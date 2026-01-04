@@ -12,8 +12,10 @@
     "test": "vitest run",
     "sync-version": "node scripts/sync-version.js",
     "type-check": "tsc --noEmit",
-    "lint": "eslint src/",
-    "format": "prettier --write \"src/**/*.{ts,js}\" \"*.{json,js,html}\" \".github/**/*.yml\"",
+    "lint": "eslint src/ scripts/",
+    "format": "prettier --write \"src/**/*.{ts,js}\" \"scripts/**/*.js\" \"*.{json,js,html}\" \".github/**/*.yml\"",
+    "format:check": "prettier --check \"src/**/*.{ts,js}\" \"scripts/**/*.js\" \"*.{json,js,html}\" \".github/**/*.yml\"",
+    "validate": "npm run lint && npm run type-check && npm run format:check && npm test",
     "prepare": "if [ \"$NODE_ENV\" != \"production\" ]; then husky; fi"
   },
   "devDependencies": {
@@ -36,7 +38,7 @@
     "src/**/*.ts": [
       "eslint --fix"
     ],
-    "src/**/*.{ts,js},*.{json,js,html},.github/**/*.yml": [
+    "src/**/*.{ts,js},scripts/**/*.js,*.{json,js,html},.github/**/*.yml": [
       "prettier --write"
     ]
   }

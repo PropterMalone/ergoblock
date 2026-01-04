@@ -12,13 +12,10 @@ async function build() {
     // We want background.ts, content.ts, popup.ts, and options.ts
     // but not types.ts or tests
     const srcDir = './src';
-    const entryPoints = fs.readdirSync(srcDir)
-      .filter(file => 
-        file.endsWith('.ts') && 
-        !file.endsWith('.test.ts') && 
-        file !== 'types.ts'
-      )
-      .map(file => path.join(srcDir, file));
+    const entryPoints = fs
+      .readdirSync(srcDir)
+      .filter((file) => file.endsWith('.ts') && !file.endsWith('.test.ts') && file !== 'types.ts')
+      .map((file) => path.join(srcDir, file));
 
     console.log('Building entry points:', entryPoints);
 
