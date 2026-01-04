@@ -10,6 +10,7 @@
     "build": "node scripts/bundle.js",
     "dev": "node scripts/bundle.js --watch",
     "test": "vitest run",
+    "sync-version": "node scripts/sync-version.js",
     "type-check": "tsc --noEmit",
     "lint": "eslint src/",
     "format": "prettier --write src/",
