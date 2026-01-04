@@ -5,8 +5,10 @@
 - `npm run build`: Bundle TS files to `dist/` (Manifest V3).
 - `npm run dev`: Build and watch for changes.
 - `npm test`: Run Vitest suite (smoke tests + storage logic).
-- `npm run lint`: ESLint v9 checks.
-- `npm run format`: Prettier formatting.
+- `npm run lint`: ESLint v9 checks for `src/` and `scripts/`.
+- `npm run format`: Prettier formatting for `src/`, `scripts/`, root files, and workflows.
+- `npm run format:check`: Verify formatting without writing changes (used in CI).
+- `npm run validate`: Run all checks (lint, type-check, format:check, tests). Use this before pushing.
 
 ## Architecture
 
@@ -55,7 +57,7 @@ Uses `MutationObserver` to detect when menus open (`[role="menu"]`). Tracks `las
 
 ## CI/CD Pipeline
 
-- **Checks**: Lint (ESLint), Format (Prettier), and Tests (Vitest) must pass on every PR.
+- **Checks**: Lint (ESLint), Format Check (`npm run format:check`), Type Check, and Tests (Vitest) must pass on every PR.
 - **Coverage**: Test coverage results are posted directly to the GitHub Action **Step Summary** for each run.
 - **Version Bump**: PRs are blocked unless `package.json` version is incremented.
 
