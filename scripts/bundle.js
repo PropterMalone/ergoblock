@@ -1,27 +1,38 @@
 import esbuild from 'esbuild';
 import { copyAssets } from './copy-assets.js';
+import fs from 'fs';
+import path from 'path';
 
 async function build() {
   try {
     // Copy assets first
     copyAssets();
 
-    // Build TypeScript files
-    const entryPoints = ['src/background.ts', 'src/content.ts', 'src/popup.ts', 'src/options.ts'];
+    // Dynamically find all entry points in src/
+    // We want background.ts, content.ts, popup.ts, and options.ts
+    // but not types.ts or tests
+    const srcDir = './src';
+    const entryPoints = fs.readdirSync(srcDir)
+      .filter(file => 
+        file.endsWith('.ts') && 
+        !file.endsWith('.test.ts') && 
+        file !== 'types.ts'
+      )
+      .map(file => path.join(srcDir, file));
 
-    for (const entry of entryPoints) {
-      await esbuild.build({
-        entryPoints: [entry],
-        bundle: true,
-        format: 'esm',
-        target: 'es2020',
-        outdir: 'dist',
-        outExtension: { '.js': '.js' },
-        sourcemap: false,
-        minify: false,
-        external: ['chrome'],
-      });
-    }
+    console.log('Building entry points:', entryPoints);
+
+    await esbuild.build({
+      entryPoints,
+      bundle: true,
+      format: 'esm',
+      target: 'es2020',
+      outdir: 'dist',
+      outExtension: { '.js': '.js' },
+      sourcemap: process.env.NODE_ENV === 'development',
+      minify: process.env.NODE_ENV === 'production',
+      external: ['chrome'],
+    });
 
     console.log('Build completed successfully');
   } catch (error) {

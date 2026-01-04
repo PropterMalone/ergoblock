@@ -6,6 +6,7 @@ import {
   getOptions,
   addHistoryEntry,
 } from './storage.js';
+import { ListRecordsResponse } from './types.js';
 
 const ALARM_NAME = 'checkExpirations';
 
@@ -13,13 +14,6 @@ interface AuthData {
   accessJwt: string;
   did: string;
   pdsUrl: string;
-}
-
-interface ListRecordsResponse {
-  records?: Array<{
-    uri: string;
-    value: { subject: string };
-  }>;
 }
 
 async function getAuthToken(): Promise<AuthData | null> {

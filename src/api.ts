@@ -1,3 +1,5 @@
+import { BskySession, BskyAccount, StorageStructure, Profile } from './types.js';
+
 // AT Protocol API helpers for Bluesky
 // Handles block/mute/unblock/unmute operations
 
@@ -5,38 +7,6 @@
 const BSKY_PUBLIC_API = 'https://public.api.bsky.app';
 // User's PDS for repo operations
 const BSKY_PDS_DEFAULT = 'https://bsky.social';
-
-interface BskySession {
-  accessJwt: string;
-  refreshJwt?: string;
-  did: string;
-  handle: string;
-  pdsUrl: string;
-  service?: string; // For compatibility
-}
-
-interface BskyAccount {
-  did: string;
-  handle?: string;
-  accessJwt?: string;
-  refreshJwt?: string;
-  service?: string;
-  pdsUrl?: string;
-}
-
-interface StorageStructure {
-  session?: {
-    currentAccount?: BskyAccount;
-    accounts?: BskyAccount[];
-  };
-  currentAccount?: BskyAccount;
-  accounts?: BskyAccount[];
-  accessJwt?: string;
-  did?: string;
-  handle?: string;
-  service?: string;
-  pdsUrl?: string;
-}
 
 // Helper to safely access localStorage
 const getLocalStorage = () => {
@@ -288,11 +258,6 @@ export async function unmuteUser(did: string): Promise<unknown> {
     },
     session.pdsUrl
   );
-}
-
-interface Profile {
-  did: string;
-  handle: string;
 }
 
 /**
