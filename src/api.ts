@@ -6,15 +6,47 @@ const BSKY_PUBLIC_API = 'https://public.api.bsky.app';
 // User's PDS for repo operations
 const BSKY_PDS_DEFAULT = 'https://bsky.social';
 
+interface BskySession {
+  accessJwt: string;
+  refreshJwt?: string;
+  did: string;
+  handle: string;
+  pdsUrl: string;
+  service?: string; // For compatibility
+}
+
+interface BskyAccount {
+  did: string;
+  handle?: string;
+  accessJwt?: string;
+  refreshJwt?: string;
+  service?: string;
+  pdsUrl?: string;
+}
+
+interface StorageStructure {
+  session?: {
+    currentAccount?: BskyAccount;
+    accounts?: BskyAccount[];
+  };
+  currentAccount?: BskyAccount;
+  accounts?: BskyAccount[];
+  accessJwt?: string;
+  did?: string;
+  handle?: string;
+  service?: string;
+  pdsUrl?: string;
+}
+
 /**
  * Get the current session from Bluesky's localStorage
  * @returns {Object|null} Session object with accessJwt and did
  */
-function getSession() {
+export function getSession(): BskySession | null {
   try {
     // Try multiple possible storage key patterns
-    const possibleKeys = Object.keys(localStorage).filter(k =>
-      k.includes('BSKY') || k.includes('bsky') || k.includes('session')
+    const possibleKeys = Object.keys(localStorage).filter(
+      (k) => k.includes('BSKY') || k.includes('bsky') || k.includes('session')
     );
 
     console.log('[TempBlock] Found storage keys:', possibleKeys);
@@ -24,16 +56,16 @@ function getSession() {
         const raw = localStorage.getItem(storageKey);
         if (!raw) continue;
 
-        const storage = JSON.parse(raw);
+        const storage = JSON.parse(raw) as StorageStructure;
         console.log('[TempBlock] Checking storage key:', storageKey, storage);
 
         // Try different possible structures
-        let session = null;
+        let session: BskyAccount | StorageStructure | null = null;
 
         // Structure 1: { session: { currentAccount: {...}, accounts: [...] } }
         if (storage?.session?.currentAccount) {
           const currentDid = storage.session.currentAccount.did;
-          const account = storage.session.accounts?.find(a => a.did === currentDid);
+          const account = storage.session.accounts?.find((a) => a.did === currentDid);
           if (account?.accessJwt) {
             session = account;
           }
@@ -42,7 +74,7 @@ function getSession() {
         // Structure 2: { currentAccount: {...}, accounts: [...] }
         if (!session && storage?.currentAccount) {
           const currentDid = storage.currentAccount.did;
-          const account = storage.accounts?.find(a => a.did === currentDid);
+          const account = storage.accounts?.find((a) => a.did === currentDid);
           if (account?.accessJwt) {
             session = account;
           }
@@ -53,24 +85,25 @@ function getSession() {
           session = storage;
         }
 
-        if (session) {
-          console.log('[TempBlock] Found session for:', session.handle || session.did);
-          // Normalize the PDS URL
-          let pdsUrl = session.pdsUrl || session.service || BSKY_PDS_DEFAULT;
-          // Remove trailing slashes
-          pdsUrl = pdsUrl.replace(/\/+$/, '');
-          // Ensure https:// prefix
-          if (!pdsUrl.startsWith('http://') && !pdsUrl.startsWith('https://')) {
-            pdsUrl = 'https://' + pdsUrl;
-          }
-          console.log('[TempBlock] Using PDS URL:', pdsUrl);
-          return {
-            accessJwt: session.accessJwt,
-            refreshJwt: session.refreshJwt,
-            did: session.did,
-            handle: session.handle,
-            pdsUrl
-          };
+        if (session && 'accessJwt' in session && session.accessJwt && 'did' in session && session.did) {
+            const validSession = session as BskyAccount; // Safe cast after check
+            console.log('[TempBlock] Found session for:', validSession.handle || validSession.did);
+            // Normalize the PDS URL
+            let pdsUrl = validSession.pdsUrl || validSession.service || BSKY_PDS_DEFAULT;
+            // Remove trailing slashes
+            pdsUrl = pdsUrl.replace(/\/+$/, '');
+            // Ensure https:// prefix
+            if (!pdsUrl.startsWith('http://') && !pdsUrl.startsWith('https://')) {
+              pdsUrl = 'https://' + pdsUrl;
+            }
+            console.log('[TempBlock] Using PDS URL:', pdsUrl);
+            return {
+              accessJwt: validSession.accessJwt!,
+              refreshJwt: validSession.refreshJwt,
+              did: validSession.did,
+              handle: validSession.handle || '',
+              pdsUrl,
+            };
         }
       } catch (e) {
         // Continue to next key
@@ -92,7 +125,12 @@ function getSession() {
  * @param {Object} body - Request body
  * @param {string} baseUrl - Override base URL (for PDS vs AppView)
  */
-async function apiRequest(endpoint, method = 'GET', body = null, baseUrl = null) {
+async function apiRequest<T>(
+  endpoint: string,
+  method = 'GET',
+  body: unknown = null,
+  baseUrl: string | null = null
+): Promise<T | null> {
   const session = getSession();
   if (!session) {
     throw new Error('Not logged in to Bluesky');
@@ -111,17 +149,17 @@ async function apiRequest(endpoint, method = 'GET', body = null, baseUrl = null)
   }
 
   // Normalize base URL - remove trailing slashes
-  base = base.replace(/\/+$/, '');
+  base = base!.replace(/\/+$/, '');
 
   const url = `${base}/xrpc/${endpoint}`;
   console.log('[TempBlock] API request:', method, url);
 
-  const options = {
+  const options: RequestInit = {
     method,
     headers: {
-      'Authorization': `Bearer ${session.accessJwt}`,
-      'Content-Type': 'application/json'
-    }
+      Authorization: `Bearer ${session.accessJwt}`,
+      'Content-Type': 'application/json',
+    },
   };
 
   if (body) {
@@ -131,34 +169,34 @@ async function apiRequest(endpoint, method = 'GET', body = null, baseUrl = null)
   const response = await fetch(url, options);
 
   if (!response.ok) {
-    const error = await response.json().catch(() => ({}));
+    const error = (await response.json().catch(() => ({}))) as { message?: string };
     console.error('[TempBlock] API error:', response.status, error);
     throw new Error(error.message || `API error: ${response.status}`);
   }
 
   // Some endpoints return empty responses
   const text = await response.text();
-  return text ? JSON.parse(text) : null;
+  return text ? (JSON.parse(text) as T) : null;
 }
 
 /**
  * Block a user
  * @param {string} did - DID of user to block
  */
-async function blockUser(did) {
+export async function blockUser(did: string): Promise<unknown> {
   const session = getSession();
   if (!session) throw new Error('Not logged in');
 
   const record = {
     $type: 'app.bsky.graph.block',
     subject: did,
-    createdAt: new Date().toISOString()
+    createdAt: new Date().toISOString(),
   };
 
   return apiRequest('com.atproto.repo.createRecord', 'POST', {
     repo: session.did,
     collection: 'app.bsky.graph.block',
-    record
+    record,
   });
 }
 
@@ -166,16 +204,16 @@ async function blockUser(did) {
  * Unblock a user
  * @param {string} did - DID of user to unblock
  */
-async function unblockUser(did) {
+export async function unblockUser(did: string): Promise<unknown> {
   const session = getSession();
   if (!session) throw new Error('Not logged in');
 
   // First, find the block record
-  const blocks = await apiRequest(
+  const blocks = await apiRequest<{ records?: Array<{ value: { subject: string }; uri: string }> }>(
     `com.atproto.repo.listRecords?repo=${session.did}&collection=app.bsky.graph.block&limit=100`
   );
 
-  const blockRecord = blocks.records?.find(r => r.value.subject === did);
+  const blockRecord = blocks?.records?.find((r) => r.value.subject === did);
   if (!blockRecord) {
     console.log('[TempBlock] No block record found for', did);
     return null;
@@ -186,7 +224,7 @@ async function unblockUser(did) {
   return apiRequest('com.atproto.repo.deleteRecord', 'POST', {
     repo: session.did,
     collection: 'app.bsky.graph.block',
-    rkey
+    rkey,
   });
 }
 
@@ -194,44 +232,47 @@ async function unblockUser(did) {
  * Mute a user
  * @param {string} did - DID of user to mute
  */
-async function muteUser(did) {
+export async function muteUser(did: string): Promise<unknown> {
   const session = getSession();
   if (!session) throw new Error('Not logged in');
   // Mute goes to user's PDS
-  return apiRequest('app.bsky.graph.muteActor', 'POST', {
-    actor: did
-  }, session.pdsUrl);
+  return apiRequest(
+    'app.bsky.graph.muteActor',
+    'POST',
+    {
+      actor: did,
+    },
+    session.pdsUrl
+  );
 }
 
 /**
  * Unmute a user
  * @param {string} did - DID of user to unmute
  */
-async function unmuteUser(did) {
+export async function unmuteUser(did: string): Promise<unknown> {
   const session = getSession();
   if (!session) throw new Error('Not logged in');
   // Unmute goes to user's PDS
-  return apiRequest('app.bsky.graph.unmuteActor', 'POST', {
-    actor: did
-  }, session.pdsUrl);
+  return apiRequest(
+    'app.bsky.graph.unmuteActor',
+    'POST',
+    {
+      actor: did,
+    },
+    session.pdsUrl
+  );
+}
+
+interface Profile {
+  did: string;
+  handle: string;
 }
 
 /**
  * Get a user's profile by handle or DID
  * @param {string} actor - Handle or DID
  */
-async function getProfile(actor) {
-  return apiRequest(`app.bsky.actor.getProfile?actor=${encodeURIComponent(actor)}`);
-}
-
-// Export for use in other scripts
-if (typeof window !== 'undefined') {
-  window.BlueskyAPI = {
-    getSession,
-    blockUser,
-    unblockUser,
-    muteUser,
-    unmuteUser,
-    getProfile
-  };
+export async function getProfile(actor: string): Promise<Profile | null> {
+  return apiRequest<Profile>(`app.bsky.actor.getProfile?actor=${encodeURIComponent(actor)}`);
 }
