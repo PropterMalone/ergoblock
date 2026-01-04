@@ -58,3 +58,27 @@ Uses `MutationObserver` to detect when menus open (`[role="menu"]`). Tracks `las
 - **Checks**: Lint, Format, and Tests must pass on every PR.
 - **Version Bump**: PRs are blocked unless `package.json` version is incremented.
 - **Releases**: Merging to `main` with a new version automatically tags the repo and creates a GitHub Release with a production `.zip`.
+
+## Common Issues
+
+### API 404 Errors
+- Usually caused by wrong base URL or double slashes.
+- Ensure PDS URL is normalized in `src/api.ts` (no trailing slashes, has https://).
+
+### Menu Items Not Appearing
+- Check if `extractUserFromMenu()` in `src/content.ts` is finding the user handle.
+- For post menus, ensure `lastClickedElement` tracking is working.
+
+### Auto-expiration Not Working
+- Verify auth is synced to background via `syncAuthToBackground()`.
+- Check background worker console (from `chrome://extensions`) for errors.
+
+## Testing
+
+1. Run `npm run build` to generate the `dist/` folder.
+2. Load unpacked extension from `dist/` via `chrome://extensions/`.
+3. Go to bsky.app and log in.
+4. Open any profile or post menu.
+5. Test temp block/mute with short durations (1 hour).
+6. Check extension popup for active entries.
+7. Use "Check Expirations Now" to manually trigger expiration check.

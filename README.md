@@ -91,6 +91,20 @@ Click the extension icon in Chrome's toolbar to see:
 - **notifications**: To notify you when an action expires.
 - **host_permissions**: To interact with Bluesky's API (`bsky.app`).
 
+## Troubleshooting
+
+**Menu items don't appear:**
+- Refresh the Bluesky page.
+- Make sure you're on bsky.app (not other Bluesky clients).
+
+**Auto-expiration not working:**
+- Open the extension popup and click "Check Expirations Now".
+- Make sure you're logged into Bluesky in at least one tab.
+
+**API errors:**
+- Try logging out and back into Bluesky.
+- The extension reads your session from Bluesky's localStorage.
+
 ## License
 
 MIT
