@@ -495,9 +495,8 @@ describe('Integration Tests', () => {
     });
 
     it('should handle empty storage gracefully', async () => {
-      const { getTempBlocks, getTempMutes, getActionHistory, getOptions } = await import(
-        '../storage'
-      );
+      const { getTempBlocks, getTempMutes, getActionHistory, getOptions } =
+        await import('../storage');
 
       mockSyncStorage = {};
       mockLocalStorage = {};
