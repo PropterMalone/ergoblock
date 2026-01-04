@@ -12,7 +12,12 @@ if (!fs.existsSync(distDir)) {
 
 // Copy and transform manifest.json
 const manifestPath = path.join(__dirname, '..', 'manifest.json');
+const packageJsonPath = path.join(__dirname, '..', 'package.json');
 const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+
+// Sync version
+manifest.version = packageJson.version;
 
 // Update content scripts to use bundled file
 if (manifest.content_scripts) {
