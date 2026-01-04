@@ -17,7 +17,7 @@ A Chrome extension that adds temporary block and mute functionality to Bluesky's
 
 1. Clone this repository:
    ```bash
-   git clone https://github.com/yourusername/ergoblock.git
+   git clone https://github.com/PropterMalone/ergoblock.git
    cd ergoblock
    ```
 
@@ -39,7 +39,7 @@ A Chrome extension that adds temporary block and mute functionality to Bluesky's
 
 ### For End Users
 
-Pre-built releases will be available on the [Releases page](https://github.com/yourusername/ergoblock/releases) once published to the Chrome Web Store.
+Pre-built releases will be available on the [Releases page](https://github.com/PropterMalone/ergoblock/releases) once published to the Chrome Web Store.
 
 ## Usage
 
