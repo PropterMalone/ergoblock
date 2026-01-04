@@ -3,6 +3,7 @@
 bluesky-temp-block.zip
 ergoblock.zip
 dist/
+coverage/
 
 # Dependencies
 node_modules/

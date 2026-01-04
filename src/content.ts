@@ -548,6 +548,7 @@ function syncAuthToBackground(): void {
         pdsUrl: session.pdsUrl,
       },
     });
+    chrome.storage.local.set({ authStatus: 'valid' });
     console.log('[TempBlock] Auth synced to background (PDS:', session.pdsUrl, ')');
   }
 }

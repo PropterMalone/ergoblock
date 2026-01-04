@@ -108,6 +108,19 @@ describe('Background Service Worker', () => {
     expect(storage.getTempMutes).toHaveBeenCalled();
   });
 
+  it('should mark auth invalid when no token is available during check', async () => {
+    const { checkExpirations } = await import('../background.js');
+
+    // Mock no auth token
+    (chrome.storage.local.get as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({});
+
+    await checkExpirations();
+
+    expect(chrome.storage.local.set).toHaveBeenCalledWith(
+      expect.objectContaining({ authStatus: 'invalid' })
+    );
+  });
+
   it('should unblock user correctly', async () => {
     const { unblockUser } = await import('../background.js');
 
@@ -144,6 +157,26 @@ describe('Background Service Worker', () => {
 
     await unmuteUser('did:target:456', 'token', 'https://pds.com');
     expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('should mark auth invalid on 401 error', async () => {
+    const { apiRequest } = await import('../background.js');
+
+    (fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: false,
+      status: 401,
+      json: () => Promise.resolve({ message: 'Unauthorized' }),
+    });
+
+    try {
+      await apiRequest('test', 'GET', null, 'token', 'https://pds.com');
+    } catch (_e) {
+      // Expected
+    }
+
+    expect(chrome.storage.local.set).toHaveBeenCalledWith(
+      expect.objectContaining({ authStatus: 'invalid' })
+    );
   });
 
   it('should handle messages correctly', async () => {

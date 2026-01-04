@@ -159,12 +159,26 @@
         color: #888;
         margin-top: 8px;
       }
+
+      .auth-warning {
+        background: #fff3cd;
+        color: #856404;
+        padding: 12px;
+        text-align: center;
+        font-size: 13px;
+        font-weight: 500;
+        border-bottom: 1px solid #ffeeba;
+      }
     </style>
   </head>
   <body>
     <div class="header">
       <h1>⏱️ ErgoBlock</h1>
       <p>Manage your temporary blocks and mutes</p>
+    </div>
+
+    <div id="auth-warning" class="auth-warning" style="display: none">
+      ⚠️ Session Expired: Please open Bluesky to re-sync
     </div>
 
     <div class="tabs">

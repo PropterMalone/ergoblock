@@ -162,20 +162,48 @@ function updateStatus(message: string): void {
 }
 
 /**
+ * Check and display auth status
+ */
+async function checkAuthStatus(): Promise<void> {
+  const warning = document.getElementById('auth-warning');
+  if (!warning) return;
+
+  const result = await chrome.storage.local.get('authStatus');
+  const status = result.authStatus || 'unknown';
+
+  if (status === 'invalid') {
+    warning.style.display = 'block';
+  } else {
+    warning.style.display = 'none';
+  }
+}
+
+/**
  * Check expirations now
  */
 async function checkNow(): Promise<void> {
   updateStatus('Checking expirations...');
 
   try {
-    await chrome.runtime.sendMessage({ type: 'CHECK_NOW' });
-    updateStatus('Check complete!');
+    const response = (await chrome.runtime.sendMessage({ type: 'CHECK_NOW' })) as {
+      success: boolean;
+    };
+    if (response.success) {
+      updateStatus('Check complete!');
+    }
 
     // Re-render lists
     renderBlocks();
     renderMutes();
+    checkAuthStatus();
   } catch (error) {
-    updateStatus('Error: ' + (error instanceof Error ? error.message : String(error)));
+    const result = await chrome.storage.local.get('authStatus');
+    if (result.authStatus === 'invalid') {
+      updateStatus('Error: Session expired');
+    } else {
+      updateStatus('Error: ' + (error instanceof Error ? error.message : String(error)));
+    }
+    checkAuthStatus();
   }
 }
 
@@ -183,6 +211,7 @@ async function checkNow(): Promise<void> {
 document.addEventListener('DOMContentLoaded', () => {
   renderBlocks();
   renderMutes();
+  checkAuthStatus();
 
   // Tab switching
   document.querySelectorAll('.tab').forEach((tab) => {

@@ -33,10 +33,24 @@ jobs:
         run: npm run type-check
 
       - name: Check code formatting
-        run: npx prettier --check "src/**/*.{ts,js}" "*.{json,js,html}" ".github/**/*.yml"
+        run: npm run format:check
 
       - name: Run tests with coverage
-        run: npm run test -- --coverage
+        run: npm test -- --coverage > coverage_output.txt 2>&1 || (cat coverage_output.txt && exit 1)
+
+      - name: Add coverage to summary
+        if: always()
+        run: |
+          if [ -f coverage_output.txt ]; then
+            echo "### Test Coverage Summary" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            # Extract the table from vitest output (usually starts with '----------')
+            sed -n '/----/,/----/p' coverage_output.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          else
+            echo "### Test Coverage Summary" >> $GITHUB_STEP_SUMMARY
+            echo "No coverage output found. Check previous step logs." >> $GITHUB_STEP_SUMMARY
+          fi
 
       - name: Build verification
         run: npm run build

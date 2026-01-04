@@ -76,7 +76,10 @@ export interface StorageStructure {
   handle?: string;
   service?: string;
   pdsUrl?: string;
+  authStatus?: 'valid' | 'invalid' | 'unknown';
 }
+
+export type AuthStatus = 'valid' | 'invalid' | 'unknown';
 
 export interface ListRecordsResponse {
   records?: Array<{

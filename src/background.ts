@@ -47,10 +47,17 @@ export async function apiRequest<T>(
   const response = await fetch(url, options);
 
   if (!response.ok) {
+    if (response.status === 401) {
+      console.error('[ErgoBlock BG] Auth failed (401), marking session invalid');
+      await chrome.storage.local.set({ authStatus: 'invalid' });
+    }
     const error = (await response.json().catch(() => ({}))) as { message?: string };
     console.error('[ErgoBlock BG] API error:', response.status, error);
     throw new Error(error.message || `API error: ${response.status}`);
   }
+
+  // If request was successful, ensure status is valid
+  await chrome.storage.local.set({ authStatus: 'valid' });
 
   const text = await response.text();
   return text ? (JSON.parse(text) as T) : null;
@@ -149,6 +156,7 @@ export async function checkExpirations(): Promise<void> {
   const auth = await getAuthToken();
   if (!auth?.accessJwt || !auth?.did || !auth?.pdsUrl) {
     console.log('[ErgoBlock BG] No auth token available, skipping check');
+    await chrome.storage.local.set({ authStatus: 'invalid' });
     return;
   }
 
@@ -179,6 +187,12 @@ export async function checkExpirations(): Promise<void> {
         await sendNotification('expired_success', data.handle, 'block');
       } catch (error) {
         console.error('[ErgoBlock BG] Failed to unblock:', data.handle, error);
+
+        // If it's an auth error, we stop processing further entries
+        if (error instanceof Error && error.message.includes('401')) {
+          return;
+        }
+
         await addHistoryEntry({
           did,
           handle: data.handle,
@@ -222,6 +236,12 @@ export async function checkExpirations(): Promise<void> {
         await sendNotification('expired_success', data.handle, 'mute');
       } catch (error) {
         console.error('[ErgoBlock BG] Failed to unmute:', data.handle, error);
+
+        // If it's an auth error, we stop processing further entries
+        if (error instanceof Error && error.message.includes('401')) {
+          return;
+        }
+
         await addHistoryEntry({
           did,
           handle: data.handle,
