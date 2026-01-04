@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "description": "Temporary block and mute for Bluesky",
   "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "scripts": {
     "build": "node scripts/bundle.js",
     "dev": "node scripts/bundle.js --watch",
