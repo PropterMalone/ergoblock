@@ -390,7 +390,11 @@ async function handleTempBlock(
     // Extract rkey if available
     let rkey: string | undefined;
     if (blockResult && blockResult.uri) {
-      rkey = blockResult.uri.split('/').pop();
+      const parts = blockResult.uri.split('/');
+      const lastPart = parts[parts.length - 1];
+      if (lastPart) {
+        rkey = lastPart;
+      }
     }
 
     // Store in temp blocks with custom duration

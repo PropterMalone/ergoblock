@@ -45,7 +45,9 @@ export function copyAssets() {
   }
 
   fs.readdirSync(iconsDir).forEach((file) => {
-    fs.copyFileSync(path.join(iconsDir, file), path.join(distIconsDir, file));
+    if (file.endsWith('.png')) {
+      fs.copyFileSync(path.join(iconsDir, file), path.join(distIconsDir, file));
+    }
   });
 
   console.log('Assets copied to dist/');

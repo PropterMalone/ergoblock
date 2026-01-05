@@ -33,20 +33,7 @@ async function bgApiRequest<T>(
   pdsUrl: string
 ): Promise<T | null> {
   try {
-    // Pass pdsUrl as targetBaseUrl if it's a repo operation, otherwise let executeApiRequest decide
-    // Actually executeApiRequest logic is: "if repo.* use auth.pdsUrl, else Public"
-    // But unmuteUser needs PDS.
-
-    // If we pass pdsUrl as the 5th arg (targetBaseUrl), it forces that URL.
-    // Logic in background.ts unblockUser:
-    // 1. listRecords (repo operation) -> needs PDS? No, listRecords can go to AppView usually, but PDS is safer for freshness.
-    // 2. deleteRecord (repo op) -> needs PDS.
-
-    // Logic in background.ts unmuteUser:
-    // 1. unmuteActor -> needs PDS.
-
-    // So for background operations (which are all writes or reading own repo), we almost always want PDS.
-
+    // Background operations should always use the PDS to ensure consistent writes to the user's repo.
     const result = await executeApiRequest<T>(
       endpoint,
       method,
@@ -111,6 +98,11 @@ export async function unblockUser(
   }
 
   const foundRkey = blockRecord.uri.split('/').pop();
+  if (!foundRkey) {
+    console.log('[ErgoBlock BG] Could not determine rkey from block URI', blockRecord.uri);
+    return false;
+  }
+
   await bgApiRequest(
     'com.atproto.repo.deleteRecord',
     'POST',

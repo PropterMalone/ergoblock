@@ -240,6 +240,11 @@ export async function unblockUser(did: string, rkey?: string): Promise<unknown> 
 
   // Delete the block record
   const foundRkey = blockRecord.uri.split('/').pop();
+  if (!foundRkey) {
+    console.log('[TempBlock] Block record URI missing rkey for', did, 'URI:', blockRecord.uri);
+    return null;
+  }
+
   return apiRequest('com.atproto.repo.deleteRecord', 'POST', {
     repo: session.did,
     collection: 'app.bsky.graph.block',

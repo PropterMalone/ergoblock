@@ -163,6 +163,27 @@ describe('Background Service Worker', () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
+  it('should unblock user directly when rkey is provided', async () => {
+    const { unblockUser } = await import('../background.js');
+
+    (fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: true,
+      text: () => Promise.resolve(''),
+    });
+
+    await unblockUser('did:target:456', 'token', 'owner', 'https://pds.com', 'known-rkey-123');
+
+    // Should only call deleteRecord (1 call), skipping listRecords
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledWith(
+      expect.stringContaining('deleteRecord'),
+      expect.objectContaining({
+        method: 'POST',
+        body: expect.stringContaining('known-rkey-123'),
+      })
+    );
+  });
+
   it('should unmute user correctly', async () => {
     const { unmuteUser } = await import('../background.js');
 
