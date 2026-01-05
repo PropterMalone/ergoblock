@@ -91,6 +91,23 @@ describe('Background Service Worker', () => {
     const { checkExpirations } = await import('../background.js');
     const storage = await import('../storage.js');
 
+    // Mock fetch for unblocking/unmuting
+    (fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: true,
+      text: () =>
+        Promise.resolve(
+          JSON.stringify({
+            records: [
+              {
+                uri: 'at://did:test:123/app.bsky.graph.block/rkey123',
+                value: { subject: 'did:expired' },
+              },
+            ],
+          })
+        ),
+      json: () => Promise.resolve({}),
+    });
+
     const now = Date.now();
     (storage.getTempBlocks as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
       'did:expired': { handle: 'expired-user', expiresAt: now - 1000 },
@@ -102,10 +119,9 @@ describe('Background Service Worker', () => {
     await checkExpirations();
 
     // It should try to unblock the expired user
-    // Since fetch is mocked and return null, unblockUser will fail or return false
-    // but the function should still execute the logic
     expect(storage.getTempBlocks).toHaveBeenCalled();
     expect(storage.getTempMutes).toHaveBeenCalled();
+    expect(fetch).toHaveBeenCalled();
   });
 
   it('should mark auth invalid when no token is available during check', async () => {
