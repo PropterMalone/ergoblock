@@ -201,7 +201,7 @@ function showDurationPicker(actionType: 'block' | 'mute', handle: string): void 
     display: flex;
     align-items: center;
     justify-content: center;
-    z-index: 10001;
+    z-index: 2147483647;
   `;
 
   const dialog = document.createElement('div');
@@ -360,6 +360,8 @@ function showToast(message: string, isError = false): void {
 function closeMenus(): void {
   // Simulate clicking outside to close menus
   document.body.click();
+  // Also dispatch Escape key for accessible menus (Radix UI etc)
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
 }
 
 /**
