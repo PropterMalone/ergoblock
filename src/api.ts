@@ -200,15 +200,11 @@ export async function blockUser(did: string): Promise<{ uri: string; cid: string
     createdAt: new Date().toISOString(),
   };
 
-  return apiRequest<{ uri: string; cid: string }>(
-    'com.atproto.repo.createRecord',
-    'POST',
-    {
-      repo: session.did,
-      collection: 'app.bsky.graph.block',
-      record,
-    }
-  );
+  return apiRequest<{ uri: string; cid: string }>('com.atproto.repo.createRecord', 'POST', {
+    repo: session.did,
+    collection: 'app.bsky.graph.block',
+    record,
+  });
 }
 
 /**
