@@ -74,8 +74,28 @@ export async function unblockUser(
   did: string,
   token: string,
   ownerDid: string,
-  pdsUrl: string
+  pdsUrl: string,
+  rkey?: string
 ): Promise<boolean> {
+  // If we have the rkey, delete directly (O(1))
+  if (rkey) {
+    console.log('[ErgoBlock BG] Unblocking using direct rkey:', rkey);
+    await bgApiRequest(
+      'com.atproto.repo.deleteRecord',
+      'POST',
+      {
+        repo: ownerDid,
+        collection: 'app.bsky.graph.block',
+        rkey,
+      },
+      token,
+      pdsUrl
+    );
+    return true;
+  }
+
+  // Fallback: find the block record (legacy method, O(N))
+  console.log('[ErgoBlock BG] Unblocking using list scan (legacy)...');
   const blocks = await bgApiRequest<ListRecordsResponse>(
     `com.atproto.repo.listRecords?repo=${ownerDid}&collection=app.bsky.graph.block&limit=100`,
     'GET',
@@ -90,14 +110,14 @@ export async function unblockUser(
     return false;
   }
 
-  const rkey = blockRecord.uri.split('/').pop();
+  const foundRkey = blockRecord.uri.split('/').pop();
   await bgApiRequest(
     'com.atproto.repo.deleteRecord',
     'POST',
     {
       repo: ownerDid,
       collection: 'app.bsky.graph.block',
-      rkey,
+      rkey: foundRkey,
     },
     token,
     pdsUrl
@@ -177,7 +197,7 @@ export async function checkExpirations(): Promise<void> {
     if (data.expiresAt <= now) {
       console.log('[ErgoBlock BG] Unblocking expired:', data.handle);
       try {
-        await unblockUser(did, auth.accessJwt, auth.did, auth.pdsUrl);
+        await unblockUser(did, auth.accessJwt, auth.did, auth.pdsUrl, data.rkey);
         await removeTempBlock(did);
         await addHistoryEntry({
           did,

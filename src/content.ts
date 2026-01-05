@@ -387,9 +387,15 @@ async function handleTempBlock(
     const blockResult = await blockUser(profile.did);
     console.log('[TempBlock] Block result:', blockResult);
 
+    // Extract rkey if available
+    let rkey: string | undefined;
+    if (blockResult && blockResult.uri) {
+      rkey = blockResult.uri.split('/').pop();
+    }
+
     // Store in temp blocks with custom duration
     console.log('[TempBlock] Storing temp block...');
-    await addTempBlock(profile.did, profile.handle || handle, durationMs);
+    await addTempBlock(profile.did, profile.handle || handle, durationMs, rkey);
     console.log('[TempBlock] Stored temp block');
 
     closeMenus();

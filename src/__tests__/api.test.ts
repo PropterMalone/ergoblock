@@ -214,6 +214,31 @@ describe('API Module', () => {
       );
     });
 
+    it('should unblock a user directly when rkey is provided', async () => {
+      // Should call deleteRecord directly without listing records
+      (fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+        ok: true,
+        text: () => Promise.resolve(''),
+      });
+
+      await unblockUser('did:target:456', 'known-rkey-123');
+
+      // Check that listRecords was NOT called
+      expect(fetch).not.toHaveBeenCalledWith(
+        expect.stringContaining('listRecords'),
+        expect.any(Object)
+      );
+
+      // Check that deleteRecord WAS called with the correct rkey
+      expect(fetch).toHaveBeenCalledWith(
+        expect.stringContaining('deleteRecord'),
+        expect.objectContaining({
+          method: 'POST',
+          body: expect.stringContaining('known-rkey-123'),
+        })
+      );
+    });
+
     it('should mute a user', async () => {
       (fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
         ok: true,

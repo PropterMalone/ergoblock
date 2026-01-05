@@ -38,7 +38,7 @@ export function getSession(): BskySession | null {
         if (!raw) continue;
 
         const parsed = JSON.parse(raw) as StorageStructure;
-        console.log('[TempBlock] Checking storage key:', storageKey, parsed);
+        console.log('[TempBlock] Checking storage key:', storageKey);
 
         // Try different possible structures
         let account: BskyAccount | null = null;
@@ -188,8 +188,9 @@ async function apiRequest<T>(
 /**
  * Block a user
  * @param {string} did - DID of user to block
+ * @returns {Promise<{ uri: string; cid: string } | null>} The created record info
  */
-export async function blockUser(did: string): Promise<unknown> {
+export async function blockUser(did: string): Promise<{ uri: string; cid: string } | null> {
   const session = getSession();
   if (!session) throw new Error('Not logged in');
 
@@ -199,22 +200,38 @@ export async function blockUser(did: string): Promise<unknown> {
     createdAt: new Date().toISOString(),
   };
 
-  return apiRequest('com.atproto.repo.createRecord', 'POST', {
-    repo: session.did,
-    collection: 'app.bsky.graph.block',
-    record,
-  });
+  return apiRequest<{ uri: string; cid: string }>(
+    'com.atproto.repo.createRecord',
+    'POST',
+    {
+      repo: session.did,
+      collection: 'app.bsky.graph.block',
+      record,
+    }
+  );
 }
 
 /**
  * Unblock a user
  * @param {string} did - DID of user to unblock
+ * @param {string} [rkey] - Optional record key for direct deletion
  */
-export async function unblockUser(did: string): Promise<unknown> {
+export async function unblockUser(did: string, rkey?: string): Promise<unknown> {
   const session = getSession();
   if (!session) throw new Error('Not logged in');
 
-  // First, find the block record
+  // If we have the rkey, delete directly (O(1))
+  if (rkey) {
+    console.log('[TempBlock] Unblocking using direct rkey:', rkey);
+    return apiRequest('com.atproto.repo.deleteRecord', 'POST', {
+      repo: session.did,
+      collection: 'app.bsky.graph.block',
+      rkey,
+    });
+  }
+
+  // Fallback: find the block record (legacy method, O(N))
+  console.log('[TempBlock] Unblocking using list scan (legacy)...');
   const blocks = await apiRequest<{ records?: Array<{ value: { subject: string }; uri: string }> }>(
     `com.atproto.repo.listRecords?repo=${session.did}&collection=app.bsky.graph.block&limit=100`
   );
@@ -226,11 +243,11 @@ export async function unblockUser(did: string): Promise<unknown> {
   }
 
   // Delete the block record
-  const rkey = blockRecord.uri.split('/').pop();
+  const foundRkey = blockRecord.uri.split('/').pop();
   return apiRequest('com.atproto.repo.deleteRecord', 'POST', {
     repo: session.did,
     collection: 'app.bsky.graph.block',
-    rkey,
+    rkey: foundRkey,
   });
 }
 
