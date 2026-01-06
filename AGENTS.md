@@ -10,6 +10,15 @@
 - `npm run format:check`: Verify formatting without writing changes (used in CI).
 - `npm run validate`: Run all checks (lint, type-check, format:check, tests). Use this before pushing.
 
+## Quality Standards & Anti-Laziness Policy
+
+- **Validation Required**: Agents MUST run `npm run validate` before declaring any task complete. This ensures linting, type-checking, formatting, and tests all pass.
+- **No Error Suppression**: Never use `eslint-disable`, `@ts-ignore`, `@ts-nocheck`, or similar directives to hide warnings or errors. If a tool reports an issue, FIX the underlying cause.
+- **Strict Typing**: Avoid using the `any` type. Define proper interfaces or types for all data structures. If an external API is unpredictable, use `unknown` and proper type guards.
+- **No Silent Failures**: Ensure all errors are properly handled and logged. No empty `catch` blocks or suppressed exceptions.
+- **Robust Automation**: Ensure all scripts in `scripts/` are robust, handle edge cases, and run without errors.
+- **Clean Tests**: Tests should be reliable and properly mocked. Avoid flaky tests or tests that depend on global state without cleanup.
+
 ## Architecture
 
 ```

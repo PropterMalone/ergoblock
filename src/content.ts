@@ -4,6 +4,25 @@
 import { getSession, getProfile, blockUser, muteUser } from './api.js';
 import { addTempBlock, addTempMute } from './storage.js';
 
+// Configuration for DOM selectors and magic strings
+const CONFIG = {
+  SELECTORS: {
+    MENU: '[role="menu"]',
+    MENU_ITEM: '[role="menuitem"]',
+    PROFILE_LINK: 'a[href*="/profile/"]',
+    POST_CONTAINER:
+      '[data-testid*="feedItem"], [data-testid*="postThreadItem"], article, [data-testid*="post"]',
+    MENU_CONTAINER: '[data-testid]',
+    RADIX_MENU: '[data-radix-menu-content]',
+  },
+  REGEX: {
+    PROFILE_PATH: /\/profile\/([^/]+)/,
+  },
+  ATTRIBUTES: {
+    INJECTED: 'data-temp-block-injected',
+  },
+};
+
 let currentObserver: MutationObserver | null = null;
 let lastClickedElement: HTMLElement | null = null;
 
@@ -21,7 +40,7 @@ document.addEventListener(
  */
 function extractUserFromPage(): { handle: string } | null {
   // Try to get from profile page URL
-  const profileMatch = window.location.pathname.match(/\/profile\/([^/]+)/);
+  const profileMatch = window.location.pathname.match(CONFIG.REGEX.PROFILE_PATH);
   if (profileMatch) {
     return { handle: profileMatch[1] };
   }
@@ -33,18 +52,18 @@ function extractUserFromPage(): { handle: string } | null {
  */
 function extractUserFromMenu(menuElement: Element): { handle: string } | null {
   // Look for the profile link in the menu or nearby elements
-  const profileLink = menuElement.querySelector('a[href*="/profile/"]') as HTMLAnchorElement;
+  const profileLink = menuElement.querySelector(CONFIG.SELECTORS.PROFILE_LINK) as HTMLAnchorElement;
   if (profileLink) {
-    const match = profileLink.href.match(/\/profile\/([^/]+)/);
+    const match = profileLink.href.match(CONFIG.REGEX.PROFILE_PATH);
     if (match) return { handle: match[1] };
   }
 
   // Try to find handle from the menu's parent context
-  const parent = menuElement.closest('[data-testid]');
+  const parent = menuElement.closest(CONFIG.SELECTORS.MENU_CONTAINER);
   if (parent) {
-    const handleEl = parent.querySelector('a[href*="/profile/"]') as HTMLAnchorElement;
+    const handleEl = parent.querySelector(CONFIG.SELECTORS.PROFILE_LINK) as HTMLAnchorElement;
     if (handleEl) {
-      const match = handleEl.href.match(/\/profile\/([^/]+)/);
+      const match = handleEl.href.match(CONFIG.REGEX.PROFILE_PATH);
       if (match) return { handle: match[1] };
     }
   }
@@ -53,14 +72,14 @@ function extractUserFromMenu(menuElement: Element): { handle: string } | null {
   // and find the post container, then get the author from there
   if (lastClickedElement) {
     // Find the post container (usually has data-testid="feedItem" or similar)
-    const postContainer = lastClickedElement.closest(
-      '[data-testid*="feedItem"], [data-testid*="postThreadItem"], article, [data-testid*="post"]'
-    );
+    const postContainer = lastClickedElement.closest(CONFIG.SELECTORS.POST_CONTAINER);
     if (postContainer) {
       // Find the author's profile link in the post
-      const authorLink = postContainer.querySelector('a[href*="/profile/"]') as HTMLAnchorElement;
+      const authorLink = postContainer.querySelector(
+        CONFIG.SELECTORS.PROFILE_LINK
+      ) as HTMLAnchorElement;
       if (authorLink) {
-        const match = authorLink.href.match(/\/profile\/([^/]+)/);
+        const match = authorLink.href.match(CONFIG.REGEX.PROFILE_PATH);
         if (match) {
           console.log('[TempBlock] Found user from post context:', match[1]);
           return { handle: match[1] };
@@ -71,10 +90,10 @@ function extractUserFromMenu(menuElement: Element): { handle: string } | null {
     // Also try looking at nearby elements from where the click happened
     let el: HTMLElement | null = lastClickedElement;
     for (let i = 0; i < 10 && el; i++) {
-      const links = el.querySelectorAll ? el.querySelectorAll('a[href*="/profile/"]') : [];
+      const links = el.querySelectorAll ? el.querySelectorAll(CONFIG.SELECTORS.PROFILE_LINK) : [];
       for (const link of links) {
         const anchor = link as HTMLAnchorElement;
-        const match = anchor.href.match(/\/profile\/([^/]+)/);
+        const match = anchor.href.match(CONFIG.REGEX.PROFILE_PATH);
         if (match) {
           console.log('[TempBlock] Found user from click context:', match[1]);
           return { handle: match[1] };
@@ -182,7 +201,7 @@ function showDurationPicker(actionType: 'block' | 'mute', handle: string): void 
     display: flex;
     align-items: center;
     justify-content: center;
-    z-index: 10001;
+    z-index: 2147483647;
   `;
 
   const dialog = document.createElement('div');
@@ -341,6 +360,8 @@ function showToast(message: string, isError = false): void {
 function closeMenus(): void {
   // Simulate clicking outside to close menus
   document.body.click();
+  // Also dispatch Escape key for accessible menus (Radix UI etc)
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
 }
 
 /**
@@ -366,9 +387,19 @@ async function handleTempBlock(
     const blockResult = await blockUser(profile.did);
     console.log('[TempBlock] Block result:', blockResult);
 
+    // Extract rkey if available
+    let rkey: string | undefined;
+    if (blockResult && blockResult.uri) {
+      const parts = blockResult.uri.split('/');
+      const lastPart = parts[parts.length - 1];
+      if (lastPart) {
+        rkey = lastPart;
+      }
+    }
+
     // Store in temp blocks with custom duration
     console.log('[TempBlock] Storing temp block...');
-    await addTempBlock(profile.did, profile.handle || handle, durationMs);
+    await addTempBlock(profile.did, profile.handle || handle, durationMs, rkey);
     console.log('[TempBlock] Stored temp block');
 
     closeMenus();
@@ -415,12 +446,12 @@ async function handleTempMute(
  */
 function injectMenuItems(menu: Element): void {
   // Check if we've already injected
-  if (menu.querySelector('[data-temp-block-injected]')) {
+  if (menu.querySelector(`[${CONFIG.ATTRIBUTES.INJECTED}]`)) {
     return;
   }
 
   // Find the menu items container
-  const menuItems = menu.querySelector('[role="menu"]') || menu;
+  const menuItems = menu.querySelector(CONFIG.SELECTORS.MENU) || menu;
 
   // Try to extract user info
   let userInfo = extractUserFromMenu(menu);
@@ -436,7 +467,7 @@ function injectMenuItems(menu: Element): void {
   }
 
   // Find where to insert (after Block Account if present, or at the end)
-  const menuItemsList = menuItems.querySelectorAll('[role="menuitem"]');
+  const menuItemsList = menuItems.querySelectorAll(CONFIG.SELECTORS.MENU_ITEM);
   let insertAfter: Element | null = null;
 
   for (const item of menuItemsList) {
@@ -449,7 +480,7 @@ function injectMenuItems(menu: Element): void {
 
   // Create our menu items
   const separator = createSeparator();
-  separator.setAttribute('data-temp-block-injected', 'true');
+  separator.setAttribute(CONFIG.ATTRIBUTES.INJECTED, 'true');
 
   const tempMuteItem = createMenuItem('Temp Mute...', '⏱️', () => {
     if (userInfo?.handle) {
@@ -457,7 +488,7 @@ function injectMenuItems(menu: Element): void {
       showDurationPicker('mute', userInfo.handle);
     }
   });
-  tempMuteItem.setAttribute('data-temp-block-injected', 'true');
+  tempMuteItem.setAttribute(CONFIG.ATTRIBUTES.INJECTED, 'true');
 
   const tempBlockItem = createMenuItem('Temp Block...', '⏱️', () => {
     if (userInfo?.handle) {
@@ -465,7 +496,7 @@ function injectMenuItems(menu: Element): void {
       showDurationPicker('block', userInfo.handle);
     }
   });
-  tempBlockItem.setAttribute('data-temp-block-injected', 'true');
+  tempBlockItem.setAttribute(CONFIG.ATTRIBUTES.INJECTED, 'true');
 
   // Insert items
   if (insertAfter && insertAfter.nextSibling) {
@@ -499,22 +530,27 @@ function observeMenus(): void {
         // Bluesky uses various portal/menu containers
         const element = node as Element;
         const menus = element.querySelectorAll
-          ? [element, ...element.querySelectorAll('[role="menu"], [data-radix-menu-content]')]
+          ? [
+              element,
+              ...element.querySelectorAll(
+                `${CONFIG.SELECTORS.MENU}, ${CONFIG.SELECTORS.RADIX_MENU}`
+              ),
+            ]
           : [element];
 
         for (const menu of menus) {
           if (
             menu.getAttribute?.('role') === 'menu' ||
             menu.hasAttribute?.('data-radix-menu-content') ||
-            menu.querySelector?.('[role="menuitem"]')
+            menu.querySelector?.(CONFIG.SELECTORS.MENU_ITEM)
           ) {
             // Check if this menu has block/mute options (indicating it's a user menu)
-            const hasBlockOption = Array.from(menu.querySelectorAll('[role="menuitem"]')).some(
-              (item) => {
-                const text = item.textContent?.toLowerCase() || '';
-                return text.includes('block') || text.includes('mute');
-              }
-            );
+            const hasBlockOption = Array.from(
+              menu.querySelectorAll(CONFIG.SELECTORS.MENU_ITEM)
+            ).some((item) => {
+              const text = item.textContent?.toLowerCase() || '';
+              return text.includes('block') || text.includes('mute');
+            });
 
             if (hasBlockOption) {
               // Small delay to ensure menu is fully rendered

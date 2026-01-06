@@ -35,10 +35,10 @@ export interface HistoryEntry {
 }
 
 // Placeholder types for future features
-export type RetryableOperation = object;
-export type UsageStats = object;
-export type ExportData = object;
-export type ImportResult = object;
+export type RetryableOperation = Record<string, unknown>;
+export type UsageStats = Record<string, unknown>;
+export type ExportData = Record<string, unknown>;
+export type ImportResult = Record<string, unknown>;
 
 export type NotificationType =
   | 'expired_success'

@@ -38,7 +38,7 @@ export function getSession(): BskySession | null {
         if (!raw) continue;
 
         const parsed = JSON.parse(raw) as StorageStructure;
-        console.log('[TempBlock] Checking storage key:', storageKey, parsed);
+        console.log('[TempBlock] Checking storage key:', storageKey);
 
         // Try different possible structures
         let account: BskyAccount | null = null;
@@ -94,30 +94,24 @@ export function getSession(): BskySession | null {
 }
 
 /**
- * Make an authenticated API request
- * @param {string} endpoint - API endpoint
- * @param {string} method - HTTP method
- * @param {Object} body - Request body
- * @param {string} baseUrl - Override base URL (for PDS vs AppView)
+ * Execute an authenticated API request
+ * Shared logic for both content script (localStorage) and background (chrome.storage)
  */
-async function apiRequest<T>(
+export async function executeApiRequest<T>(
   endpoint: string,
-  method = 'GET',
-  body: unknown = null,
-  baseUrl: string | null = null
+  method: string,
+  body: unknown,
+  auth: { accessJwt: string; pdsUrl: string },
+  targetBaseUrl?: string
 ): Promise<T | null> {
-  const session = getSession();
-  if (!session) {
-    throw new Error('Not logged in to Bluesky');
-  }
-
   // Determine correct base URL:
   // - com.atproto.repo.* endpoints go to user's PDS
-  // - app.bsky.* endpoints go to public API (AppView)
-  let base = baseUrl;
+  // - app.bsky.* endpoints go to public API (AppView) unless overridden
+  let base = targetBaseUrl;
+
   if (!base) {
     if (endpoint.startsWith('com.atproto.repo.')) {
-      base = session.pdsUrl;
+      base = auth.pdsUrl;
     } else {
       base = BSKY_PUBLIC_API;
     }
@@ -136,7 +130,7 @@ async function apiRequest<T>(
   const options: RequestInit = {
     method,
     headers: {
-      Authorization: `Bearer ${session.accessJwt}`,
+      Authorization: `Bearer ${auth.accessJwt}`,
       'Content-Type': 'application/json',
     },
   };
@@ -150,6 +144,12 @@ async function apiRequest<T>(
   if (!response.ok) {
     const error = (await response.json().catch(() => ({}))) as { message?: string };
     console.error('[TempBlock] API error:', response.status, error);
+
+    // Throw specific error for 401 to help background worker detect auth failure
+    if (response.status === 401) {
+      throw new Error(`Auth error: ${response.status} ${error.message || ''}`);
+    }
+
     throw new Error(error.message || `API error: ${response.status}`);
   }
 
@@ -159,10 +159,38 @@ async function apiRequest<T>(
 }
 
 /**
+ * Make an authenticated API request (using local session)
+ * @param {string} endpoint - API endpoint
+ * @param {string} method - HTTP method
+ * @param {Object} body - Request body
+ * @param {string} baseUrl - Override base URL (for PDS vs AppView)
+ */
+async function apiRequest<T>(
+  endpoint: string,
+  method = 'GET',
+  body: unknown = null,
+  baseUrl: string | null = null
+): Promise<T | null> {
+  const session = getSession();
+  if (!session) {
+    throw new Error('Not logged in to Bluesky');
+  }
+
+  return executeApiRequest<T>(
+    endpoint,
+    method,
+    body,
+    { accessJwt: session.accessJwt, pdsUrl: session.pdsUrl },
+    baseUrl || undefined
+  );
+}
+
+/**
  * Block a user
  * @param {string} did - DID of user to block
+ * @returns {Promise<{ uri: string; cid: string } | null>} The created record info
  */
-export async function blockUser(did: string): Promise<unknown> {
+export async function blockUser(did: string): Promise<{ uri: string; cid: string } | null> {
   const session = getSession();
   if (!session) throw new Error('Not logged in');
 
@@ -172,7 +200,7 @@ export async function blockUser(did: string): Promise<unknown> {
     createdAt: new Date().toISOString(),
   };
 
-  return apiRequest('com.atproto.repo.createRecord', 'POST', {
+  return apiRequest<{ uri: string; cid: string }>('com.atproto.repo.createRecord', 'POST', {
     repo: session.did,
     collection: 'app.bsky.graph.block',
     record,
@@ -182,12 +210,24 @@ export async function blockUser(did: string): Promise<unknown> {
 /**
  * Unblock a user
  * @param {string} did - DID of user to unblock
+ * @param {string} [rkey] - Optional record key for direct deletion
  */
-export async function unblockUser(did: string): Promise<unknown> {
+export async function unblockUser(did: string, rkey?: string): Promise<unknown> {
   const session = getSession();
   if (!session) throw new Error('Not logged in');
 
-  // First, find the block record
+  // If we have the rkey, delete directly (O(1))
+  if (rkey) {
+    console.log('[TempBlock] Unblocking using direct rkey:', rkey);
+    return apiRequest('com.atproto.repo.deleteRecord', 'POST', {
+      repo: session.did,
+      collection: 'app.bsky.graph.block',
+      rkey,
+    });
+  }
+
+  // Fallback: find the block record (legacy method, O(N))
+  console.log('[TempBlock] Unblocking using list scan (legacy)...');
   const blocks = await apiRequest<{ records?: Array<{ value: { subject: string }; uri: string }> }>(
     `com.atproto.repo.listRecords?repo=${session.did}&collection=app.bsky.graph.block&limit=100`
   );
@@ -199,11 +239,16 @@ export async function unblockUser(did: string): Promise<unknown> {
   }
 
   // Delete the block record
-  const rkey = blockRecord.uri.split('/').pop();
+  const foundRkey = blockRecord.uri.split('/').pop();
+  if (!foundRkey) {
+    console.log('[TempBlock] Block record URI missing rkey for', did, 'URI:', blockRecord.uri);
+    return null;
+  }
+
   return apiRequest('com.atproto.repo.deleteRecord', 'POST', {
     repo: session.did,
     collection: 'app.bsky.graph.block',
-    rkey,
+    rkey: foundRkey,
   });
 }
 

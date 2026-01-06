@@ -5,11 +5,12 @@
 
 import { DEFAULT_OPTIONS, type ExtensionOptions, type HistoryEntry } from './types.js';
 
-const STORAGE_KEYS = {
+export const STORAGE_KEYS = {
   TEMP_BLOCKS: 'tempBlocks',
   TEMP_MUTES: 'tempMutes',
   OPTIONS: 'extensionOptions',
   ACTION_HISTORY: 'actionHistory',
+  LAST_TAB: 'lastActiveTab',
 };
 
 const HISTORY_MAX_ENTRIES = 100;
@@ -23,6 +24,7 @@ interface TempBlockData {
   handle: string;
   expiresAt: number;
   createdAt: number;
+  rkey?: string;
 }
 
 interface TempBlocksMap {
@@ -50,17 +52,20 @@ export async function getTempMutes(): Promise<TempBlocksMap> {
  * @param did - User's DID
  * @param handle - User's handle
  * @param durationMs - Duration in milliseconds (default 24h)
+ * @param rkey - Optional record key (rkey) for direct unblocking
  */
 export async function addTempBlock(
   did: string,
   handle: string,
-  durationMs: number = DEFAULT_DURATION_MS
+  durationMs: number = DEFAULT_DURATION_MS,
+  rkey?: string
 ): Promise<void> {
   const blocks = await getTempBlocks();
   blocks[did] = {
     handle,
     expiresAt: Date.now() + durationMs,
     createdAt: Date.now(),
+    rkey,
   };
   await chrome.storage.sync.set({ [STORAGE_KEYS.TEMP_BLOCKS]: blocks });
   // Notify background to set alarm

@@ -1,16 +1,11 @@
 // Popup script for Bluesky Temp Block & Mute
 
-const STORAGE_KEYS = {
-  TEMP_BLOCKS: 'tempBlocks',
-  TEMP_MUTES: 'tempMutes',
-};
+import { STORAGE_KEYS } from './storage.js';
 
 interface TempItem {
   handle: string;
   expiresAt: number;
 }
-
-let currentTab = 'blocks';
 
 /**
  * Format remaining time
@@ -38,17 +33,35 @@ function formatTimeRemaining(expiresAt: number): string {
 function createItemElement(did: string, data: TempItem, type: string): HTMLElement {
   const item = document.createElement('div');
   item.className = 'item';
-  item.innerHTML = `
-    <div class="item-info">
-      <div class="item-handle">@${data.handle}</div>
-      <div class="item-time">${formatTimeRemaining(data.expiresAt)}</div>
-    </div>
-    <div class="item-actions">
-      <button class="btn btn-remove" data-did="${did}" data-type="${type}">
-        Remove
-      </button>
-    </div>
-  `;
+
+  const info = document.createElement('div');
+  info.className = 'item-info';
+
+  const handleDiv = document.createElement('div');
+  handleDiv.className = 'item-handle';
+  handleDiv.textContent = `@${data.handle}`;
+
+  const timeDiv = document.createElement('div');
+  timeDiv.className = 'item-time';
+  timeDiv.textContent = formatTimeRemaining(data.expiresAt);
+
+  info.appendChild(handleDiv);
+  info.appendChild(timeDiv);
+
+  const actions = document.createElement('div');
+  actions.className = 'item-actions';
+
+  const btn = document.createElement('button');
+  btn.className = 'btn btn-remove';
+  btn.dataset.did = did;
+  btn.dataset.type = type;
+  btn.textContent = 'Remove';
+
+  actions.appendChild(btn);
+
+  item.appendChild(info);
+  item.appendChild(actions);
+
   return item;
 }
 
@@ -132,8 +145,9 @@ async function removeItem(did: string, type: string): Promise<void> {
 /**
  * Switch tabs
  */
-function switchTab(tab: string): void {
-  currentTab = tab;
+async function switchTab(tab: string): Promise<void> {
+  // Save to storage
+  await chrome.storage.local.set({ [STORAGE_KEYS.LAST_TAB]: tab });
 
   // Update tab styles
   document.querySelectorAll('.tab').forEach((t) => {
@@ -208,7 +222,12 @@ async function checkNow(): Promise<void> {
 }
 
 // Event listeners
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+  // Load last active tab
+  const result = await chrome.storage.local.get(STORAGE_KEYS.LAST_TAB);
+  const lastTab = (result[STORAGE_KEYS.LAST_TAB] as string) || 'blocks';
+
+  await switchTab(lastTab);
   renderBlocks();
   renderMutes();
   checkAuthStatus();
@@ -244,6 +263,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // Refresh lists periodically while popup is open
 setInterval(() => {
+  const activeTab = document.querySelector('.tab.active') as HTMLElement;
+  const currentTab = activeTab?.dataset.tab || 'blocks';
+
   if (currentTab === 'blocks') {
     renderBlocks();
   } else {

@@ -45,7 +45,7 @@ export function copyAssets() {
   }
 
   fs.readdirSync(iconsDir).forEach((file) => {
-    if (file.endsWith('.png')) {
+    if (path.extname(file).toLowerCase() === '.png') {
       fs.copyFileSync(path.join(iconsDir, file), path.join(distIconsDir, file));
     }
   });
