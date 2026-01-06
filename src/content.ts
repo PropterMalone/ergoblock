@@ -3,7 +3,7 @@
 
 import { getSession, getProfile, blockUser, muteUser } from './api.js';
 import { addTempBlock, addTempMute } from './storage.js';
-import { capturePostScreenshot, findPostContainer } from './screenshot.js';
+import { capturePostContext, findPostContainer } from './post-context.js';
 
 // Configuration for DOM selectors and magic strings
 const CONFIG = {
@@ -328,8 +328,9 @@ async function handleTempBlock(
 ): Promise<void> {
   console.log('[ErgoBlock] handleTempBlock called for:', handle, 'duration:', durationLabel);
   try {
-    // Find post container for screenshot (before closing menus)
+    // Find post container for context capture
     const postContainer = findPostContainer(lastClickedElement);
+    console.log('[ErgoBlock] Post container found:', !!postContainer);
 
     // Get the user's DID from their profile
     const profile = await getProfile(handle);
@@ -353,16 +354,10 @@ async function handleTempBlock(
     // Store in temp blocks with custom duration
     await addTempBlock(profile.did, profile.handle || handle, durationMs, rkey);
 
-    // Capture screenshot in background (non-blocking)
-    if (postContainer) {
-      capturePostScreenshot(
-        postContainer,
-        profile.handle || handle,
-        profile.did,
-        'block',
-        false
-      ).catch((e) => console.warn('[ErgoBlock] Screenshot failed:', e));
-    }
+    // Capture post context (non-blocking)
+    capturePostContext(postContainer, handle, profile.did, 'block', false).catch((e) =>
+      console.warn('[ErgoBlock] Post context capture failed:', e)
+    );
 
     closeMenus();
     showToast(`Temporarily blocked @${profile.handle || handle} for ${durationLabel}`);
@@ -382,8 +377,9 @@ async function handleTempMute(
 ): Promise<void> {
   console.log('[ErgoBlock] handleTempMute called for:', handle, 'duration:', durationLabel);
   try {
-    // Find post container for screenshot (before closing menus)
+    // Find post container for context capture
     const postContainer = findPostContainer(lastClickedElement);
+    console.log('[ErgoBlock] Post container found:', !!postContainer);
 
     // Get the user's DID from their profile
     const profile = await getProfile(handle);
@@ -397,16 +393,10 @@ async function handleTempMute(
     // Store in temp mutes with custom duration
     await addTempMute(profile.did, profile.handle || handle, durationMs);
 
-    // Capture screenshot in background (non-blocking)
-    if (postContainer) {
-      capturePostScreenshot(
-        postContainer,
-        profile.handle || handle,
-        profile.did,
-        'mute',
-        false
-      ).catch((e) => console.warn('[ErgoBlock] Screenshot failed:', e));
-    }
+    // Capture post context (non-blocking)
+    capturePostContext(postContainer, handle, profile.did, 'mute', false).catch((e) =>
+      console.warn('[ErgoBlock] Post context capture failed:', e)
+    );
 
     closeMenus();
     showToast(`Temporarily muted @${profile.handle || handle} for ${durationLabel}`);
@@ -422,8 +412,9 @@ async function handleTempMute(
 async function handlePermanentAction(actionType: 'block' | 'mute', handle: string): Promise<void> {
   console.log('[ErgoBlock] handlePermanentAction called for:', handle, 'action:', actionType);
   try {
-    // Find post container for screenshot (before closing menus)
+    // Find post container for context capture
     const postContainer = findPostContainer(lastClickedElement);
+    console.log('[ErgoBlock] Post container found:', !!postContainer);
 
     // Get the user's DID from their profile
     const profile = await getProfile(handle);
@@ -438,16 +429,10 @@ async function handlePermanentAction(actionType: 'block' | 'mute', handle: strin
       await muteUser(profile.did);
     }
 
-    // Capture screenshot in background (non-blocking)
-    if (postContainer) {
-      capturePostScreenshot(
-        postContainer,
-        profile.handle || handle,
-        profile.did,
-        actionType,
-        true // permanent
-      ).catch((e) => console.warn('[ErgoBlock] Screenshot failed:', e));
-    }
+    // Capture post context (non-blocking)
+    capturePostContext(postContainer, handle, profile.did, actionType, true).catch((e) =>
+      console.warn('[ErgoBlock] Post context capture failed:', e)
+    );
 
     closeMenus();
     showToast(
@@ -473,6 +458,7 @@ function interceptMenuItem(item: HTMLElement, actionType: 'block' | 'mute', hand
       e.preventDefault();
       e.stopPropagation();
       e.stopImmediatePropagation();
+
       closeMenus();
       showDurationPicker(actionType, handle);
     },

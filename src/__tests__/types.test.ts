@@ -82,9 +82,8 @@ describe('types module', () => {
         checkInterval: 5,
         showBadgeCount: false,
         theme: 'dark',
-        screenshotEnabled: true,
-        screenshotQuality: 0.8,
-        screenshotRetentionDays: 14,
+        savePostContext: true,
+        postContextRetentionDays: 60,
       };
 
       expect(options.defaultDuration).toBe(3600000);

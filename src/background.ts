@@ -6,7 +6,7 @@ import {
   removeTempMute,
   getOptions,
   addHistoryEntry,
-  cleanupExpiredScreenshots,
+  cleanupExpiredPostContexts,
 } from './storage.js';
 import { ListRecordsResponse } from './types.js';
 
@@ -174,7 +174,7 @@ export async function checkExpirations(): Promise<void> {
   console.log('[ErgoBlock BG] Checking expirations...');
 
   // Clean up expired screenshots based on retention policy
-  await cleanupExpiredScreenshots();
+  await cleanupExpiredPostContexts();
 
   const auth = await getAuthToken();
   if (!auth?.accessJwt || !auth?.did || !auth?.pdsUrl) {
@@ -308,49 +308,57 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   }
 });
 
-/**
- * Capture screenshot of the active tab
- */
-async function captureTabScreenshot(): Promise<string | null> {
-  try {
-    const options = await getOptions();
-
-    // Get the active tab
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tab?.id) {
-      console.warn('[ErgoBlock BG] No active tab found');
-      return null;
-    }
-
-    // Capture the visible area of the tab
-    // Quality is mapped from 0-1 to 0-100 for JPEG
-    const quality = Math.round(options.screenshotQuality * 100);
-    const imageData = await chrome.tabs.captureVisibleTab(tab.windowId, {
-      format: 'jpeg',
-      quality,
-    });
-
-    console.log('[ErgoBlock BG] Screenshot captured, size:', imageData.length);
-    return imageData;
-  } catch (error) {
-    console.error('[ErgoBlock BG] Screenshot capture failed:', error);
-    return null;
-  }
-}
-
-// Listen for messages from content script
+// Listen for messages from content script and popup
 interface ExtensionMessage {
   type: string;
   auth?: AuthData;
+  did?: string;
 }
 
-interface ScreenshotResponse {
-  success: boolean;
-  imageData?: string;
-  error?: string;
+type MessageResponse = { success: boolean; error?: string };
+
+/**
+ * Handle unblock request from popup
+ */
+async function handleUnblockRequest(did: string): Promise<{ success: boolean; error?: string }> {
+  try {
+    const auth = await getAuthToken();
+    if (!auth?.accessJwt || !auth?.did || !auth?.pdsUrl) {
+      return { success: false, error: 'Not authenticated' };
+    }
+
+    // Get the rkey from storage if available
+    const blocks = await getTempBlocks();
+    const blockData = blocks[did];
+    const rkey = blockData?.rkey;
+
+    await unblockUser(did, auth.accessJwt, auth.did, auth.pdsUrl, rkey);
+    await updateBadge();
+    return { success: true };
+  } catch (error) {
+    console.error('[ErgoBlock BG] Unblock failed:', error);
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+  }
 }
 
-type MessageResponse = { success: boolean } | ScreenshotResponse;
+/**
+ * Handle unmute request from popup
+ */
+async function handleUnmuteRequest(did: string): Promise<{ success: boolean; error?: string }> {
+  try {
+    const auth = await getAuthToken();
+    if (!auth?.accessJwt || !auth?.pdsUrl) {
+      return { success: false, error: 'Not authenticated' };
+    }
+
+    await unmuteUser(did, auth.accessJwt, auth.pdsUrl);
+    await updateBadge();
+    return { success: true };
+  } catch (error) {
+    console.error('[ErgoBlock BG] Unmute failed:', error);
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+  }
+}
 
 chrome.runtime.onMessage.addListener(
   (message: ExtensionMessage, _sender, sendResponse: (response: MessageResponse) => void) => {
@@ -371,14 +379,13 @@ chrome.runtime.onMessage.addListener(
       return true; // Indicates async response
     }
 
-    if (message.type === 'CAPTURE_SCREENSHOT') {
-      captureTabScreenshot().then((imageData) => {
-        if (imageData) {
-          sendResponse({ success: true, imageData });
-        } else {
-          sendResponse({ success: false, error: 'Failed to capture screenshot' });
-        }
-      });
+    if (message.type === 'UNBLOCK_USER' && message.did) {
+      handleUnblockRequest(message.did).then(sendResponse);
+      return true; // Indicates async response
+    }
+
+    if (message.type === 'UNMUTE_USER' && message.did) {
+      handleUnmuteRequest(message.did).then(sendResponse);
       return true; // Indicates async response
     }
 

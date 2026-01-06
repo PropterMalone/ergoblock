@@ -7,7 +7,7 @@ import {
   DEFAULT_OPTIONS,
   type ExtensionOptions,
   type HistoryEntry,
-  type ScreenshotData,
+  type PostContext,
 } from './types.js';
 
 export const STORAGE_KEYS = {
@@ -16,7 +16,7 @@ export const STORAGE_KEYS = {
   OPTIONS: 'extensionOptions',
   ACTION_HISTORY: 'actionHistory',
   LAST_TAB: 'lastActiveTab',
-  SCREENSHOTS: 'screenshots',
+  POST_CONTEXTS: 'postContexts',
 };
 
 const HISTORY_MAX_ENTRIES = 100;
@@ -220,68 +220,56 @@ export async function removeAllExpiredMutes(): Promise<void> {
 }
 
 // ============================================================================
-// Screenshot storage management
+// Post context storage management
 // ============================================================================
 
-const MAX_SCREENSHOT_STORAGE_MB = 5;
-const MAX_SCREENSHOT_STORAGE_BYTES = MAX_SCREENSHOT_STORAGE_MB * 1024 * 1024;
+const MAX_POST_CONTEXTS = 500; // Keep last 500 post contexts
 
 /**
- * Get all stored screenshots
+ * Get all stored post contexts
  */
-export async function getScreenshots(): Promise<ScreenshotData[]> {
-  const result = await chrome.storage.local.get(STORAGE_KEYS.SCREENSHOTS);
-  return (result[STORAGE_KEYS.SCREENSHOTS] as ScreenshotData[]) || [];
+export async function getPostContexts(): Promise<PostContext[]> {
+  const result = await chrome.storage.local.get(STORAGE_KEYS.POST_CONTEXTS);
+  return (result[STORAGE_KEYS.POST_CONTEXTS] as PostContext[]) || [];
 }
 
 /**
- * Add a screenshot to storage
- * Enforces storage limits by removing oldest screenshots if needed
+ * Add a post context to storage
  */
-export async function addScreenshot(screenshot: ScreenshotData): Promise<void> {
-  const screenshots = await getScreenshots();
-  screenshots.unshift(screenshot); // Add to beginning (newest first)
+export async function addPostContext(context: PostContext): Promise<void> {
+  const contexts = await getPostContexts();
+  contexts.unshift(context); // Add to beginning (newest first)
 
-  // Estimate total size and trim if needed
-  let totalSize = 0;
-  const trimmed: ScreenshotData[] = [];
+  // Trim to max entries
+  const trimmed = contexts.slice(0, MAX_POST_CONTEXTS);
 
-  for (const s of screenshots) {
-    // Base64 is ~33% larger than binary, so estimate actual size
-    const sizeEstimate = s.imageData.length * 0.75;
-    if (totalSize + sizeEstimate <= MAX_SCREENSHOT_STORAGE_BYTES) {
-      trimmed.push(s);
-      totalSize += sizeEstimate;
-    }
-  }
-
-  await chrome.storage.local.set({ [STORAGE_KEYS.SCREENSHOTS]: trimmed });
+  await chrome.storage.local.set({ [STORAGE_KEYS.POST_CONTEXTS]: trimmed });
 }
 
 /**
- * Delete a screenshot by ID
+ * Delete a post context by ID
  */
-export async function deleteScreenshot(id: string): Promise<void> {
-  const screenshots = await getScreenshots();
-  const filtered = screenshots.filter((s) => s.id !== id);
-  await chrome.storage.local.set({ [STORAGE_KEYS.SCREENSHOTS]: filtered });
+export async function deletePostContext(id: string): Promise<void> {
+  const contexts = await getPostContexts();
+  const filtered = contexts.filter((c) => c.id !== id);
+  await chrome.storage.local.set({ [STORAGE_KEYS.POST_CONTEXTS]: filtered });
 }
 
 /**
- * Clean up expired screenshots based on retention policy
+ * Clean up expired post contexts based on retention policy
  */
-export async function cleanupExpiredScreenshots(): Promise<void> {
+export async function cleanupExpiredPostContexts(): Promise<void> {
   const options = await getOptions();
-  if (options.screenshotRetentionDays <= 0) return; // 0 = never delete
+  if (options.postContextRetentionDays <= 0) return; // 0 = never delete
 
-  const screenshots = await getScreenshots();
-  const cutoff = Date.now() - options.screenshotRetentionDays * 24 * 60 * 60 * 1000;
+  const contexts = await getPostContexts();
+  const cutoff = Date.now() - options.postContextRetentionDays * 24 * 60 * 60 * 1000;
 
-  const filtered = screenshots.filter((s) => s.timestamp > cutoff);
-  if (filtered.length !== screenshots.length) {
-    await chrome.storage.local.set({ [STORAGE_KEYS.SCREENSHOTS]: filtered });
+  const filtered = contexts.filter((c) => c.timestamp > cutoff);
+  if (filtered.length !== contexts.length) {
+    await chrome.storage.local.set({ [STORAGE_KEYS.POST_CONTEXTS]: filtered });
     console.log(
-      `[ErgoBlock] Cleaned up ${screenshots.length - filtered.length} expired screenshots`
+      `[ErgoBlock] Cleaned up ${contexts.length - filtered.length} expired post contexts`
     );
   }
 }

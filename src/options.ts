@@ -45,7 +45,7 @@ async function saveOptions(): Promise<void> {
   const selectedTheme =
     (document.querySelector('input[name="theme"]:checked') as HTMLInputElement)?.value || 'auto';
 
-  // Get current options to preserve screenshot settings until UI is added
+  // Get current options to preserve post context settings until UI is added
   const currentOptions = await getOptions();
 
   const options: ExtensionOptions = {
@@ -56,10 +56,9 @@ async function saveOptions(): Promise<void> {
     showBadgeCount: showBadgeCountCheckbox.checked,
     checkInterval: parseInt(checkIntervalRange.value, 10),
     theme: selectedTheme as 'light' | 'dark' | 'auto',
-    // Preserve screenshot settings
-    screenshotEnabled: currentOptions.screenshotEnabled,
-    screenshotQuality: currentOptions.screenshotQuality,
-    screenshotRetentionDays: currentOptions.screenshotRetentionDays,
+    // Preserve post context settings
+    savePostContext: currentOptions.savePostContext,
+    postContextRetentionDays: currentOptions.postContextRetentionDays,
   };
 
   await setOptions(options);

@@ -10,10 +10,9 @@ export interface ExtensionOptions {
   checkInterval: number;
   showBadgeCount: boolean;
   theme: 'light' | 'dark' | 'auto';
-  // Screenshot settings
-  screenshotEnabled: boolean;
-  screenshotQuality: number; // 0.1 to 1.0
-  screenshotRetentionDays: number; // 0 = never delete
+  // Post context settings
+  savePostContext: boolean;
+  postContextRetentionDays: number; // 0 = never delete
 }
 
 export const DEFAULT_OPTIONS: ExtensionOptions = {
@@ -24,10 +23,9 @@ export const DEFAULT_OPTIONS: ExtensionOptions = {
   checkInterval: 1,
   showBadgeCount: true,
   theme: 'auto',
-  // Screenshot defaults
-  screenshotEnabled: true,
-  screenshotQuality: 0.7,
-  screenshotRetentionDays: 30,
+  // Post context defaults
+  savePostContext: true,
+  postContextRetentionDays: 90,
 };
 
 export interface HistoryEntry {
@@ -102,16 +100,18 @@ export interface Profile {
 }
 
 /**
- * Screenshot data stored when blocking/muting from a post
+ * Post context stored when blocking/muting from a post
+ * Stores the AT Protocol URI so we can fetch the post later
  */
-export interface ScreenshotData {
+export interface PostContext {
   id: string;
-  imageData: string; // Base64 encoded JPEG
-  handle: string;
-  did: string;
+  postUri: string; // AT Protocol URI (at://did/app.bsky.feed.post/rkey)
+  postAuthorDid: string;
+  postAuthorHandle?: string;
+  postText?: string; // Cached text at time of action
+  targetHandle: string; // Who was blocked/muted
+  targetDid: string;
   actionType: 'block' | 'mute';
   permanent: boolean;
   timestamp: number;
-  postText?: string; // Extracted text from the post
-  postUrl?: string; // URL of the post if available
 }
