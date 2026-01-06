@@ -6,12 +6,12 @@
   "permissions": [
     "storage",
     "alarms",
-    "notifications",
-    "activeTab",
-    "tabs"
+    "notifications"
   ],
   "host_permissions": [
-    "<all_urls>"
+    "https://*.bsky.app/*",
+    "https://*.bsky.social/*",
+    "https://*.bsky.network/*"
   ],
   "background": {
     "service_worker": "background.js",
