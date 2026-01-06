@@ -1,3 +1,4 @@
+import browser from './browser.js';
 import { executeApiRequest } from './api.js';
 import {
   getTempBlocks,
@@ -19,7 +20,7 @@ interface AuthData {
 }
 
 async function getAuthToken(): Promise<AuthData | null> {
-  const result = await chrome.storage.local.get('authToken');
+  const result = await browser.storage.local.get('authToken');
   return (result.authToken as AuthData) || null;
 }
 
@@ -44,7 +45,7 @@ async function bgApiRequest<T>(
     );
 
     // If request was successful, ensure status is valid
-    await chrome.storage.local.set({ authStatus: 'valid' });
+    await browser.storage.local.set({ authStatus: 'valid' });
     return result;
   } catch (error) {
     if (
@@ -52,7 +53,7 @@ async function bgApiRequest<T>(
       (error.message.includes('401') || error.message.includes('Auth error'))
     ) {
       console.error('[ErgoBlock BG] Auth failed (401), marking session invalid');
-      await chrome.storage.local.set({ authStatus: 'invalid' });
+      await browser.storage.local.set({ authStatus: 'invalid' });
     }
     throw error;
   }
@@ -127,7 +128,7 @@ export async function unmuteUser(did: string, token: string, pdsUrl: string): Pr
 export async function updateBadge(): Promise<void> {
   const options = await getOptions();
   if (!options.showBadgeCount) {
-    await chrome.action.setBadgeText({ text: '' });
+    await browser.action.setBadgeText({ text: '' });
     return;
   }
 
@@ -135,8 +136,8 @@ export async function updateBadge(): Promise<void> {
   const mutes = await getTempMutes();
   const count = Object.keys(blocks).length + Object.keys(mutes).length;
 
-  await chrome.action.setBadgeText({ text: count > 0 ? count.toString() : '' });
-  await chrome.action.setBadgeBackgroundColor({ color: '#1185fe' });
+  await browser.action.setBadgeText({ text: count > 0 ? count.toString() : '' });
+  await browser.action.setBadgeBackgroundColor({ color: '#1185fe' });
 }
 
 export async function sendNotification(
@@ -161,7 +162,7 @@ export async function sendNotification(
     message = `Failed to ${action} @${handle}: ${error || 'Unknown error'}`;
   }
 
-  await chrome.notifications.create({
+  await browser.notifications.create({
     type: 'basic',
     iconUrl: 'icons/icon128.png',
     title,
@@ -179,7 +180,7 @@ export async function checkExpirations(): Promise<void> {
   const auth = await getAuthToken();
   if (!auth?.accessJwt || !auth?.did || !auth?.pdsUrl) {
     console.log('[ErgoBlock BG] No auth token available, skipping check');
-    await chrome.storage.local.set({ authStatus: 'invalid' });
+    await browser.storage.local.set({ authStatus: 'invalid' });
     return;
   }
 
@@ -294,15 +295,15 @@ export async function setupAlarm(): Promise<void> {
   const options = await getOptions();
   const intervalMinutes = Math.max(1, Math.min(10, options.checkInterval));
 
-  await chrome.alarms.clear(ALARM_NAME);
-  await chrome.alarms.create(ALARM_NAME, {
+  await browser.alarms.clear(ALARM_NAME);
+  await browser.alarms.create(ALARM_NAME, {
     periodInMinutes: intervalMinutes,
   });
   console.log('[ErgoBlock BG] Alarm set up with interval:', intervalMinutes, 'minutes');
 }
 
 // Listen for alarm events
-chrome.alarms.onAlarm.addListener((alarm) => {
+browser.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === ALARM_NAME) {
     checkExpirations();
   }
@@ -360,7 +361,7 @@ async function handleUnmuteRequest(did: string): Promise<{ success: boolean; err
   }
 }
 
-chrome.runtime.onMessage.addListener(
+browser.runtime.onMessage.addListener(
   (message: ExtensionMessage, _sender, sendResponse: (response: MessageResponse) => void) => {
     console.log('[ErgoBlock BG] Received message:', message.type);
 
@@ -370,7 +371,7 @@ chrome.runtime.onMessage.addListener(
     }
 
     if (message.type === 'SET_AUTH_TOKEN' && message.auth) {
-      chrome.storage.local.set({ authToken: message.auth });
+      browser.storage.local.set({ authToken: message.auth });
       sendResponse({ success: true });
     }
 
@@ -394,13 +395,13 @@ chrome.runtime.onMessage.addListener(
 );
 
 // Initialize on install/startup
-chrome.runtime.onInstalled.addListener(() => {
+browser.runtime.onInstalled.addListener(() => {
   console.log('[ErgoBlock BG] Extension installed');
   setupAlarm();
   updateBadge();
 });
 
-chrome.runtime.onStartup.addListener(() => {
+browser.runtime.onStartup.addListener(() => {
   console.log('[ErgoBlock BG] Extension started');
   setupAlarm();
   updateBadge();

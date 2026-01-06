@@ -1,5 +1,6 @@
 // Popup script for Bluesky Temp Block & Mute
 
+import browser from './browser.js';
 import { STORAGE_KEYS, getPostContexts, deletePostContext } from './storage.js';
 import type { PostContext } from './types.js';
 
@@ -73,7 +74,7 @@ async function renderBlocks(): Promise<void> {
   const list = document.getElementById('blocks-list');
   if (!list) return;
 
-  const result = await chrome.storage.sync.get(STORAGE_KEYS.TEMP_BLOCKS);
+  const result = await browser.storage.sync.get(STORAGE_KEYS.TEMP_BLOCKS);
   const blocks = (result[STORAGE_KEYS.TEMP_BLOCKS] || {}) as Record<string, TempItem>;
 
   const entries = Object.entries(blocks);
@@ -101,7 +102,7 @@ async function renderMutes(): Promise<void> {
   const list = document.getElementById('mutes-list');
   if (!list) return;
 
-  const result = await chrome.storage.sync.get(STORAGE_KEYS.TEMP_MUTES);
+  const result = await browser.storage.sync.get(STORAGE_KEYS.TEMP_MUTES);
   const mutes = (result[STORAGE_KEYS.TEMP_MUTES] || {}) as Record<string, TempItem>;
 
   const entries = Object.entries(mutes);
@@ -130,7 +131,7 @@ async function removeItem(did: string, type: string): Promise<void> {
 
   try {
     // Send message to background to unblock/unmute via API
-    const response = (await chrome.runtime.sendMessage({
+    const response = (await browser.runtime.sendMessage({
       type: type === 'block' ? 'UNBLOCK_USER' : 'UNMUTE_USER',
       did,
     })) as { success: boolean; error?: string };
@@ -141,11 +142,11 @@ async function removeItem(did: string, type: string): Promise<void> {
 
     // Remove from storage
     const key = type === 'block' ? STORAGE_KEYS.TEMP_BLOCKS : STORAGE_KEYS.TEMP_MUTES;
-    const result = await chrome.storage.sync.get(key);
+    const result = await browser.storage.sync.get(key);
     const items = (result[key] || {}) as Record<string, TempItem>;
 
     delete items[did];
-    await chrome.storage.sync.set({ [key]: items });
+    await browser.storage.sync.set({ [key]: items });
 
     // Re-render
     if (type === 'block') {
@@ -281,7 +282,7 @@ async function renderHistory(): Promise<void> {
  */
 async function switchTab(tab: string): Promise<void> {
   // Save to storage
-  await chrome.storage.local.set({ [STORAGE_KEYS.LAST_TAB]: tab });
+  await browser.storage.local.set({ [STORAGE_KEYS.LAST_TAB]: tab });
 
   // Update tab styles
   document.querySelectorAll('.tab').forEach((t) => {
@@ -323,7 +324,7 @@ async function checkAuthStatus(): Promise<void> {
   const warning = document.getElementById('auth-warning');
   if (!warning) return;
 
-  const result = await chrome.storage.local.get('authStatus');
+  const result = await browser.storage.local.get('authStatus');
   const status = result.authStatus || 'unknown';
 
   if (status === 'invalid') {
@@ -340,7 +341,7 @@ async function checkNow(): Promise<void> {
   updateStatus('Checking expirations...');
 
   try {
-    const response = (await chrome.runtime.sendMessage({ type: 'CHECK_NOW' })) as {
+    const response = (await browser.runtime.sendMessage({ type: 'CHECK_NOW' })) as {
       success: boolean;
     };
     if (response.success) {
@@ -352,7 +353,7 @@ async function checkNow(): Promise<void> {
     renderMutes();
     checkAuthStatus();
   } catch (error) {
-    const result = await chrome.storage.local.get('authStatus');
+    const result = await browser.storage.local.get('authStatus');
     if (result.authStatus === 'invalid') {
       updateStatus('Error: Session expired');
     } else {
@@ -365,7 +366,7 @@ async function checkNow(): Promise<void> {
 // Event listeners
 document.addEventListener('DOMContentLoaded', async () => {
   // Load last active tab
-  const result = await chrome.storage.local.get(STORAGE_KEYS.LAST_TAB);
+  const result = await browser.storage.local.get(STORAGE_KEYS.LAST_TAB);
   const lastTab = (result[STORAGE_KEYS.LAST_TAB] as string) || 'blocks';
 
   await switchTab(lastTab);

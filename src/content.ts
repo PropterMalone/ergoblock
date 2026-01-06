@@ -1,6 +1,7 @@
 // Content script for Bluesky Temp Block & Mute
 // Injects menu options into Bluesky's dropdown menus
 
+import browser from './browser.js';
 import { getSession, getProfile, blockUser, muteUser } from './api.js';
 import { addTempBlock, addTempMute } from './storage.js';
 import { capturePostContext, findPostContainer } from './post-context.js';
@@ -611,7 +612,7 @@ function observeMenus(): void {
 function syncAuthToBackground(): void {
   const session = getSession();
   if (session?.accessJwt && session?.did && session?.pdsUrl) {
-    chrome.runtime.sendMessage({
+    browser.runtime.sendMessage({
       type: 'SET_AUTH_TOKEN',
       auth: {
         accessJwt: session.accessJwt,
@@ -619,7 +620,7 @@ function syncAuthToBackground(): void {
         pdsUrl: session.pdsUrl,
       },
     });
-    chrome.storage.local.set({ authStatus: 'valid' });
+    browser.storage.local.set({ authStatus: 'valid' });
     console.log('[TempBlock] Auth synced to background (PDS:', session.pdsUrl, ')');
   }
 }

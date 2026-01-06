@@ -1,16 +1,14 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { DEFAULT_OPTIONS, type ExtensionOptions, type HistoryEntry } from '../types';
+import browser from '../browser';
 
 /**
  * Integration tests for the ErgoBlock extension workflow
  * These tests verify the end-to-end behavior of the extension components working together
  */
 
-// Declare global for Node.js environment
-declare const globalThis: {
-  chrome: typeof chrome;
-  fetch: typeof fetch;
-};
+// Get the mocked browser for assertions
+const mockedBrowser = vi.mocked(browser);
 
 // Types
 interface AuthData {
@@ -19,102 +17,9 @@ interface AuthData {
   pdsUrl: string;
 }
 
-// Shared mock storage
-let mockSyncStorage: Record<string, unknown> = {};
-let mockLocalStorage: Record<string, unknown> = {};
-
-// Message handlers for simulating inter-component communication
-type MessageHandler = (
-  message: Record<string, unknown>,
-  sender: unknown,
-  sendResponse: (response: unknown) => void
-) => boolean | void;
-let messageHandlers: MessageHandler[] = [];
-
-// Mock Chrome APIs
-const createMockChrome = () => ({
-  storage: {
-    sync: {
-      get: vi.fn((key: string) => {
-        if (typeof key === 'string') {
-          return Promise.resolve({ [key]: mockSyncStorage[key] });
-        }
-        return Promise.resolve(mockSyncStorage);
-      }),
-      set: vi.fn((data: Record<string, unknown>) => {
-        Object.assign(mockSyncStorage, data);
-        return Promise.resolve();
-      }),
-    },
-    local: {
-      get: vi.fn((key: string) => {
-        if (typeof key === 'string') {
-          return Promise.resolve({ [key]: mockLocalStorage[key] });
-        }
-        return Promise.resolve(mockLocalStorage);
-      }),
-      set: vi.fn((data: Record<string, unknown>) => {
-        Object.assign(mockLocalStorage, data);
-        return Promise.resolve();
-      }),
-    },
-  },
-  runtime: {
-    sendMessage: vi.fn((message: Record<string, unknown>) => {
-      // Simulate message passing to background
-      for (const handler of messageHandlers) {
-        handler(message, {}, () => {});
-      }
-      return Promise.resolve();
-    }),
-    onMessage: {
-      addListener: vi.fn((handler: MessageHandler) => {
-        messageHandlers.push(handler);
-      }),
-    },
-    onInstalled: {
-      addListener: vi.fn(),
-    },
-    onStartup: {
-      addListener: vi.fn(),
-    },
-  },
-  alarms: {
-    create: vi.fn().mockResolvedValue(undefined),
-    clear: vi.fn().mockResolvedValue(undefined),
-    onAlarm: {
-      addListener: vi.fn(),
-    },
-  },
-  action: {
-    setBadgeText: vi.fn().mockResolvedValue(undefined),
-    setBadgeBackgroundColor: vi.fn().mockResolvedValue(undefined),
-  },
-  notifications: {
-    create: vi.fn().mockResolvedValue('notification-id'),
-  },
-});
-
-const mockFetch = vi.fn();
-
 describe('Integration Tests', () => {
-  let mockChrome: ReturnType<typeof createMockChrome>;
-
   beforeEach(() => {
-    // Reset all state
-    mockSyncStorage = {};
-    mockLocalStorage = {};
-    messageHandlers = [];
-
     vi.clearAllMocks();
-    vi.resetModules();
-
-    mockChrome = createMockChrome();
-    globalThis.chrome = mockChrome as unknown as typeof chrome;
-    globalThis.fetch = mockFetch as unknown as typeof fetch;
-
-    // Set up default options
-    mockLocalStorage['extensionOptions'] = DEFAULT_OPTIONS;
   });
 
   afterEach(() => {
@@ -139,7 +44,7 @@ describe('Integration Tests', () => {
       expect(blocks[did].expiresAt).toBeGreaterThan(Date.now());
 
       // Verify message was sent to background
-      expect(mockChrome.runtime.sendMessage).toHaveBeenCalledWith(
+      expect(mockedBrowser.runtime.sendMessage).toHaveBeenCalledWith(
         expect.objectContaining({
           type: 'TEMP_BLOCK_ADDED',
           did,
@@ -160,7 +65,7 @@ describe('Integration Tests', () => {
       expect(mutes[did]).toBeDefined();
       expect(mutes[did].handle).toBe(handle);
 
-      expect(mockChrome.runtime.sendMessage).toHaveBeenCalledWith(
+      expect(mockedBrowser.runtime.sendMessage).toHaveBeenCalledWith(
         expect.objectContaining({
           type: 'TEMP_MUTE_ADDED',
           did,
@@ -194,23 +99,25 @@ describe('Integration Tests', () => {
       const now = Date.now();
 
       // Set up mixed expired and active blocks
-      mockSyncStorage['tempBlocks'] = {
-        'did:plc:expired1': {
-          handle: 'expired1.bsky.social',
-          expiresAt: now - 1000,
-          createdAt: now - 10000,
+      await mockedBrowser.storage.sync.set({
+        tempBlocks: {
+          'did:plc:expired1': {
+            handle: 'expired1.bsky.social',
+            expiresAt: now - 1000,
+            createdAt: now - 10000,
+          },
+          'did:plc:expired2': {
+            handle: 'expired2.bsky.social',
+            expiresAt: now - 500,
+            createdAt: now - 5000,
+          },
+          'did:plc:active': {
+            handle: 'active.bsky.social',
+            expiresAt: now + 3600000,
+            createdAt: now,
+          },
         },
-        'did:plc:expired2': {
-          handle: 'expired2.bsky.social',
-          expiresAt: now - 500,
-          createdAt: now - 5000,
-        },
-        'did:plc:active': {
-          handle: 'active.bsky.social',
-          expiresAt: now + 3600000,
-          createdAt: now,
-        },
-      };
+      });
 
       await removeAllExpiredBlocks();
 
@@ -226,18 +133,20 @@ describe('Integration Tests', () => {
 
       const now = Date.now();
 
-      mockSyncStorage['tempMutes'] = {
-        'did:plc:expired': {
-          handle: 'expired.bsky.social',
-          expiresAt: now - 1000,
-          createdAt: now - 10000,
+      await mockedBrowser.storage.sync.set({
+        tempMutes: {
+          'did:plc:expired': {
+            handle: 'expired.bsky.social',
+            expiresAt: now - 1000,
+            createdAt: now - 10000,
+          },
+          'did:plc:active': {
+            handle: 'active.bsky.social',
+            expiresAt: now + 3600000,
+            createdAt: now,
+          },
         },
-        'did:plc:active': {
-          handle: 'active.bsky.social',
-          expiresAt: now + 3600000,
-          createdAt: now,
-        },
-      };
+      });
 
       await removeAllExpiredMutes();
 
@@ -340,8 +249,6 @@ describe('Integration Tests', () => {
 
       await setOptions(customOptions);
 
-      // Simulate retrieving options
-      mockLocalStorage['extensionOptions'] = customOptions;
       const retrieved = await getOptions();
 
       expect(retrieved.defaultDuration).toBe(3600000);
@@ -351,8 +258,6 @@ describe('Integration Tests', () => {
 
     it('should use default options when none stored', async () => {
       const { getOptions } = await import('../storage');
-
-      mockLocalStorage['extensionOptions'] = undefined;
 
       const options = await getOptions();
       expect(options).toEqual(DEFAULT_OPTIONS);
@@ -368,9 +273,10 @@ describe('Integration Tests', () => {
       };
 
       // Simulate storing auth from content script
-      await mockChrome.storage.local.set({ authToken: authData });
+      await mockedBrowser.storage.local.set({ authToken: authData });
 
-      expect(mockLocalStorage['authToken']).toEqual(authData);
+      const result = await mockedBrowser.storage.local.get('authToken');
+      expect(result.authToken).toEqual(authData);
     });
 
     it('should handle auth token update', async () => {
@@ -386,10 +292,11 @@ describe('Integration Tests', () => {
         pdsUrl: 'https://bsky.social',
       };
 
-      await mockChrome.storage.local.set({ authToken: oldAuth });
-      await mockChrome.storage.local.set({ authToken: newAuth });
+      await mockedBrowser.storage.local.set({ authToken: oldAuth });
+      await mockedBrowser.storage.local.set({ authToken: newAuth });
 
-      expect(mockLocalStorage['authToken']).toEqual(newAuth);
+      const result = await mockedBrowser.storage.local.get('authToken');
+      expect(result.authToken).toEqual(newAuth);
     });
   });
 
@@ -480,13 +387,15 @@ describe('Integration Tests', () => {
     it('should handle removing non-existent block', async () => {
       const { removeTempBlock, getTempBlocks } = await import('../storage');
 
-      mockSyncStorage['tempBlocks'] = {
-        'did:plc:exists': {
-          handle: 'exists.bsky.social',
-          expiresAt: Date.now() + 3600000,
-          createdAt: Date.now(),
+      await mockedBrowser.storage.sync.set({
+        tempBlocks: {
+          'did:plc:exists': {
+            handle: 'exists.bsky.social',
+            expiresAt: Date.now() + 3600000,
+            createdAt: Date.now(),
+          },
         },
-      };
+      });
 
       // Remove non-existent
       await removeTempBlock('did:plc:nonexistent');
@@ -499,9 +408,6 @@ describe('Integration Tests', () => {
     it('should handle empty storage gracefully', async () => {
       const { getTempBlocks, getTempMutes, getActionHistory, getOptions } =
         await import('../storage');
-
-      mockSyncStorage = {};
-      mockLocalStorage = {};
 
       const blocks = await getTempBlocks();
       const mutes = await getTempMutes();

@@ -3,6 +3,7 @@
  * Handles options, action history, and temporary blocks/mutes
  */
 
+import browser from './browser.js';
 import {
   DEFAULT_OPTIONS,
   type ExtensionOptions,
@@ -41,7 +42,7 @@ interface TempBlocksMap {
  * Get all temp blocks from storage
  */
 export async function getTempBlocks(): Promise<TempBlocksMap> {
-  const result = await chrome.storage.sync.get(STORAGE_KEYS.TEMP_BLOCKS);
+  const result = await browser.storage.sync.get(STORAGE_KEYS.TEMP_BLOCKS);
   return (result[STORAGE_KEYS.TEMP_BLOCKS] as TempBlocksMap) || {};
 }
 
@@ -49,7 +50,7 @@ export async function getTempBlocks(): Promise<TempBlocksMap> {
  * Get all temp mutes from storage
  */
 export async function getTempMutes(): Promise<TempBlocksMap> {
-  const result = await chrome.storage.sync.get(STORAGE_KEYS.TEMP_MUTES);
+  const result = await browser.storage.sync.get(STORAGE_KEYS.TEMP_MUTES);
   return (result[STORAGE_KEYS.TEMP_MUTES] as TempBlocksMap) || {};
 }
 
@@ -73,9 +74,9 @@ export async function addTempBlock(
     createdAt: Date.now(),
     rkey,
   };
-  await chrome.storage.sync.set({ [STORAGE_KEYS.TEMP_BLOCKS]: blocks });
+  await browser.storage.sync.set({ [STORAGE_KEYS.TEMP_BLOCKS]: blocks });
   // Notify background to set alarm
-  chrome.runtime.sendMessage({
+  browser.runtime.sendMessage({
     type: 'TEMP_BLOCK_ADDED',
     did,
     expiresAt: blocks[did].expiresAt,
@@ -89,7 +90,7 @@ export async function addTempBlock(
 export async function removeTempBlock(did: string): Promise<void> {
   const blocks = await getTempBlocks();
   delete blocks[did];
-  await chrome.storage.sync.set({ [STORAGE_KEYS.TEMP_BLOCKS]: blocks });
+  await browser.storage.sync.set({ [STORAGE_KEYS.TEMP_BLOCKS]: blocks });
 }
 
 /**
@@ -109,9 +110,9 @@ export async function addTempMute(
     expiresAt: Date.now() + durationMs,
     createdAt: Date.now(),
   };
-  await chrome.storage.sync.set({ [STORAGE_KEYS.TEMP_MUTES]: mutes });
+  await browser.storage.sync.set({ [STORAGE_KEYS.TEMP_MUTES]: mutes });
   // Notify background to set alarm
-  chrome.runtime.sendMessage({
+  browser.runtime.sendMessage({
     type: 'TEMP_MUTE_ADDED',
     did,
     expiresAt: mutes[did].expiresAt,
@@ -125,7 +126,7 @@ export async function addTempMute(
 export async function removeTempMute(did: string): Promise<void> {
   const mutes = await getTempMutes();
   delete mutes[did];
-  await chrome.storage.sync.set({ [STORAGE_KEYS.TEMP_MUTES]: mutes });
+  await browser.storage.sync.set({ [STORAGE_KEYS.TEMP_MUTES]: mutes });
 }
 
 // ============================================================================
@@ -136,7 +137,7 @@ export async function removeTempMute(did: string): Promise<void> {
  * Get extension options from local storage
  */
 export async function getOptions(): Promise<ExtensionOptions> {
-  const result = await chrome.storage.local.get(STORAGE_KEYS.OPTIONS);
+  const result = await browser.storage.local.get(STORAGE_KEYS.OPTIONS);
   return (result[STORAGE_KEYS.OPTIONS] as ExtensionOptions) || DEFAULT_OPTIONS;
 }
 
@@ -144,7 +145,7 @@ export async function getOptions(): Promise<ExtensionOptions> {
  * Set extension options in local storage
  */
 export async function setOptions(options: ExtensionOptions): Promise<void> {
-  await chrome.storage.local.set({ [STORAGE_KEYS.OPTIONS]: options });
+  await browser.storage.local.set({ [STORAGE_KEYS.OPTIONS]: options });
 }
 
 // ============================================================================
@@ -156,7 +157,7 @@ export async function setOptions(options: ExtensionOptions): Promise<void> {
  * Returns entries in reverse chronological order (newest first)
  */
 export async function getActionHistory(): Promise<HistoryEntry[]> {
-  const result = await chrome.storage.local.get(STORAGE_KEYS.ACTION_HISTORY);
+  const result = await browser.storage.local.get(STORAGE_KEYS.ACTION_HISTORY);
   const history = result[STORAGE_KEYS.ACTION_HISTORY] || [];
   return history as HistoryEntry[];
 }
@@ -178,7 +179,7 @@ export async function addHistoryEntry(entry: HistoryEntry): Promise<void> {
   // Keep only the last HISTORY_MAX_ENTRIES
   const trimmed = history.slice(0, HISTORY_MAX_ENTRIES);
 
-  await chrome.storage.local.set({ [STORAGE_KEYS.ACTION_HISTORY]: trimmed });
+  await browser.storage.local.set({ [STORAGE_KEYS.ACTION_HISTORY]: trimmed });
 }
 
 // ============================================================================
@@ -199,7 +200,7 @@ export async function removeAllExpiredBlocks(): Promise<void> {
     }
   }
 
-  await chrome.storage.sync.set({ [STORAGE_KEYS.TEMP_BLOCKS]: updated });
+  await browser.storage.sync.set({ [STORAGE_KEYS.TEMP_BLOCKS]: updated });
 }
 
 /**
@@ -216,7 +217,7 @@ export async function removeAllExpiredMutes(): Promise<void> {
     }
   }
 
-  await chrome.storage.sync.set({ [STORAGE_KEYS.TEMP_MUTES]: updated });
+  await browser.storage.sync.set({ [STORAGE_KEYS.TEMP_MUTES]: updated });
 }
 
 // ============================================================================
@@ -229,7 +230,7 @@ const MAX_POST_CONTEXTS = 500; // Keep last 500 post contexts
  * Get all stored post contexts
  */
 export async function getPostContexts(): Promise<PostContext[]> {
-  const result = await chrome.storage.local.get(STORAGE_KEYS.POST_CONTEXTS);
+  const result = await browser.storage.local.get(STORAGE_KEYS.POST_CONTEXTS);
   return (result[STORAGE_KEYS.POST_CONTEXTS] as PostContext[]) || [];
 }
 
@@ -243,7 +244,7 @@ export async function addPostContext(context: PostContext): Promise<void> {
   // Trim to max entries
   const trimmed = contexts.slice(0, MAX_POST_CONTEXTS);
 
-  await chrome.storage.local.set({ [STORAGE_KEYS.POST_CONTEXTS]: trimmed });
+  await browser.storage.local.set({ [STORAGE_KEYS.POST_CONTEXTS]: trimmed });
 }
 
 /**
@@ -252,7 +253,7 @@ export async function addPostContext(context: PostContext): Promise<void> {
 export async function deletePostContext(id: string): Promise<void> {
   const contexts = await getPostContexts();
   const filtered = contexts.filter((c) => c.id !== id);
-  await chrome.storage.local.set({ [STORAGE_KEYS.POST_CONTEXTS]: filtered });
+  await browser.storage.local.set({ [STORAGE_KEYS.POST_CONTEXTS]: filtered });
 }
 
 /**
@@ -267,7 +268,7 @@ export async function cleanupExpiredPostContexts(): Promise<void> {
 
   const filtered = contexts.filter((c) => c.timestamp > cutoff);
   if (filtered.length !== contexts.length) {
-    await chrome.storage.local.set({ [STORAGE_KEYS.POST_CONTEXTS]: filtered });
+    await browser.storage.local.set({ [STORAGE_KEYS.POST_CONTEXTS]: filtered });
     console.log(
       `[ErgoBlock] Cleaned up ${contexts.length - filtered.length} expired post contexts`
     );

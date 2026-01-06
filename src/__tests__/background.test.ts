@@ -1,4 +1,8 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
+import browser from '../browser';
+
+// Get the mocked browser
+const mockedBrowser = vi.mocked(browser);
 
 // Mock all dependencies from storage.js before importing background.ts
 vi.mock('../storage.js', () => ({
@@ -18,44 +22,12 @@ describe('Background Service Worker', () => {
     vi.resetModules();
     vi.clearAllMocks();
 
-    // Mock chrome API
-    const chromeMock = {
-      storage: {
-        local: {
-          get: vi
-            .fn()
-            .mockResolvedValue({ authToken: { accessJwt: 'test', did: 'test', pdsUrl: 'test' } }),
-          set: vi.fn().mockResolvedValue(undefined),
-        },
-      },
-      alarms: {
-        create: vi.fn(),
-        clear: vi.fn(),
-        onAlarm: {
-          addListener: vi.fn(),
-        },
-      },
-      runtime: {
-        onMessage: {
-          addListener: vi.fn(),
-        },
-        onInstalled: {
-          addListener: vi.fn(),
-        },
-        onStartup: {
-          addListener: vi.fn(),
-        },
-      },
-      action: {
-        setBadgeText: vi.fn(),
-        setBadgeBackgroundColor: vi.fn(),
-      },
-      notifications: {
-        create: vi.fn(),
-      },
-    };
+    // Set up auth token in storage for tests that need it
+    mockedBrowser.storage.local.get = vi
+      .fn()
+      .mockResolvedValue({ authToken: { accessJwt: 'test', did: 'test', pdsUrl: 'test' } });
+    mockedBrowser.storage.local.set = vi.fn().mockResolvedValue(undefined);
 
-    vi.stubGlobal('chrome', chromeMock);
     vi.stubGlobal('fetch', vi.fn());
   });
 

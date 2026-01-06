@@ -14,36 +14,14 @@ import {
   removeAllExpiredMutes,
 } from '../storage.js';
 import { DEFAULT_OPTIONS, HistoryEntry } from '../types.js';
+import browser from '../browser.js';
+
+// Get the mocked browser for assertions
+const mockedBrowser = vi.mocked(browser);
 
 describe('Storage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-
-    // Mock chrome API
-    const store: Record<string, unknown> = {};
-    const chromeMock = {
-      storage: {
-        sync: {
-          get: vi.fn().mockImplementation((key: string) => Promise.resolve({ [key]: store[key] })),
-          set: vi.fn().mockImplementation((data: Record<string, unknown>) => {
-            Object.assign(store, data);
-            return Promise.resolve();
-          }),
-        },
-        local: {
-          get: vi.fn().mockImplementation((key: string) => Promise.resolve({ [key]: store[key] })),
-          set: vi.fn().mockImplementation((data: Record<string, unknown>) => {
-            Object.assign(store, data);
-            return Promise.resolve();
-          }),
-        },
-      },
-      runtime: {
-        sendMessage: vi.fn(),
-      },
-    };
-
-    vi.stubGlobal('chrome', chromeMock);
   });
 
   describe('Temp Blocks', () => {
@@ -53,7 +31,7 @@ describe('Storage', () => {
       const blocks = await getTempBlocks();
       expect(blocks['did:test:123']).toBeDefined();
       expect(blocks['did:test:123'].handle).toBe('test.bsky.social');
-      expect(chrome.runtime.sendMessage).toHaveBeenCalledWith(
+      expect(mockedBrowser.runtime.sendMessage).toHaveBeenCalledWith(
         expect.objectContaining({
           type: 'TEMP_BLOCK_ADDED',
           did: 'did:test:123',
@@ -77,7 +55,7 @@ describe('Storage', () => {
       const mutes = await getTempMutes();
       expect(mutes['did:test:456']).toBeDefined();
       expect(mutes['did:test:456'].handle).toBe('mute.bsky.social');
-      expect(chrome.runtime.sendMessage).toHaveBeenCalledWith(
+      expect(mockedBrowser.runtime.sendMessage).toHaveBeenCalledWith(
         expect.objectContaining({
           type: 'TEMP_MUTE_ADDED',
           did: 'did:test:456',
@@ -152,7 +130,7 @@ describe('Storage', () => {
         'did:expired': { handle: 'old', expiresAt: now - 1000, createdAt: now - 2000 },
         'did:active': { handle: 'new', expiresAt: now + 1000, createdAt: now },
       };
-      await chrome.storage.sync.set({ tempBlocks: blocks });
+      await mockedBrowser.storage.sync.set({ tempBlocks: blocks });
 
       await removeAllExpiredBlocks();
 
@@ -167,7 +145,7 @@ describe('Storage', () => {
         'did:expired': { handle: 'old', expiresAt: now - 1000, createdAt: now - 2000 },
         'did:active': { handle: 'new', expiresAt: now + 1000, createdAt: now },
       };
-      await chrome.storage.sync.set({ tempMutes: mutes });
+      await mockedBrowser.storage.sync.set({ tempMutes: mutes });
 
       await removeAllExpiredMutes();
 

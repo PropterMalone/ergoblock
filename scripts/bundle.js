@@ -5,6 +5,19 @@ import path from 'path';
 
 async function build() {
   try {
+    // Parse CLI arguments
+    const args = process.argv.slice(2);
+    const targetArg = args.find((arg) => arg.startsWith('--target='));
+    const target = targetArg ? targetArg.split('=')[1] : 'chrome';
+
+    // Validate target
+    if (!['chrome', 'firefox'].includes(target)) {
+      console.error('Invalid target. Use --target=chrome or --target=firefox');
+      process.exit(1);
+    }
+
+    console.log(`Building for ${target}...`);
+
     // Copy assets first
     copyAssets();
 
@@ -31,7 +44,13 @@ async function build() {
       external: ['chrome'],
     });
 
-    console.log('Build completed successfully');
+    // Copy the appropriate manifest to dist/
+    const manifestSource = target === 'firefox' ? './manifest.firefox.json' : './manifest.json';
+    const manifestDest = './dist/manifest.json';
+    const manifestContent = fs.readFileSync(manifestSource, 'utf-8');
+    fs.writeFileSync(manifestDest, manifestContent);
+
+    console.log(`Build completed successfully for ${target}`);
   } catch (error) {
     console.error('Build failed:', error);
     process.exit(1);
