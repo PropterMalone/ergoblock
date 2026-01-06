@@ -10,6 +10,10 @@ export interface ExtensionOptions {
   checkInterval: number;
   showBadgeCount: boolean;
   theme: 'light' | 'dark' | 'auto';
+  // Screenshot settings
+  screenshotEnabled: boolean;
+  screenshotQuality: number; // 0.1 to 1.0
+  screenshotRetentionDays: number; // 0 = never delete
 }
 
 export const DEFAULT_OPTIONS: ExtensionOptions = {
@@ -20,6 +24,10 @@ export const DEFAULT_OPTIONS: ExtensionOptions = {
   checkInterval: 1,
   showBadgeCount: true,
   theme: 'auto',
+  // Screenshot defaults
+  screenshotEnabled: true,
+  screenshotQuality: 0.7,
+  screenshotRetentionDays: 30,
 };
 
 export interface HistoryEntry {
@@ -91,4 +99,19 @@ export interface ListRecordsResponse {
 export interface Profile {
   did: string;
   handle: string;
+}
+
+/**
+ * Screenshot data stored when blocking/muting from a post
+ */
+export interface ScreenshotData {
+  id: string;
+  imageData: string; // Base64 encoded JPEG
+  handle: string;
+  did: string;
+  actionType: 'block' | 'mute';
+  permanent: boolean;
+  timestamp: number;
+  postText?: string; // Extracted text from the post
+  postUrl?: string; // URL of the post if available
 }

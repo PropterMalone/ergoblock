@@ -3,7 +3,12 @@
  * Handles options, action history, and temporary blocks/mutes
  */
 
-import { DEFAULT_OPTIONS, type ExtensionOptions, type HistoryEntry } from './types.js';
+import {
+  DEFAULT_OPTIONS,
+  type ExtensionOptions,
+  type HistoryEntry,
+  type ScreenshotData,
+} from './types.js';
 
 export const STORAGE_KEYS = {
   TEMP_BLOCKS: 'tempBlocks',
@@ -11,6 +16,7 @@ export const STORAGE_KEYS = {
   OPTIONS: 'extensionOptions',
   ACTION_HISTORY: 'actionHistory',
   LAST_TAB: 'lastActiveTab',
+  SCREENSHOTS: 'screenshots',
 };
 
 const HISTORY_MAX_ENTRIES = 100;
@@ -211,4 +217,71 @@ export async function removeAllExpiredMutes(): Promise<void> {
   }
 
   await chrome.storage.sync.set({ [STORAGE_KEYS.TEMP_MUTES]: updated });
+}
+
+// ============================================================================
+// Screenshot storage management
+// ============================================================================
+
+const MAX_SCREENSHOT_STORAGE_MB = 5;
+const MAX_SCREENSHOT_STORAGE_BYTES = MAX_SCREENSHOT_STORAGE_MB * 1024 * 1024;
+
+/**
+ * Get all stored screenshots
+ */
+export async function getScreenshots(): Promise<ScreenshotData[]> {
+  const result = await chrome.storage.local.get(STORAGE_KEYS.SCREENSHOTS);
+  return (result[STORAGE_KEYS.SCREENSHOTS] as ScreenshotData[]) || [];
+}
+
+/**
+ * Add a screenshot to storage
+ * Enforces storage limits by removing oldest screenshots if needed
+ */
+export async function addScreenshot(screenshot: ScreenshotData): Promise<void> {
+  const screenshots = await getScreenshots();
+  screenshots.unshift(screenshot); // Add to beginning (newest first)
+
+  // Estimate total size and trim if needed
+  let totalSize = 0;
+  const trimmed: ScreenshotData[] = [];
+
+  for (const s of screenshots) {
+    // Base64 is ~33% larger than binary, so estimate actual size
+    const sizeEstimate = s.imageData.length * 0.75;
+    if (totalSize + sizeEstimate <= MAX_SCREENSHOT_STORAGE_BYTES) {
+      trimmed.push(s);
+      totalSize += sizeEstimate;
+    }
+  }
+
+  await chrome.storage.local.set({ [STORAGE_KEYS.SCREENSHOTS]: trimmed });
+}
+
+/**
+ * Delete a screenshot by ID
+ */
+export async function deleteScreenshot(id: string): Promise<void> {
+  const screenshots = await getScreenshots();
+  const filtered = screenshots.filter((s) => s.id !== id);
+  await chrome.storage.local.set({ [STORAGE_KEYS.SCREENSHOTS]: filtered });
+}
+
+/**
+ * Clean up expired screenshots based on retention policy
+ */
+export async function cleanupExpiredScreenshots(): Promise<void> {
+  const options = await getOptions();
+  if (options.screenshotRetentionDays <= 0) return; // 0 = never delete
+
+  const screenshots = await getScreenshots();
+  const cutoff = Date.now() - options.screenshotRetentionDays * 24 * 60 * 60 * 1000;
+
+  const filtered = screenshots.filter((s) => s.timestamp > cutoff);
+  if (filtered.length !== screenshots.length) {
+    await chrome.storage.local.set({ [STORAGE_KEYS.SCREENSHOTS]: filtered });
+    console.log(
+      `[ErgoBlock] Cleaned up ${screenshots.length - filtered.length} expired screenshots`
+    );
+  }
 }

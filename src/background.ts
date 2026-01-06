@@ -6,6 +6,7 @@ import {
   removeTempMute,
   getOptions,
   addHistoryEntry,
+  cleanupExpiredScreenshots,
 } from './storage.js';
 import { ListRecordsResponse } from './types.js';
 
@@ -171,6 +172,9 @@ export async function sendNotification(
 
 export async function checkExpirations(): Promise<void> {
   console.log('[ErgoBlock BG] Checking expirations...');
+
+  // Clean up expired screenshots based on retention policy
+  await cleanupExpiredScreenshots();
 
   const auth = await getAuthToken();
   if (!auth?.accessJwt || !auth?.did || !auth?.pdsUrl) {

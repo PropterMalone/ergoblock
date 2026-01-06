@@ -3,6 +3,7 @@
 
 import { getSession, getProfile, blockUser, muteUser } from './api.js';
 import { addTempBlock, addTempMute } from './storage.js';
+import { capturePostScreenshot, findPostContainer } from './screenshot.js';
 
 // Configuration for DOM selectors and magic strings
 const CONFIG = {
@@ -107,69 +108,6 @@ function extractUserFromMenu(menuElement: Element): { handle: string } | null {
 }
 
 /**
- * Create a menu item element matching Bluesky's style
- */
-function createMenuItem(
-  text: string,
-  icon: string,
-  onClick: () => Promise<void> | void
-): HTMLElement {
-  const item = document.createElement('div');
-  item.setAttribute('role', 'menuitem');
-  item.setAttribute('tabindex', '0');
-  item.style.cssText = `
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    padding: 8px 16px;
-    cursor: pointer;
-    color: inherit;
-    font-size: 14px;
-  `;
-
-  item.innerHTML = `
-    <span style="font-size: 16px;">${icon}</span>
-    <span>${text}</span>
-  `;
-
-  item.addEventListener('click', async (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    await onClick();
-  });
-
-  item.addEventListener('mouseenter', () => {
-    item.style.backgroundColor = 'rgba(0, 0, 0, 0.05)';
-  });
-
-  item.addEventListener('mouseleave', () => {
-    item.style.backgroundColor = 'transparent';
-  });
-
-  item.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' || e.key === ' ') {
-      e.preventDefault();
-      onClick();
-    }
-  });
-
-  return item;
-}
-
-/**
- * Create a separator element
- */
-function createSeparator(): HTMLElement {
-  const sep = document.createElement('div');
-  sep.style.cssText = `
-    height: 1px;
-    background-color: rgba(0, 0, 0, 0.1);
-    margin: 4px 0;
-  `;
-  return sep;
-}
-
-/**
  * Duration options in milliseconds
  */
 const DURATION_OPTIONS = [
@@ -179,6 +117,7 @@ const DURATION_OPTIONS = [
   { label: '24 hours', ms: 24 * 60 * 60 * 1000 },
   { label: '3 days', ms: 3 * 24 * 60 * 60 * 1000 },
   { label: '1 week', ms: 7 * 24 * 60 * 60 * 1000 },
+  { label: 'Permanent', ms: -1 },
 ];
 
 /**
@@ -221,7 +160,7 @@ function showDurationPicker(actionType: 'block' | 'mute', handle: string): void 
     font-weight: 600;
     color: #1a1a1a;
   `;
-  title.textContent = `Temp ${actionType === 'block' ? 'Block' : 'Mute'} @${handle}`;
+  title.textContent = `${actionType === 'block' ? 'Block' : 'Mute'} @${handle}`;
 
   const subtitle = document.createElement('p');
   subtitle.style.cssText = `
@@ -229,7 +168,7 @@ function showDurationPicker(actionType: 'block' | 'mute', handle: string): void 
     font-size: 14px;
     color: #666;
   `;
-  subtitle.textContent = 'Select duration:';
+  subtitle.textContent = 'Choose duration:';
 
   const buttonContainer = document.createElement('div');
   buttonContainer.style.cssText = `
@@ -240,34 +179,49 @@ function showDurationPicker(actionType: 'block' | 'mute', handle: string): void 
 
   DURATION_OPTIONS.forEach((option) => {
     const btn = document.createElement('button');
+    const isPermanent = option.ms === -1;
+
     btn.style.cssText = `
       padding: 10px 16px;
-      border: 1px solid #ddd;
+      border: 1px solid ${isPermanent ? '#dc2626' : '#ddd'};
       border-radius: 8px;
-      background: #f5f5f5;
+      background: ${isPermanent ? '#dc2626' : '#f5f5f5'};
       cursor: pointer;
       font-size: 14px;
       font-weight: 500;
-      color: #1a1a1a;
+      color: ${isPermanent ? 'white' : '#1a1a1a'};
       transition: all 0.2s;
+      ${isPermanent ? 'grid-column: 1 / -1;' : ''}
     `;
     btn.textContent = option.label;
 
-    btn.addEventListener('mouseenter', () => {
-      btn.style.background = '#0085ff';
-      btn.style.color = 'white';
-      btn.style.borderColor = '#0085ff';
-    });
-
-    btn.addEventListener('mouseleave', () => {
-      btn.style.background = '#f5f5f5';
-      btn.style.color = '#1a1a1a';
-      btn.style.borderColor = '#ddd';
-    });
+    if (isPermanent) {
+      btn.addEventListener('mouseenter', () => {
+        btn.style.background = '#b91c1c';
+        btn.style.borderColor = '#b91c1c';
+      });
+      btn.addEventListener('mouseleave', () => {
+        btn.style.background = '#dc2626';
+        btn.style.borderColor = '#dc2626';
+      });
+    } else {
+      btn.addEventListener('mouseenter', () => {
+        btn.style.background = '#0085ff';
+        btn.style.color = 'white';
+        btn.style.borderColor = '#0085ff';
+      });
+      btn.addEventListener('mouseleave', () => {
+        btn.style.background = '#f5f5f5';
+        btn.style.color = '#1a1a1a';
+        btn.style.borderColor = '#ddd';
+      });
+    }
 
     btn.addEventListener('click', async () => {
       overlay.remove();
-      if (actionType === 'block') {
+      if (isPermanent) {
+        await handlePermanentAction(actionType, handle);
+      } else if (actionType === 'block') {
         await handleTempBlock(handle, option.ms, option.label);
       } else {
         await handleTempMute(handle, option.ms, option.label);
@@ -372,20 +326,19 @@ async function handleTempBlock(
   durationMs: number,
   durationLabel: string
 ): Promise<void> {
-  console.log('[TempBlock] handleTempBlock called for:', handle, 'duration:', durationLabel);
+  console.log('[ErgoBlock] handleTempBlock called for:', handle, 'duration:', durationLabel);
   try {
+    // Find post container for screenshot (before closing menus)
+    const postContainer = findPostContainer(lastClickedElement);
+
     // Get the user's DID from their profile
-    console.log('[TempBlock] Getting profile...');
     const profile = await getProfile(handle);
-    console.log('[TempBlock] Got profile:', profile);
     if (!profile?.did) {
       throw new Error('Could not get user profile');
     }
 
     // Block the user via API
-    console.log('[TempBlock] Blocking user with DID:', profile.did);
     const blockResult = await blockUser(profile.did);
-    console.log('[TempBlock] Block result:', blockResult);
 
     // Extract rkey if available
     let rkey: string | undefined;
@@ -398,15 +351,23 @@ async function handleTempBlock(
     }
 
     // Store in temp blocks with custom duration
-    console.log('[TempBlock] Storing temp block...');
     await addTempBlock(profile.did, profile.handle || handle, durationMs, rkey);
-    console.log('[TempBlock] Stored temp block');
+
+    // Capture screenshot in background (non-blocking)
+    if (postContainer) {
+      capturePostScreenshot(
+        postContainer,
+        profile.handle || handle,
+        profile.did,
+        'block',
+        false
+      ).catch((e) => console.warn('[ErgoBlock] Screenshot failed:', e));
+    }
 
     closeMenus();
-    console.log('[TempBlock] Showing success toast');
     showToast(`Temporarily blocked @${profile.handle || handle} for ${durationLabel}`);
   } catch (error) {
-    console.error('[TempBlock] Failed to temp block:', error);
+    console.error('[ErgoBlock] Failed to temp block:', error);
     showToast(`Failed to block: ${(error as Error).message}`, true);
   }
 }
@@ -419,8 +380,11 @@ async function handleTempMute(
   durationMs: number,
   durationLabel: string
 ): Promise<void> {
-  console.log('[TempBlock] handleTempMute called for:', handle, 'duration:', durationLabel);
+  console.log('[ErgoBlock] handleTempMute called for:', handle, 'duration:', durationLabel);
   try {
+    // Find post container for screenshot (before closing menus)
+    const postContainer = findPostContainer(lastClickedElement);
+
     // Get the user's DID from their profile
     const profile = await getProfile(handle);
     if (!profile?.did) {
@@ -433,19 +397,100 @@ async function handleTempMute(
     // Store in temp mutes with custom duration
     await addTempMute(profile.did, profile.handle || handle, durationMs);
 
+    // Capture screenshot in background (non-blocking)
+    if (postContainer) {
+      capturePostScreenshot(
+        postContainer,
+        profile.handle || handle,
+        profile.did,
+        'mute',
+        false
+      ).catch((e) => console.warn('[ErgoBlock] Screenshot failed:', e));
+    }
+
     closeMenus();
     showToast(`Temporarily muted @${profile.handle || handle} for ${durationLabel}`);
   } catch (error) {
-    console.error('[TempBlock] Failed to temp mute:', error);
+    console.error('[ErgoBlock] Failed to temp mute:', error);
     showToast(`Failed to mute: ${(error as Error).message}`, true);
   }
 }
 
 /**
- * Inject menu items into a dropdown menu
+ * Handle permanent block/mute action (no expiration tracking)
+ */
+async function handlePermanentAction(actionType: 'block' | 'mute', handle: string): Promise<void> {
+  console.log('[ErgoBlock] handlePermanentAction called for:', handle, 'action:', actionType);
+  try {
+    // Find post container for screenshot (before closing menus)
+    const postContainer = findPostContainer(lastClickedElement);
+
+    // Get the user's DID from their profile
+    const profile = await getProfile(handle);
+    if (!profile?.did) {
+      throw new Error('Could not get user profile');
+    }
+
+    // Perform the action via API (no expiration tracking)
+    if (actionType === 'block') {
+      await blockUser(profile.did);
+    } else {
+      await muteUser(profile.did);
+    }
+
+    // Capture screenshot in background (non-blocking)
+    if (postContainer) {
+      capturePostScreenshot(
+        postContainer,
+        profile.handle || handle,
+        profile.did,
+        actionType,
+        true // permanent
+      ).catch((e) => console.warn('[ErgoBlock] Screenshot failed:', e));
+    }
+
+    closeMenus();
+    showToast(
+      `Permanently ${actionType === 'block' ? 'blocked' : 'muted'} @${profile.handle || handle}`
+    );
+  } catch (error) {
+    console.error('[ErgoBlock] Failed to permanent', actionType, ':', error);
+    showToast(`Failed to ${actionType}: ${(error as Error).message}`, true);
+  }
+}
+
+/**
+ * Intercept a native menu item to show duration picker instead
+ */
+function interceptMenuItem(item: HTMLElement, actionType: 'block' | 'mute', handle: string): void {
+  // Clone the element to remove existing event listeners
+  const clone = item.cloneNode(true) as HTMLElement;
+
+  // Add our intercepting click handler
+  clone.addEventListener(
+    'click',
+    (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      e.stopImmediatePropagation();
+      closeMenus();
+      showDurationPicker(actionType, handle);
+    },
+    true
+  );
+
+  // Mark as intercepted
+  clone.setAttribute(CONFIG.ATTRIBUTES.INJECTED, 'true');
+
+  // Replace the original with our intercepted version
+  item.parentNode?.replaceChild(clone, item);
+}
+
+/**
+ * Intercept native Block/Mute menu items to show duration picker
  */
 function injectMenuItems(menu: Element): void {
-  // Check if we've already injected
+  // Check if we've already processed this menu
   if (menu.querySelector(`[${CONFIG.ATTRIBUTES.INJECTED}]`)) {
     return;
   }
@@ -462,55 +507,29 @@ function injectMenuItems(menu: Element): void {
   }
 
   if (!userInfo?.handle) {
-    console.log('[TempBlock] Could not determine user for menu');
+    console.log('[ErgoBlock] Could not determine user for menu');
     return;
   }
 
-  // Find where to insert (after Block Account if present, or at the end)
+  const handle = userInfo.handle;
   const menuItemsList = menuItems.querySelectorAll(CONFIG.SELECTORS.MENU_ITEM);
-  let insertAfter: Element | null = null;
 
+  // Find and intercept native Block/Mute items
   for (const item of menuItemsList) {
     const text = item.textContent?.toLowerCase() || '';
-    if (text.includes('block')) {
-      insertAfter = item;
-      break;
+
+    // Intercept "Block Account" (but not "Unblock")
+    if (text.includes('block') && !text.includes('unblock')) {
+      interceptMenuItem(item as HTMLElement, 'block', handle);
+      console.log('[ErgoBlock] Intercepted Block menu item for', handle);
+    }
+
+    // Intercept "Mute Account" (but not "Unmute")
+    if (text.includes('mute') && !text.includes('unmute')) {
+      interceptMenuItem(item as HTMLElement, 'mute', handle);
+      console.log('[ErgoBlock] Intercepted Mute menu item for', handle);
     }
   }
-
-  // Create our menu items
-  const separator = createSeparator();
-  separator.setAttribute(CONFIG.ATTRIBUTES.INJECTED, 'true');
-
-  const tempMuteItem = createMenuItem('Temp Mute...', '⏱️', () => {
-    if (userInfo?.handle) {
-      closeMenus();
-      showDurationPicker('mute', userInfo.handle);
-    }
-  });
-  tempMuteItem.setAttribute(CONFIG.ATTRIBUTES.INJECTED, 'true');
-
-  const tempBlockItem = createMenuItem('Temp Block...', '⏱️', () => {
-    if (userInfo?.handle) {
-      closeMenus();
-      showDurationPicker('block', userInfo.handle);
-    }
-  });
-  tempBlockItem.setAttribute(CONFIG.ATTRIBUTES.INJECTED, 'true');
-
-  // Insert items
-  if (insertAfter && insertAfter.nextSibling) {
-    insertAfter.parentNode?.insertBefore(separator, insertAfter.nextSibling);
-    insertAfter.parentNode?.insertBefore(tempMuteItem, separator.nextSibling);
-    insertAfter.parentNode?.insertBefore(tempBlockItem, tempMuteItem.nextSibling);
-  } else {
-    // Append at the end
-    menuItems.appendChild(separator);
-    menuItems.appendChild(tempMuteItem);
-    menuItems.appendChild(tempBlockItem);
-  }
-
-  console.log('[TempBlock] Injected menu items for', userInfo.handle);
 }
 
 /**

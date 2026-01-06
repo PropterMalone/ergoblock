@@ -334,6 +334,9 @@ describe('Integration Tests', () => {
         checkInterval: 5,
         showBadgeCount: false,
         theme: 'dark',
+        screenshotEnabled: true,
+        screenshotQuality: 0.7,
+        screenshotRetentionDays: 30,
       };
 
       await setOptions(customOptions);

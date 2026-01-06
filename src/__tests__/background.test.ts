@@ -10,6 +10,7 @@ vi.mock('../storage.js', () => ({
     .fn()
     .mockResolvedValue({ showBadgeCount: true, notificationsEnabled: true, checkInterval: 1 }),
   addHistoryEntry: vi.fn().mockResolvedValue(undefined),
+  cleanupExpiredScreenshots: vi.fn().mockResolvedValue(undefined),
 }));
 
 describe('Background Service Worker', () => {

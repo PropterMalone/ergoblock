@@ -156,6 +156,9 @@ describe('options module', () => {
         checkInterval: 5,
         showBadgeCount: false,
         theme: 'dark',
+        screenshotEnabled: true,
+        screenshotQuality: 0.7,
+        screenshotRetentionDays: 30,
       };
       mockLocalStorage['extensionOptions'] = customOptions;
 
@@ -174,6 +177,9 @@ describe('options module', () => {
         checkInterval: 2,
         showBadgeCount: true,
         theme: 'light',
+        screenshotEnabled: false,
+        screenshotQuality: 0.5,
+        screenshotRetentionDays: 7,
       };
 
       await mockChrome.storage.local.set({ extensionOptions: options });
