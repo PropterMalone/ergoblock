@@ -27,12 +27,21 @@ const CONFIG = {
 let currentObserver: MutationObserver | null = null;
 let lastClickedElement: HTMLElement | null = null;
 let capturedPostContainer: HTMLElement | null = null;
+let lastClickedPostContainer: HTMLElement | null = null;
 
 // Track the last clicked element to help identify menu context
+// Also immediately try to find the post container, before menus appear
 document.addEventListener(
   'click',
   (e) => {
     lastClickedElement = e.target as HTMLElement;
+    // Try to find post container immediately on every click
+    // This captures it BEFORE any menu appears
+    const container = findPostContainer(lastClickedElement);
+    if (container) {
+      lastClickedPostContainer = container;
+      console.log('[ErgoBlock] Stored post container from click');
+    }
   },
   true
 );
@@ -460,13 +469,10 @@ function interceptMenuItem(item: HTMLElement, actionType: 'block' | 'mute', hand
       e.stopPropagation();
       e.stopImmediatePropagation();
 
-      // IMPORTANT: Capture the post container NOW before showing dialog
-      // because lastClickedElement will be overwritten when user clicks duration buttons
-      capturedPostContainer = findPostContainer(lastClickedElement);
-      console.log(
-        '[ErgoBlock] Captured post container at intercept time:',
-        !!capturedPostContainer
-      );
+      // Use the post container captured when the user clicked the three-dot menu
+      // (captured in the global click handler before the menu appeared)
+      capturedPostContainer = lastClickedPostContainer;
+      console.log('[ErgoBlock] Using post container from earlier click:', !!capturedPostContainer);
 
       closeMenus();
       showDurationPicker(actionType, handle);
