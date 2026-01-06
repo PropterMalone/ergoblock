@@ -26,6 +26,7 @@ const CONFIG = {
 
 let currentObserver: MutationObserver | null = null;
 let lastClickedElement: HTMLElement | null = null;
+let capturedPostContainer: HTMLElement | null = null;
 
 // Track the last clicked element to help identify menu context
 document.addEventListener(
@@ -328,9 +329,9 @@ async function handleTempBlock(
 ): Promise<void> {
   console.log('[ErgoBlock] handleTempBlock called for:', handle, 'duration:', durationLabel);
   try {
-    // Find post container for context capture
-    const postContainer = findPostContainer(lastClickedElement);
-    console.log('[ErgoBlock] Post container found:', !!postContainer);
+    // Use the post container captured when menu was intercepted
+    const postContainer = capturedPostContainer;
+    console.log('[ErgoBlock] Using captured post container:', !!postContainer);
 
     // Get the user's DID from their profile
     const profile = await getProfile(handle);
@@ -377,9 +378,9 @@ async function handleTempMute(
 ): Promise<void> {
   console.log('[ErgoBlock] handleTempMute called for:', handle, 'duration:', durationLabel);
   try {
-    // Find post container for context capture
-    const postContainer = findPostContainer(lastClickedElement);
-    console.log('[ErgoBlock] Post container found:', !!postContainer);
+    // Use the post container captured when menu was intercepted
+    const postContainer = capturedPostContainer;
+    console.log('[ErgoBlock] Using captured post container:', !!postContainer);
 
     // Get the user's DID from their profile
     const profile = await getProfile(handle);
@@ -412,9 +413,9 @@ async function handleTempMute(
 async function handlePermanentAction(actionType: 'block' | 'mute', handle: string): Promise<void> {
   console.log('[ErgoBlock] handlePermanentAction called for:', handle, 'action:', actionType);
   try {
-    // Find post container for context capture
-    const postContainer = findPostContainer(lastClickedElement);
-    console.log('[ErgoBlock] Post container found:', !!postContainer);
+    // Use the post container captured when menu was intercepted
+    const postContainer = capturedPostContainer;
+    console.log('[ErgoBlock] Using captured post container:', !!postContainer);
 
     // Get the user's DID from their profile
     const profile = await getProfile(handle);
@@ -458,6 +459,14 @@ function interceptMenuItem(item: HTMLElement, actionType: 'block' | 'mute', hand
       e.preventDefault();
       e.stopPropagation();
       e.stopImmediatePropagation();
+
+      // IMPORTANT: Capture the post container NOW before showing dialog
+      // because lastClickedElement will be overwritten when user clicks duration buttons
+      capturedPostContainer = findPostContainer(lastClickedElement);
+      console.log(
+        '[ErgoBlock] Captured post container at intercept time:',
+        !!capturedPostContainer
+      );
 
       closeMenus();
       showDurationPicker(actionType, handle);
