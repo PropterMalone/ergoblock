@@ -1,4 +1,12 @@
-import { BskySession, BskyAccount, StorageStructure, Profile } from './types.js';
+import {
+  BskySession,
+  BskyAccount,
+  StorageStructure,
+  Profile,
+  ProfileView,
+  GetBlocksResponse,
+  GetMutesResponse,
+} from './types.js';
 
 // AT Protocol API helpers for Bluesky
 // Handles block/mute/unblock/unmute operations
@@ -294,4 +302,104 @@ export async function unmuteUser(did: string): Promise<unknown> {
  */
 export async function getProfile(actor: string): Promise<Profile | null> {
   return apiRequest<Profile>(`app.bsky.actor.getProfile?actor=${encodeURIComponent(actor)}`);
+}
+
+// Rate limiting delay for paginated requests (ms)
+const PAGINATION_DELAY = 500;
+
+/**
+ * Sleep for a given number of milliseconds
+ */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Get a page of blocked users
+ * @param cursor - Pagination cursor
+ * @param limit - Number of results per page (max 100)
+ */
+export async function getBlocks(cursor?: string, limit = 100): Promise<GetBlocksResponse> {
+  const session = getSession();
+  if (!session) throw new Error('Not logged in');
+
+  let endpoint = `app.bsky.graph.getBlocks?limit=${limit}`;
+  if (cursor) {
+    endpoint += `&cursor=${encodeURIComponent(cursor)}`;
+  }
+
+  // getBlocks goes to user's PDS
+  const response = await apiRequest<GetBlocksResponse>(endpoint, 'GET', null, session.pdsUrl);
+  return response || { blocks: [] };
+}
+
+/**
+ * Get a page of muted users
+ * @param cursor - Pagination cursor
+ * @param limit - Number of results per page (max 100)
+ */
+export async function getMutes(cursor?: string, limit = 100): Promise<GetMutesResponse> {
+  const session = getSession();
+  if (!session) throw new Error('Not logged in');
+
+  let endpoint = `app.bsky.graph.getMutes?limit=${limit}`;
+  if (cursor) {
+    endpoint += `&cursor=${encodeURIComponent(cursor)}`;
+  }
+
+  // getMutes goes to user's PDS
+  const response = await apiRequest<GetMutesResponse>(endpoint, 'GET', null, session.pdsUrl);
+  return response || { mutes: [] };
+}
+
+/**
+ * Fetch all blocked users (paginated)
+ * @param onProgress - Optional callback with current count
+ */
+export async function getAllBlocks(
+  onProgress?: (count: number) => void
+): Promise<ProfileView[]> {
+  const allBlocks: ProfileView[] = [];
+  let cursor: string | undefined;
+
+  do {
+    const response = await getBlocks(cursor);
+    allBlocks.push(...response.blocks);
+    cursor = response.cursor;
+    onProgress?.(allBlocks.length);
+
+    // Rate limit between requests
+    if (cursor) {
+      await sleep(PAGINATION_DELAY);
+    }
+  } while (cursor);
+
+  console.log('[ErgoBlock] Fetched all blocks:', allBlocks.length);
+  return allBlocks;
+}
+
+/**
+ * Fetch all muted users (paginated)
+ * @param onProgress - Optional callback with current count
+ */
+export async function getAllMutes(
+  onProgress?: (count: number) => void
+): Promise<ProfileView[]> {
+  const allMutes: ProfileView[] = [];
+  let cursor: string | undefined;
+
+  do {
+    const response = await getMutes(cursor);
+    allMutes.push(...response.mutes);
+    cursor = response.cursor;
+    onProgress?.(allMutes.length);
+
+    // Rate limit between requests
+    if (cursor) {
+      await sleep(PAGINATION_DELAY);
+    }
+  } while (cursor);
+
+  console.log('[ErgoBlock] Fetched all mutes:', allMutes.length);
+  return allMutes;
 }

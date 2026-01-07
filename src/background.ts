@@ -8,10 +8,19 @@ import {
   getOptions,
   addHistoryEntry,
   cleanupExpiredPostContexts,
+  getPermanentBlocks,
+  setPermanentBlocks,
+  getPermanentMutes,
+  setPermanentMutes,
+  getSyncState,
+  updateSyncState,
 } from './storage.js';
-import { ListRecordsResponse } from './types.js';
+import { ListRecordsResponse, GetBlocksResponse, GetMutesResponse, ProfileView } from './types.js';
 
 const ALARM_NAME = 'checkExpirations';
+const SYNC_ALARM_NAME = 'syncWithBluesky';
+const SYNC_INTERVAL_MINUTES = 15;
+const PAGINATION_DELAY = 500; // ms between paginated requests
 
 interface AuthData {
   accessJwt: string;
@@ -171,6 +180,284 @@ export async function sendNotification(
   });
 }
 
+// ============================================================================
+// Sync Engine - Two-way sync with Bluesky
+// ============================================================================
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Fetch all blocks from Bluesky with pagination
+ */
+async function fetchAllBlocks(auth: AuthData): Promise<ProfileView[]> {
+  const allBlocks: ProfileView[] = [];
+  let cursor: string | undefined;
+
+  do {
+    let endpoint = 'app.bsky.graph.getBlocks?limit=100';
+    if (cursor) {
+      endpoint += `&cursor=${encodeURIComponent(cursor)}`;
+    }
+
+    const response = await bgApiRequest<GetBlocksResponse>(
+      endpoint,
+      'GET',
+      null,
+      auth.accessJwt,
+      auth.pdsUrl
+    );
+
+    if (response?.blocks) {
+      allBlocks.push(...response.blocks);
+    }
+    cursor = response?.cursor;
+
+    if (cursor) {
+      await sleep(PAGINATION_DELAY);
+    }
+  } while (cursor);
+
+  return allBlocks;
+}
+
+/**
+ * Fetch all mutes from Bluesky with pagination
+ */
+async function fetchAllMutes(auth: AuthData): Promise<ProfileView[]> {
+  const allMutes: ProfileView[] = [];
+  let cursor: string | undefined;
+
+  do {
+    let endpoint = 'app.bsky.graph.getMutes?limit=100';
+    if (cursor) {
+      endpoint += `&cursor=${encodeURIComponent(cursor)}`;
+    }
+
+    const response = await bgApiRequest<GetMutesResponse>(
+      endpoint,
+      'GET',
+      null,
+      auth.accessJwt,
+      auth.pdsUrl
+    );
+
+    if (response?.mutes) {
+      allMutes.push(...response.mutes);
+    }
+    cursor = response?.cursor;
+
+    if (cursor) {
+      await sleep(PAGINATION_DELAY);
+    }
+  } while (cursor);
+
+  return allMutes;
+}
+
+/**
+ * Sync blocks from Bluesky
+ * - Adds new blocks found in Bluesky to permanent storage
+ * - Removes temp blocks that no longer exist in Bluesky (user unblocked externally)
+ */
+async function syncBlocks(auth: AuthData): Promise<{ added: number; removed: number }> {
+  const now = Date.now();
+  let added = 0;
+  let removed = 0;
+
+  // Fetch current blocks from Bluesky
+  const bskyBlocks = await fetchAllBlocks(auth);
+  const bskyBlockDids = new Set(bskyBlocks.map((b) => b.did));
+
+  // Get current storage
+  const [tempBlocks, permanentBlocks] = await Promise.all([
+    getTempBlocks(),
+    getPermanentBlocks(),
+  ]);
+
+  // Build new permanent blocks map
+  const newPermanentBlocks: Record<string, { did: string; handle: string; displayName?: string; avatar?: string; syncedAt: number }> = {};
+
+  for (const block of bskyBlocks) {
+    // Skip if it's a temp block (we track those separately)
+    if (tempBlocks[block.did]) {
+      continue;
+    }
+
+    // Add to permanent blocks
+    newPermanentBlocks[block.did] = {
+      did: block.did,
+      handle: block.handle,
+      displayName: block.displayName,
+      avatar: block.avatar,
+      syncedAt: permanentBlocks[block.did]?.syncedAt || now,
+    };
+
+    if (!permanentBlocks[block.did]) {
+      added++;
+    }
+  }
+
+  // Check for temp blocks that no longer exist in Bluesky (user unblocked externally)
+  for (const did of Object.keys(tempBlocks)) {
+    if (!bskyBlockDids.has(did)) {
+      console.log('[ErgoBlock BG] Temp block removed externally:', tempBlocks[did].handle);
+      await removeTempBlock(did);
+      await addHistoryEntry({
+        did,
+        handle: tempBlocks[did].handle,
+        action: 'unblocked',
+        timestamp: now,
+        trigger: 'removed', // User removed externally
+        success: true,
+      });
+      removed++;
+    }
+  }
+
+  await setPermanentBlocks(newPermanentBlocks);
+  return { added, removed };
+}
+
+/**
+ * Sync mutes from Bluesky
+ * - Adds new mutes found in Bluesky to permanent storage
+ * - Removes temp mutes that no longer exist in Bluesky (user unmuted externally)
+ */
+async function syncMutes(auth: AuthData): Promise<{ added: number; removed: number }> {
+  const now = Date.now();
+  let added = 0;
+  let removed = 0;
+
+  // Fetch current mutes from Bluesky
+  const bskyMutes = await fetchAllMutes(auth);
+  const bskyMuteDids = new Set(bskyMutes.map((m) => m.did));
+
+  // Get current storage
+  const [tempMutes, permanentMutes] = await Promise.all([
+    getTempMutes(),
+    getPermanentMutes(),
+  ]);
+
+  // Build new permanent mutes map
+  const newPermanentMutes: Record<string, { did: string; handle: string; displayName?: string; avatar?: string; syncedAt: number }> = {};
+
+  for (const mute of bskyMutes) {
+    // Skip if it's a temp mute (we track those separately)
+    if (tempMutes[mute.did]) {
+      continue;
+    }
+
+    // Add to permanent mutes
+    newPermanentMutes[mute.did] = {
+      did: mute.did,
+      handle: mute.handle,
+      displayName: mute.displayName,
+      avatar: mute.avatar,
+      syncedAt: permanentMutes[mute.did]?.syncedAt || now,
+    };
+
+    if (!permanentMutes[mute.did]) {
+      added++;
+    }
+  }
+
+  // Check for temp mutes that no longer exist in Bluesky (user unmuted externally)
+  for (const did of Object.keys(tempMutes)) {
+    if (!bskyMuteDids.has(did)) {
+      console.log('[ErgoBlock BG] Temp mute removed externally:', tempMutes[did].handle);
+      await removeTempMute(did);
+      await addHistoryEntry({
+        did,
+        handle: tempMutes[did].handle,
+        action: 'unmuted',
+        timestamp: now,
+        trigger: 'removed', // User removed externally
+        success: true,
+      });
+      removed++;
+    }
+  }
+
+  await setPermanentMutes(newPermanentMutes);
+  return { added, removed };
+}
+
+/**
+ * Perform full sync with Bluesky
+ */
+export async function performFullSync(): Promise<{ success: boolean; error?: string; blocks?: { added: number; removed: number }; mutes?: { added: number; removed: number } }> {
+  const syncState = await getSyncState();
+
+  // Prevent concurrent syncs
+  if (syncState.syncInProgress) {
+    console.log('[ErgoBlock BG] Sync already in progress, skipping');
+    return { success: false, error: 'Sync already in progress' };
+  }
+
+  const auth = await getAuthToken();
+  if (!auth?.accessJwt || !auth?.did || !auth?.pdsUrl) {
+    console.log('[ErgoBlock BG] No auth token available, skipping sync');
+    return { success: false, error: 'Not authenticated' };
+  }
+
+  console.log('[ErgoBlock BG] Starting full sync with Bluesky...');
+  await updateSyncState({ syncInProgress: true, lastError: undefined });
+
+  try {
+    const [blockResult, muteResult] = await Promise.all([
+      syncBlocks(auth),
+      syncMutes(auth),
+    ]);
+
+    await updateSyncState({
+      syncInProgress: false,
+      lastBlockSync: Date.now(),
+      lastMuteSync: Date.now(),
+    });
+
+    console.log('[ErgoBlock BG] Sync complete:', {
+      blocks: blockResult,
+      mutes: muteResult,
+    });
+
+    await updateBadge();
+
+    return {
+      success: true,
+      blocks: blockResult,
+      mutes: muteResult,
+    };
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[ErgoBlock BG] Sync failed:', errorMessage);
+
+    await updateSyncState({
+      syncInProgress: false,
+      lastError: errorMessage,
+    });
+
+    return { success: false, error: errorMessage };
+  }
+}
+
+/**
+ * Set up sync alarm
+ */
+export async function setupSyncAlarm(): Promise<void> {
+  await browser.alarms.clear(SYNC_ALARM_NAME);
+  await browser.alarms.create(SYNC_ALARM_NAME, {
+    periodInMinutes: SYNC_INTERVAL_MINUTES,
+    delayInMinutes: 1, // First sync 1 minute after startup
+  });
+  console.log('[ErgoBlock BG] Sync alarm set up with interval:', SYNC_INTERVAL_MINUTES, 'minutes');
+}
+
+// ============================================================================
+// Expiration checking
+// ============================================================================
+
 export async function checkExpirations(): Promise<void> {
   console.log('[ErgoBlock BG] Checking expirations...');
 
@@ -307,6 +594,9 @@ browser.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === ALARM_NAME) {
     checkExpirations();
   }
+  if (alarm.name === SYNC_ALARM_NAME) {
+    performFullSync();
+  }
 });
 
 // Listen for messages from content script and popup
@@ -380,6 +670,11 @@ browser.runtime.onMessage.addListener(
       return true; // Indicates async response
     }
 
+    if (message.type === 'SYNC_NOW') {
+      performFullSync().then((result) => sendResponse(result));
+      return true; // Indicates async response
+    }
+
     if (message.type === 'UNBLOCK_USER' && message.did) {
       handleUnblockRequest(message.did).then(sendResponse);
       return true; // Indicates async response
@@ -398,11 +693,13 @@ browser.runtime.onMessage.addListener(
 browser.runtime.onInstalled.addListener(() => {
   console.log('[ErgoBlock BG] Extension installed');
   setupAlarm();
+  setupSyncAlarm();
   updateBadge();
 });
 
 browser.runtime.onStartup.addListener(() => {
   console.log('[ErgoBlock BG] Extension started');
   setupAlarm();
+  setupSyncAlarm();
   updateBadge();
 });

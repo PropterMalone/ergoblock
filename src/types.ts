@@ -100,6 +100,71 @@ export interface Profile {
 }
 
 /**
+ * Profile view returned from Bluesky API (getBlocks, getMutes)
+ */
+export interface ProfileView {
+  did: string;
+  handle: string;
+  displayName?: string;
+  avatar?: string;
+  description?: string;
+  indexedAt?: string;
+}
+
+/**
+ * Response from app.bsky.graph.getBlocks
+ */
+export interface GetBlocksResponse {
+  blocks: ProfileView[];
+  cursor?: string;
+}
+
+/**
+ * Response from app.bsky.graph.getMutes
+ */
+export interface GetMutesResponse {
+  mutes: ProfileView[];
+  cursor?: string;
+}
+
+/**
+ * Permanent block/mute from Bluesky (not managed by ErgoBlock)
+ */
+export interface PermanentBlockMute {
+  did: string;
+  handle: string;
+  displayName?: string;
+  avatar?: string;
+  syncedAt: number;
+}
+
+/**
+ * Combined block/mute entry for manager UI
+ */
+export interface ManagedEntry {
+  did: string;
+  handle: string;
+  displayName?: string;
+  avatar?: string;
+  source: 'ergoblock_temp' | 'ergoblock_permanent' | 'bluesky';
+  type: 'block' | 'mute';
+  expiresAt?: number;
+  createdAt?: number;
+  syncedAt?: number;
+  rkey?: string;
+}
+
+/**
+ * Sync state tracking
+ */
+export interface SyncState {
+  lastBlockSync: number;
+  lastMuteSync: number;
+  syncInProgress: boolean;
+  lastError?: string;
+}
+
+/**
  * Post context stored when blocking/muting from a post
  * Stores the AT Protocol URI so we can fetch the post later
  */
