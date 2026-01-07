@@ -13,6 +13,8 @@ export interface ExtensionOptions {
   // Post context settings
   savePostContext: boolean;
   postContextRetentionDays: number; // 0 = never delete
+  // Amnesty settings
+  forgivenessPeriodDays: number; // How old a block must be to be eligible for amnesty
 }
 
 export const DEFAULT_OPTIONS: ExtensionOptions = {
@@ -26,6 +28,8 @@ export const DEFAULT_OPTIONS: ExtensionOptions = {
   // Post context defaults
   savePostContext: true,
   postContextRetentionDays: 90,
+  // Amnesty defaults
+  forgivenessPeriodDays: 90, // 3 months
 };
 
 export interface HistoryEntry {
@@ -288,4 +292,15 @@ export interface RawPostRecord {
 export interface ListPostRecordsResponse {
   records: RawPostRecord[];
   cursor?: string;
+}
+
+/**
+ * Record of a user that has been reviewed by Amnesty feature
+ * Tracks DIDs that have been presented so we don't show them again
+ */
+export interface AmnestyReview {
+  did: string;
+  handle: string;
+  reviewedAt: number;
+  decision: 'unblocked' | 'kept_blocked';
 }

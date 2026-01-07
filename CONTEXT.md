@@ -68,7 +68,9 @@ interface HistoryEntry {
 
 ### State
 - `allBlocks`, `allMutes`, `history`, `contexts` - Data arrays
-- `currentTab` - 'blocks' | 'mutes' | 'history'
+- `currentTab` - 'blocks' | 'mutes' | 'history' | 'amnesty'
+- `amnestyReviewedDids` - Set<did> of reviewed blocks
+- `amnestyCandidate` - Current block being reviewed
 - `sortColumn` - 'user' | 'source' | 'status' | 'expires' | 'date'
 - `sortDirection` - 'asc' | 'desc'
 - `selectedItems` - Set<did> for bulk operations
@@ -127,9 +129,31 @@ npm run test           # Run tests
 npm run lint           # ESLint
 ```
 
+## Amnesty Feature (manager.ts)
+
+### Purpose
+Review old blocks and decide if they still deserve to be blocked. Presents random candidates one at a time for Tinder-style swipe decisions.
+
+### Eligibility Criteria
+- Block at least 3 months old (90 days)
+- Target not blocking you back
+- Not previously reviewed by Amnesty
+
+### Key Functions
+- `getAmnestyCandidates()` - Filter eligible blocks
+- `selectRandomCandidate()` - Pick random candidate
+- `renderAmnestyTab()` - Show intro or card
+- `startAmnestyReview()` - Begin review, auto-search for context
+- `handleAmnestyDecision()` - Process 👍 (unblock) or 👎 (keep)
+
+### Storage
+- `amnestyReviews` - `AmnestyReview[]` tracking decisions
+- `AmnestyReview` type: `{did, handle, reviewedAt, decision: 'unblocked' | 'kept_blocked'}`
+
 ## Recent Changes (as of session)
 - Merged Post Contexts into Blocks/Mutes tables (removed separate tab)
 - Status column shows text labels instead of icons
 - Added sortable column headers with Wikipedia-style arrows (↑↓⇅)
 - Exhaustive search for Find Context (up to 100k posts)
 - Container widened to 1400px
+- Added Amnesty tab for reviewing old blocks

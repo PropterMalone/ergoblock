@@ -12,6 +12,7 @@ import {
   type PermanentBlockMute,
   type ManagedEntry,
   type SyncState,
+  type AmnestyReview,
 } from './types.js';
 
 export const STORAGE_KEYS = {
@@ -25,6 +26,8 @@ export const STORAGE_KEYS = {
   PERMANENT_BLOCKS: 'permanentBlocks',
   PERMANENT_MUTES: 'permanentMutes',
   SYNC_STATE: 'syncState',
+  // Amnesty feature
+  AMNESTY_REVIEWS: 'amnestyReviews',
 };
 
 const HISTORY_MAX_ENTRIES = 100;
@@ -459,4 +462,51 @@ export async function getAllManagedMutes(): Promise<ManagedEntry[]> {
   });
 
   return entries;
+}
+
+// ============================================================================
+// Amnesty Feature Storage
+// ============================================================================
+
+/**
+ * Get all amnesty reviews from storage
+ */
+export async function getAmnestyReviews(): Promise<AmnestyReview[]> {
+  const result = await browser.storage.sync.get(STORAGE_KEYS.AMNESTY_REVIEWS);
+  return (result[STORAGE_KEYS.AMNESTY_REVIEWS] as AmnestyReview[]) || [];
+}
+
+/**
+ * Get set of DIDs that have been reviewed by amnesty
+ */
+export async function getAmnestyReviewedDids(): Promise<Set<string>> {
+  const reviews = await getAmnestyReviews();
+  return new Set(reviews.map((r) => r.did));
+}
+
+/**
+ * Add an amnesty review record
+ */
+export async function addAmnestyReview(review: AmnestyReview): Promise<void> {
+  const reviews = await getAmnestyReviews();
+  // Remove any existing review for this DID (in case of re-review)
+  const filtered = reviews.filter((r) => r.did !== review.did);
+  filtered.push(review);
+  await browser.storage.sync.set({ [STORAGE_KEYS.AMNESTY_REVIEWS]: filtered });
+}
+
+/**
+ * Get amnesty statistics
+ */
+export async function getAmnestyStats(): Promise<{
+  totalReviewed: number;
+  unblocked: number;
+  keptBlocked: number;
+}> {
+  const reviews = await getAmnestyReviews();
+  return {
+    totalReviewed: reviews.length,
+    unblocked: reviews.filter((r) => r.decision === 'unblocked').length,
+    keptBlocked: reviews.filter((r) => r.decision === 'kept_blocked').length,
+  };
 }

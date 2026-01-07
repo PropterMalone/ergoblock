@@ -11,6 +11,11 @@ import {
   getSyncState,
   removeTempBlock,
   removeTempMute,
+  getAmnestyReviewedDids,
+  addAmnestyReview,
+  getAmnestyStats,
+  getOptions,
+  setOptions,
 } from './storage.js';
 import type {
   ManagedEntry,
@@ -18,6 +23,8 @@ import type {
   PostContext,
   SyncState,
   ProfileViewerState,
+  AmnestyReview,
+  ExtensionOptions,
 } from './types.js';
 
 // State
@@ -28,6 +35,12 @@ let contexts: PostContext[] = [];
 let syncState: SyncState | null = null;
 let currentTab = 'blocks';
 let selectedItems: Set<string> = new Set();
+let options: ExtensionOptions | null = null;
+
+// Amnesty state
+let amnestyReviewedDids: Set<string> = new Set();
+let amnestyCandidate: ManagedEntry | null = null;
+let amnestySearching = false;
 
 // Sort state
 type SortColumn = 'user' | 'source' | 'status' | 'expires' | 'date';
@@ -56,12 +69,14 @@ const elements = {
 // ============================================================================
 
 async function loadData(): Promise<void> {
-  [allBlocks, allMutes, history, contexts, syncState] = await Promise.all([
+  [allBlocks, allMutes, history, contexts, syncState, amnestyReviewedDids, options] = await Promise.all([
     getAllManagedBlocks(),
     getAllManagedMutes(),
     getActionHistory(),
     getPostContexts(),
     getSyncState(),
+    getAmnestyReviewedDids(),
+    getOptions(),
   ]);
 }
 
@@ -278,6 +293,12 @@ function renderCurrentTab(): void {
   updateBulkActions();
   buildContextMap();
 
+  // Hide toolbar for amnesty tab
+  const toolbar = document.querySelector('.toolbar') as HTMLElement;
+  if (toolbar) {
+    toolbar.style.display = currentTab === 'amnesty' ? 'none' : 'flex';
+  }
+
   switch (currentTab) {
     case 'blocks':
       renderBlocksTable();
@@ -287,6 +308,9 @@ function renderCurrentTab(): void {
       break;
     case 'history':
       renderHistoryTable();
+      break;
+    case 'amnesty':
+      renderAmnestyTab();
       break;
   }
 }
@@ -578,6 +602,378 @@ function renderHistoryRow(entry: HistoryEntry): string {
       <td>${formatDate(entry.timestamp)}</td>
     </tr>
   `;
+}
+
+// ============================================================================
+// Amnesty Feature
+// ============================================================================
+
+// Forgiveness period options (in days)
+const FORGIVENESS_OPTIONS = [
+  { value: 30, label: '1 month' },
+  { value: 60, label: '2 months' },
+  { value: 90, label: '3 months' },
+  { value: 180, label: '6 months' },
+  { value: 365, label: '1 year' },
+];
+
+/**
+ * Get the forgiveness period in milliseconds from options
+ */
+function getForgivenessPeriodMs(): number {
+  const days = options?.forgivenessPeriodDays || 90;
+  return days * 24 * 60 * 60 * 1000;
+}
+
+/**
+ * Get eligible amnesty candidates:
+ * - Blocked at least N days ago (based on forgivenessPeriodDays option)
+ * - Not blocking us back
+ * - Not previously reviewed by amnesty
+ */
+function getAmnestyCandidates(): ManagedEntry[] {
+  const now = Date.now();
+  const cutoff = now - getForgivenessPeriodMs();
+
+  return allBlocks.filter((block) => {
+    // Must be blocked at least N days ago
+    const blockDate = block.createdAt || block.syncedAt || now;
+    if (blockDate > cutoff) return false;
+
+    // Must not be blocking us
+    if (block.viewer?.blockedBy) return false;
+
+    // Must not have been reviewed already
+    if (amnestyReviewedDids.has(block.did)) return false;
+
+    return true;
+  });
+}
+
+/**
+ * Select a random amnesty candidate
+ */
+function selectRandomCandidate(): ManagedEntry | null {
+  const candidates = getAmnestyCandidates();
+  if (candidates.length === 0) return null;
+
+  const index = Math.floor(Math.random() * candidates.length);
+  return candidates[index];
+}
+
+/**
+ * Render the amnesty tab
+ */
+async function renderAmnestyTab(): Promise<void> {
+  const stats = await getAmnestyStats();
+  const candidates = getAmnestyCandidates();
+  const currentPeriod = options?.forgivenessPeriodDays || 90;
+  const currentPeriodLabel = FORGIVENESS_OPTIONS.find(o => o.value === currentPeriod)?.label || `${currentPeriod} days`;
+
+  // If we have an active candidate being shown, render the card
+  if (amnestyCandidate) {
+    renderAmnestyCard(amnestyCandidate, stats);
+    return;
+  }
+
+  // Build forgiveness period options
+  const periodOptions = FORGIVENESS_OPTIONS.map(opt =>
+    `<option value="${opt.value}" ${opt.value === currentPeriod ? 'selected' : ''}>${opt.label}</option>`
+  ).join('');
+
+  // Otherwise, show the intro screen
+  elements.dataContainer.innerHTML = `
+    <div class="amnesty-container">
+      <div class="amnesty-intro">
+        <h3>Block Amnesty</h3>
+        <p>Review old blocks and decide if they still deserve to be blocked.</p>
+      </div>
+
+      <div class="amnesty-forgiveness">
+        <label class="amnesty-forgiveness-label">How long does it take you to forgive?</label>
+        <select id="forgiveness-period" class="amnesty-forgiveness-select">
+          ${periodOptions}
+        </select>
+        <p class="amnesty-forgiveness-hint">Only blocks older than this that aren't blocking you back will appear.</p>
+      </div>
+
+      <div class="amnesty-stats">
+        <div class="amnesty-stat amnesty-stat-primary">
+          <div class="amnesty-stat-value">${candidates.length}</div>
+          <div class="amnesty-stat-label">Ready for Review</div>
+        </div>
+        <div class="amnesty-stat">
+          <div class="amnesty-stat-value">${stats.totalReviewed}</div>
+          <div class="amnesty-stat-label">Reviewed</div>
+        </div>
+        <div class="amnesty-stat">
+          <div class="amnesty-stat-value">${stats.unblocked}</div>
+          <div class="amnesty-stat-label">Unblocked</div>
+        </div>
+      </div>
+
+      ${candidates.length > 0 ? `
+        <button class="amnesty-start-btn" id="amnesty-start">
+          Start Review
+        </button>
+      ` : `
+        <div class="amnesty-empty">
+          <h3>No candidates available</h3>
+          <p>All eligible blocks have been reviewed, or you don't have any blocks older than ${currentPeriodLabel}.</p>
+        </div>
+      `}
+    </div>
+  `;
+
+  // Setup start button
+  const startBtn = document.getElementById('amnesty-start');
+  if (startBtn) {
+    startBtn.addEventListener('click', startAmnestyReview);
+  }
+
+  // Setup forgiveness period change handler
+  const periodSelect = document.getElementById('forgiveness-period') as HTMLSelectElement;
+  if (periodSelect) {
+    periodSelect.addEventListener('change', async () => {
+      const newPeriod = parseInt(periodSelect.value, 10);
+      if (options) {
+        options.forgivenessPeriodDays = newPeriod;
+        await setOptions(options);
+        // Re-render to show updated candidate count
+        renderAmnestyTab();
+      }
+    });
+  }
+}
+
+/**
+ * Start the amnesty review process
+ */
+async function startAmnestyReview(): Promise<void> {
+  amnestyCandidate = selectRandomCandidate();
+  if (!amnestyCandidate) {
+    renderAmnestyTab();
+    return;
+  }
+
+  renderAmnestyCard(amnestyCandidate, await getAmnestyStats());
+
+  // Search for context if we don't have it
+  const ctx = contextMap.get(amnestyCandidate.did);
+  if (!ctx) {
+    amnestySearching = true;
+    updateAmnestyContext();
+
+    // Request background to find context
+    const response = (await browser.runtime.sendMessage({
+      type: 'FIND_CONTEXT',
+      did: amnestyCandidate.did,
+      handle: amnestyCandidate.handle,
+    })) as { success: boolean; found?: boolean };
+
+    amnestySearching = false;
+
+    if (response.found) {
+      // Reload contexts
+      contexts = await getPostContexts();
+      buildContextMap();
+    }
+
+    updateAmnestyContext();
+  }
+}
+
+/**
+ * Render the amnesty review card for a candidate
+ */
+async function renderAmnestyCard(
+  candidate: ManagedEntry,
+  stats: { totalReviewed: number; unblocked: number; keptBlocked: number }
+): Promise<void> {
+  const ctx = contextMap.get(candidate.did);
+  const blockDate = candidate.createdAt || candidate.syncedAt;
+  const blockDateStr = blockDate ? new Date(blockDate).toLocaleDateString() : 'Unknown';
+
+  const postUrl = ctx?.postUri
+    ? ctx.postUri.replace('at://', 'https://bsky.app/profile/').replace('/app.bsky.feed.post/', '/post/')
+    : '';
+
+  elements.dataContainer.innerHTML = `
+    <div class="amnesty-container">
+      <div class="amnesty-stats">
+        <div class="amnesty-stat">
+          <div class="amnesty-stat-value">${getAmnestyCandidates().length}</div>
+          <div class="amnesty-stat-label">Remaining</div>
+        </div>
+        <div class="amnesty-stat">
+          <div class="amnesty-stat-value">${stats.totalReviewed}</div>
+          <div class="amnesty-stat-label">Reviewed</div>
+        </div>
+        <div class="amnesty-stat">
+          <div class="amnesty-stat-value">${stats.unblocked}</div>
+          <div class="amnesty-stat-label">Unblocked</div>
+        </div>
+      </div>
+
+      <div class="amnesty-card">
+        <div class="amnesty-card-header">
+          ${candidate.avatar ? `<img src="${candidate.avatar}" class="amnesty-avatar" alt="">` : '<div class="amnesty-avatar"></div>'}
+          <div class="amnesty-user-info">
+            <div class="amnesty-handle">@${escapeHtml(candidate.handle)}</div>
+            ${candidate.displayName ? `<div class="amnesty-display-name">${escapeHtml(candidate.displayName)}</div>` : ''}
+            <div class="amnesty-blocked-date">Blocked on ${blockDateStr}</div>
+          </div>
+        </div>
+
+        <div class="amnesty-card-context" id="amnesty-context">
+          <div class="amnesty-context-label">Why did you block them?</div>
+          ${amnestySearching ? `
+            <div class="amnesty-searching">
+              <div class="spinner"></div>
+              Searching for interaction...
+            </div>
+          ` : ctx ? `
+            <div class="amnesty-context-text">${escapeHtml(ctx.postText || 'No post text available')}</div>
+            ${postUrl ? `
+              <div class="amnesty-context-link">
+                <button class="context-btn amnesty-view-btn" data-did="${escapeHtml(candidate.did)}" data-handle="${escapeHtml(candidate.handle)}" data-url="${escapeHtml(postUrl)}">View Post</button>
+              </div>
+            ` : ''}
+          ` : `
+            <div class="amnesty-no-context">No context found for this block</div>
+          `}
+        </div>
+
+        <div class="amnesty-card-actions">
+          <button class="amnesty-btn amnesty-btn-unblock" id="amnesty-unblock">
+            👍 Unblock
+          </button>
+          <button class="amnesty-btn amnesty-btn-keep" id="amnesty-keep">
+            👎 Keep Blocked
+          </button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  setupAmnestyEvents();
+}
+
+/**
+ * Update just the context section of the amnesty card
+ */
+function updateAmnestyContext(): void {
+  if (!amnestyCandidate) return;
+
+  const contextEl = document.getElementById('amnesty-context');
+  if (!contextEl) return;
+
+  const ctx = contextMap.get(amnestyCandidate.did);
+  const postUrl = ctx?.postUri
+    ? ctx.postUri.replace('at://', 'https://bsky.app/profile/').replace('/app.bsky.feed.post/', '/post/')
+    : '';
+
+  contextEl.innerHTML = `
+    <div class="amnesty-context-label">Why did you block them?</div>
+    ${amnestySearching ? `
+      <div class="amnesty-searching">
+        <div class="spinner"></div>
+        Searching for interaction...
+      </div>
+    ` : ctx ? `
+      <div class="amnesty-context-text">${escapeHtml(ctx.postText || 'No post text available')}</div>
+      ${postUrl ? `
+        <div class="amnesty-context-link">
+          <button class="context-btn amnesty-view-btn" data-did="${escapeHtml(amnestyCandidate.did)}" data-handle="${escapeHtml(amnestyCandidate.handle)}" data-url="${escapeHtml(postUrl)}">View Post</button>
+        </div>
+      ` : ''}
+    ` : `
+      <div class="amnesty-no-context">No context found for this block</div>
+    `}
+  `;
+
+  // Re-setup view button
+  const viewBtn = document.querySelector('.amnesty-view-btn') as HTMLButtonElement;
+  if (viewBtn) {
+    viewBtn.addEventListener('click', async () => {
+      const did = viewBtn.dataset.did;
+      const handle = viewBtn.dataset.handle;
+      const url = viewBtn.dataset.url;
+      if (did && handle && url) {
+        await handleTempUnblockAndView(did, handle, url, viewBtn);
+      }
+    });
+  }
+}
+
+/**
+ * Setup event listeners for amnesty card
+ */
+function setupAmnestyEvents(): void {
+  const unblockBtn = document.getElementById('amnesty-unblock');
+  const keepBtn = document.getElementById('amnesty-keep');
+  const viewBtn = document.querySelector('.amnesty-view-btn') as HTMLButtonElement;
+
+  if (unblockBtn) {
+    unblockBtn.addEventListener('click', () => handleAmnestyDecision('unblocked'));
+  }
+
+  if (keepBtn) {
+    keepBtn.addEventListener('click', () => handleAmnestyDecision('kept_blocked'));
+  }
+
+  if (viewBtn) {
+    viewBtn.addEventListener('click', async () => {
+      const did = viewBtn.dataset.did;
+      const handle = viewBtn.dataset.handle;
+      const url = viewBtn.dataset.url;
+      if (did && handle && url) {
+        await handleTempUnblockAndView(did, handle, url, viewBtn);
+      }
+    });
+  }
+}
+
+/**
+ * Handle amnesty decision (unblock or keep blocked)
+ */
+async function handleAmnestyDecision(decision: 'unblocked' | 'kept_blocked'): Promise<void> {
+  if (!amnestyCandidate) return;
+
+  const unblockBtn = document.getElementById('amnesty-unblock') as HTMLButtonElement;
+  const keepBtn = document.getElementById('amnesty-keep') as HTMLButtonElement;
+
+  // Disable buttons
+  if (unblockBtn) unblockBtn.disabled = true;
+  if (keepBtn) keepBtn.disabled = true;
+
+  const review: AmnestyReview = {
+    did: amnestyCandidate.did,
+    handle: amnestyCandidate.handle,
+    reviewedAt: Date.now(),
+    decision,
+  };
+
+  try {
+    // Record the review
+    await addAmnestyReview(review);
+    amnestyReviewedDids.add(amnestyCandidate.did);
+
+    // If unblocking, actually unblock them
+    if (decision === 'unblocked') {
+      await handleUnblock(amnestyCandidate.did);
+    }
+
+    // Move to next candidate
+    amnestyCandidate = null;
+    await loadData();
+    startAmnestyReview();
+  } catch (error) {
+    console.error('[Manager] Amnesty decision failed:', error);
+    alert('Failed to process decision');
+    if (unblockBtn) unblockBtn.disabled = false;
+    if (keepBtn) keepBtn.disabled = false;
+  }
 }
 
 // Track active temp unblock timers by DID
