@@ -542,8 +542,14 @@ function injectMenuItems(menu: Element): void {
       interceptMenuItem(item as HTMLElement, 'block', handle);
     }
 
-    // Intercept "Mute Account" (but not "Unmute")
-    if (text.includes('mute') && !text.includes('unmute')) {
+    // Intercept "Mute Account" (but not "Unmute" or "Mute Thread" or "Mute Words")
+    // We only want to intercept user/account muting, not thread/word muting
+    if (
+      text.includes('mute') &&
+      !text.includes('unmute') &&
+      !text.includes('thread') &&
+      !text.includes('word')
+    ) {
       interceptMenuItem(item as HTMLElement, 'mute', handle);
     }
   }
