@@ -25,10 +25,27 @@ async function build() {
     // We want background.ts, content.ts, popup.ts, and options.ts
     // but not types.ts or tests
     const srcDir = './src';
-    const entryPoints = fs
-      .readdirSync(srcDir)
-      .filter((file) => file.endsWith('.ts') && !file.endsWith('.test.ts') && file !== 'types.ts')
-      .map((file) => path.join(srcDir, file));
+
+    // Find all entry points, preferring .tsx over .ts when both exist
+    const tsFiles = fs.readdirSync(srcDir).filter((file) =>
+      (file.endsWith('.ts') || file.endsWith('.tsx')) &&
+      !file.endsWith('.test.ts') &&
+      !file.endsWith('.test.tsx') &&
+      file !== 'types.ts'
+    );
+
+    // Build a map of base names to prefer .tsx files
+    const entryMap = new Map();
+    for (const file of tsFiles) {
+      const baseName = file.replace(/\.tsx?$/, '');
+      const isTsx = file.endsWith('.tsx');
+      // Prefer .tsx over .ts
+      if (!entryMap.has(baseName) || isTsx) {
+        entryMap.set(baseName, file);
+      }
+    }
+
+    const entryPoints = Array.from(entryMap.values()).map((file) => path.join(srcDir, file));
 
     console.log('Building entry points:', entryPoints);
 
@@ -42,6 +59,12 @@ async function build() {
       sourcemap: process.env.NODE_ENV === 'development',
       minify: process.env.NODE_ENV === 'production',
       external: ['chrome'],
+      jsx: 'automatic',
+      jsxImportSource: 'preact',
+      loader: {
+        '.ts': 'ts',
+        '.tsx': 'tsx',
+      },
     });
 
     // Copy the appropriate manifest to dist/

@@ -7,6 +7,10 @@ export default defineConfig({
       'webextension-polyfill': path.resolve(__dirname, './vitest.polyfill-mock.ts'),
     },
   },
+  esbuild: {
+    jsx: 'automatic',
+    jsxImportSource: 'preact',
+  },
   test: {
     environment: 'jsdom',
     globals: true,
@@ -15,19 +19,23 @@ export default defineConfig({
       provider: 'v8',
       reporter: ['text', 'json', 'json-summary', 'html'],
       all: true,
-      include: ['src/**/*.ts'],
+      include: ['src/**/*.ts', 'src/**/*.tsx'],
       exclude: [
         'src/**/*.test.ts',
+        'src/**/*.test.tsx',
         'src/content.ts',
+        'src/content.tsx',
         'src/popup.ts',
-        'src/options.ts'
+        'src/popup.tsx',
+        'src/options.ts',
+        'src/options.tsx',
       ],
       thresholds: {
         lines: 75,
         functions: 70,
         branches: 65,
         statements: 75,
-      }
+      },
     },
   },
 });

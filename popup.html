@@ -236,49 +236,7 @@
     </style>
   </head>
   <body>
-    <div class="header">
-      <h1>ErgoBlock</h1>
-      <button class="header-link" id="open-manager">Open Full Manager</button>
-    </div>
-
-    <div id="auth-warning" class="auth-warning" style="display: none">
-      Session Expired: Please open Bluesky to re-sync
-    </div>
-
-    <div id="sync-status" class="sync-status" style="display: none"></div>
-
-    <div class="stats">
-      <div class="stat">
-        <div class="stat-value" id="stat-blocks">0</div>
-        <div class="stat-label">Blocks</div>
-      </div>
-      <div class="stat">
-        <div class="stat-value" id="stat-mutes">0</div>
-        <div class="stat-label">Mutes</div>
-      </div>
-      <div class="stat">
-        <div class="stat-value" id="stat-expiring">0</div>
-        <div class="stat-label">Expiring 24h</div>
-      </div>
-    </div>
-
-    <div class="section">
-      <div class="section-header">Expiring Soon</div>
-      <div class="section-content" id="expiring-list"></div>
-    </div>
-
-    <div class="section">
-      <div class="section-header">Recent Activity</div>
-      <div class="section-content" id="recent-list"></div>
-    </div>
-
-    <div class="footer">
-      <button class="btn btn-action" id="check-now">Check Now</button>
-      <button class="btn btn-action secondary" id="sync-now">Sync</button>
-    </div>
-
-    <div class="status" id="status"></div>
-
+    <div id="app"></div>
     <script type="module" src="popup.js"></script>
   </body>
 </html>
