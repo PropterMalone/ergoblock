@@ -482,8 +482,14 @@ function syncAuthToBackground(): void {
           pdsUrl: session.pdsUrl,
         },
       })
-      .then(() => {
-        browser.storage.local.set({ authStatus: 'valid' });
+      .then(async () => {
+        // Check if we're recovering from an invalid state
+        const { authStatus } = await browser.storage.local.get('authStatus');
+        if (authStatus === 'invalid') {
+          console.log('[TempBlock] Auth recovered from invalid state');
+        }
+        // Always set to valid when we have a fresh token
+        await browser.storage.local.set({ authStatus: 'valid' });
         console.log('[TempBlock] Auth synced to background (PDS:', session.pdsUrl, ')');
       })
       .catch(() => {
@@ -505,7 +511,9 @@ function init(): void {
     setTimeout(syncAuthToBackground, 2000);
   }
 
-  setInterval(syncAuthToBackground, 5 * 60 * 1000);
+  // Sync auth frequently to keep background tokens fresh
+  // Bluesky tokens expire after ~2 hours, so sync every minute
+  setInterval(syncAuthToBackground, 60 * 1000);
 
   console.log('[TempBlock] Extension initialized');
 }

@@ -158,6 +158,7 @@ describe('options module', () => {
         theme: 'dark',
         savePostContext: true,
         postContextRetentionDays: 90,
+        forgivenessPeriodDays: 90,
       };
       mockLocalStorage['extensionOptions'] = customOptions;
 
@@ -178,6 +179,7 @@ describe('options module', () => {
         theme: 'light',
         savePostContext: false,
         postContextRetentionDays: 30,
+        forgivenessPeriodDays: 90,
       };
 
       await mockChrome.storage.local.set({ extensionOptions: options });

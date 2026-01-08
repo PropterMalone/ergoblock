@@ -27,12 +27,15 @@ async function build() {
     const srcDir = './src';
 
     // Find all entry points, preferring .tsx over .ts when both exist
-    const tsFiles = fs.readdirSync(srcDir).filter((file) =>
-      (file.endsWith('.ts') || file.endsWith('.tsx')) &&
-      !file.endsWith('.test.ts') &&
-      !file.endsWith('.test.tsx') &&
-      file !== 'types.ts'
-    );
+    const tsFiles = fs
+      .readdirSync(srcDir)
+      .filter(
+        (file) =>
+          (file.endsWith('.ts') || file.endsWith('.tsx')) &&
+          !file.endsWith('.test.ts') &&
+          !file.endsWith('.test.tsx') &&
+          file !== 'types.ts'
+      );
 
     // Build a map of base names to prefer .tsx files
     const entryMap = new Map();

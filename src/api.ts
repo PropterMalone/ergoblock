@@ -431,9 +431,7 @@ export async function getMutes(cursor?: string, limit = 100): Promise<GetMutesRe
  * Fetch all blocked users (paginated)
  * @param onProgress - Optional callback with current count
  */
-export async function getAllBlocks(
-  onProgress?: (count: number) => void
-): Promise<ProfileView[]> {
+export async function getAllBlocks(onProgress?: (count: number) => void): Promise<ProfileView[]> {
   const allBlocks: ProfileView[] = [];
   let cursor: string | undefined;
 
@@ -457,9 +455,7 @@ export async function getAllBlocks(
  * Fetch all muted users (paginated)
  * @param onProgress - Optional callback with current count
  */
-export async function getAllMutes(
-  onProgress?: (count: number) => void
-): Promise<ProfileView[]> {
+export async function getAllMutes(onProgress?: (count: number) => void): Promise<ProfileView[]> {
   const allMutes: ProfileView[] = [];
   let cursor: string | undefined;
 
@@ -697,10 +693,7 @@ export async function getAllFollowers(
  * @param cursor - Pagination cursor
  * @param limit - Number of results per page (max 100)
  */
-export async function getListBlocks(
-  cursor?: string,
-  limit = 100
-): Promise<GetListBlocksResponse> {
+export async function getListBlocks(cursor?: string, limit = 100): Promise<GetListBlocksResponse> {
   const session = getSession();
   if (!session) throw new Error('Not logged in');
 
@@ -718,9 +711,7 @@ export async function getListBlocks(
  * Fetch all blocklists the user subscribes to (paginated)
  * @param onProgress - Optional callback with current count
  */
-export async function getAllListBlocks(
-  onProgress?: (count: number) => void
-): Promise<ListView[]> {
+export async function getAllListBlocks(onProgress?: (count: number) => void): Promise<ListView[]> {
   const allLists: ListView[] = [];
   let cursor: string | undefined;
 
@@ -744,10 +735,7 @@ export async function getAllListBlocks(
  * @param cursor - Pagination cursor
  * @param limit - Number of results per page (max 100)
  */
-export async function getListMutes(
-  cursor?: string,
-  limit = 100
-): Promise<GetListMutesResponse> {
+export async function getListMutes(cursor?: string, limit = 100): Promise<GetListMutesResponse> {
   const session = getSession();
   if (!session) throw new Error('Not logged in');
 
@@ -765,9 +753,7 @@ export async function getListMutes(
  * Fetch all mutelists the user subscribes to (paginated)
  * @param onProgress - Optional callback with current count
  */
-export async function getAllListMutes(
-  onProgress?: (count: number) => void
-): Promise<ListView[]> {
+export async function getAllListMutes(onProgress?: (count: number) => void): Promise<ListView[]> {
   const allLists: ListView[] = [];
   let cursor: string | undefined;
 

@@ -232,7 +232,10 @@ describe('isSearchPostInteraction', () => {
         ? { parent: { uri: overrides.replyParentUri }, root: { uri: overrides.replyParentUri } }
         : undefined,
       embed: overrides.embedType
-        ? { $type: overrides.embedType, record: { uri: overrides.embedRecordUri } }
+        ? {
+            $type: overrides.embedType,
+            ...(overrides.embedRecordUri ? { record: { uri: overrides.embedRecordUri } } : {}),
+          }
         : undefined,
     },
     indexedAt: '2024-01-01T00:00:00Z',

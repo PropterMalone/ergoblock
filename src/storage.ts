@@ -19,6 +19,78 @@ import {
   type BlocklistAuditState,
 } from './types.js';
 
+// Storage quota constants (Chrome sync storage limits)
+const SYNC_STORAGE_QUOTA_BYTES = 102400; // 100KB total for sync storage
+const SYNC_STORAGE_ITEM_QUOTA_BYTES = 8192; // 8KB per item
+const QUOTA_WARNING_THRESHOLD = 0.8; // Warn at 80% usage
+
+export interface StorageQuotaInfo {
+  bytesUsed: number;
+  bytesTotal: number;
+  percentUsed: number;
+  isNearLimit: boolean;
+  isAtLimit: boolean;
+}
+
+/**
+ * Check current storage quota usage
+ */
+export async function checkStorageQuota(): Promise<StorageQuotaInfo> {
+  try {
+    // Get all sync storage data to measure size
+    const allData = await browser.storage.sync.get(null);
+    const bytesUsed = new Blob([JSON.stringify(allData)]).size;
+    const percentUsed = bytesUsed / SYNC_STORAGE_QUOTA_BYTES;
+
+    return {
+      bytesUsed,
+      bytesTotal: SYNC_STORAGE_QUOTA_BYTES,
+      percentUsed,
+      isNearLimit: percentUsed >= QUOTA_WARNING_THRESHOLD,
+      isAtLimit: percentUsed >= 0.95,
+    };
+  } catch (error) {
+    console.error('[ErgoBlock] Error checking storage quota:', error);
+    return {
+      bytesUsed: 0,
+      bytesTotal: SYNC_STORAGE_QUOTA_BYTES,
+      percentUsed: 0,
+      isNearLimit: false,
+      isAtLimit: false,
+    };
+  }
+}
+
+/**
+ * Safely write to sync storage with quota checking
+ * Throws on quota exceeded for caller to handle
+ */
+async function safeSyncStorageWrite(key: string, value: unknown): Promise<void> {
+  const dataSize = new Blob([JSON.stringify(value)]).size;
+
+  // Check per-item limit for sync storage
+  if (dataSize > SYNC_STORAGE_ITEM_QUOTA_BYTES) {
+    throw new Error(
+      `Storage item too large: ${dataSize} bytes exceeds ${SYNC_STORAGE_ITEM_QUOTA_BYTES} byte limit`
+    );
+  }
+
+  // Check total quota
+  const quota = await checkStorageQuota();
+  if (quota.isAtLimit) {
+    throw new Error(
+      `Storage quota exceeded: ${Math.round(quota.percentUsed * 100)}% used. ` +
+        `Please remove some temp blocks/mutes.`
+    );
+  }
+
+  if (quota.isNearLimit) {
+    console.warn(`[ErgoBlock] Storage quota warning: ${Math.round(quota.percentUsed * 100)}% used`);
+  }
+
+  await browser.storage.sync.set({ [key]: value });
+}
+
 export const STORAGE_KEYS = {
   TEMP_BLOCKS: 'tempBlocks',
   TEMP_MUTES: 'tempMutes',
@@ -94,7 +166,8 @@ export async function addTempBlock(
     createdAt: Date.now(),
     rkey,
   };
-  await browser.storage.sync.set({ [STORAGE_KEYS.TEMP_BLOCKS]: blocks });
+  // Use safe write with quota checking
+  await safeSyncStorageWrite(STORAGE_KEYS.TEMP_BLOCKS, blocks);
   // Notify background to set alarm
   browser.runtime
     .sendMessage({
@@ -134,7 +207,8 @@ export async function addTempMute(
     expiresAt: Date.now() + durationMs,
     createdAt: Date.now(),
   };
-  await browser.storage.sync.set({ [STORAGE_KEYS.TEMP_MUTES]: mutes });
+  // Use safe write with quota checking
+  await safeSyncStorageWrite(STORAGE_KEYS.TEMP_MUTES, mutes);
   // Notify background to set alarm
   browser.runtime
     .sendMessage({
@@ -383,10 +457,7 @@ export async function updateSyncState(update: Partial<SyncState>): Promise<void>
  * Returns entries sorted by creation/sync date (newest first)
  */
 export async function getAllManagedBlocks(): Promise<ManagedEntry[]> {
-  const [tempBlocks, permanentBlocks] = await Promise.all([
-    getTempBlocks(),
-    getPermanentBlocks(),
-  ]);
+  const [tempBlocks, permanentBlocks] = await Promise.all([getTempBlocks(), getPermanentBlocks()]);
 
   const entries: ManagedEntry[] = [];
 
@@ -437,10 +508,7 @@ export async function getAllManagedBlocks(): Promise<ManagedEntry[]> {
  * Returns entries sorted by creation/sync date (newest first)
  */
 export async function getAllManagedMutes(): Promise<ManagedEntry[]> {
-  const [tempMutes, permanentMutes] = await Promise.all([
-    getTempMutes(),
-    getPermanentMutes(),
-  ]);
+  const [tempMutes, permanentMutes] = await Promise.all([getTempMutes(), getPermanentMutes()]);
 
   const entries: ManagedEntry[] = [];
 

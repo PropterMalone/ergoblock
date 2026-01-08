@@ -60,7 +60,9 @@ export const selectedItems = signal<Set<string>>(new Set());
 export const loading = signal(true);
 
 // Temp unblock tracking
-export const tempUnblockTimers = signal<Map<string, { timerId: number; expiresAt: number }>>(new Map());
+export const tempUnblockTimers = signal<Map<string, { timerId: number; expiresAt: number }>>(
+  new Map()
+);
 
 // Context map computed from contexts
 export const contextMap = computed(() => {

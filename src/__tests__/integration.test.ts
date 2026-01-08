@@ -245,6 +245,7 @@ describe('Integration Tests', () => {
         theme: 'dark',
         savePostContext: true,
         postContextRetentionDays: 90,
+        forgivenessPeriodDays: 90,
       };
 
       await setOptions(customOptions);

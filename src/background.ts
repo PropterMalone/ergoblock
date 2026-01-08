@@ -16,7 +16,6 @@ import {
   updateSyncState,
   getPostContexts,
   addPostContext,
-  getBlocklistAuditState,
   updateBlocklistAuditState,
   setSubscribedBlocklists,
   setSocialGraph,
@@ -52,8 +51,12 @@ import {
 
 const ALARM_NAME = 'checkExpirations';
 const SYNC_ALARM_NAME = 'syncWithBluesky';
-const SYNC_INTERVAL_MINUTES = 15;
-const PAGINATION_DELAY = 500; // ms between paginated requests
+const SYNC_INTERVAL_MINUTES = 60; // Sync every 60 minutes (was 15)
+const PAGINATION_DELAY = 100; // ms between paginated requests (was 500ms)
+
+// In-memory sync locks (atomic, no race window)
+let syncLockActive = false;
+let blocklistAuditLockActive = false;
 
 interface AuthData {
   accessJwt: string;
@@ -232,13 +235,14 @@ export async function sendNotification(
     message = `Failed to ${action} @${handle}: ${error || 'Unknown error'}`;
   }
 
+  // Cast needed because 'silent' is Chrome-specific, not in webextension-polyfill types
   await browser.notifications.create({
     type: 'basic',
     iconUrl: 'icons/icon128.png',
     title,
     message,
     silent: !options.notificationSound,
-  });
+  } as browser.Notifications.CreateNotificationOptions & { silent?: boolean });
 }
 
 // ============================================================================
@@ -408,7 +412,9 @@ async function fetchViewerStates(
  * - Adds new blocks found in Bluesky to permanent storage
  * - Removes temp blocks that no longer exist in Bluesky (user unblocked externally)
  */
-async function syncBlocks(auth: AuthData): Promise<{ added: number; removed: number; newBlocks: Array<{ did: string; handle: string }> }> {
+async function syncBlocks(
+  auth: AuthData
+): Promise<{ added: number; removed: number; newBlocks: Array<{ did: string; handle: string }> }> {
   const now = Date.now();
   let added = 0;
   let removed = 0;
@@ -434,19 +440,34 @@ async function syncBlocks(auth: AuthData): Promise<{ added: number; removed: num
     }
   }
 
-  // Fetch viewer states for all blocked users (relationship info)
-  const allBlockDids = bskyBlocks.map((b) => b.did);
-  console.log(`[ErgoBlock BG] Fetching viewer states for ${allBlockDids.length} blocked users`);
-  const viewerStates = await fetchViewerStates(auth, allBlockDids);
+  // Get current storage first to identify NEW blocks
+  const [tempBlocks, permanentBlocks] = await Promise.all([getTempBlocks(), getPermanentBlocks()]);
 
-  // Get current storage
-  const [tempBlocks, permanentBlocks] = await Promise.all([
-    getTempBlocks(),
-    getPermanentBlocks(),
-  ]);
+  // Only fetch viewer states for NEW blocks (not already in permanent storage)
+  // This dramatically reduces API calls for users with large block lists
+  const newBlockDids = bskyBlocks
+    .filter((b) => !permanentBlocks[b.did] && !tempBlocks[b.did])
+    .map((b) => b.did);
+  console.log(
+    `[ErgoBlock BG] Fetching viewer states for ${newBlockDids.length} new blocks (skipping ${bskyBlocks.length - newBlockDids.length} existing)`
+  );
+  const viewerStates =
+    newBlockDids.length > 0 ? await fetchViewerStates(auth, newBlockDids) : new Map();
 
   // Build new permanent blocks map
-  const newPermanentBlocks: Record<string, { did: string; handle: string; displayName?: string; avatar?: string; createdAt?: number; syncedAt: number; rkey?: string; viewer?: ProfileViewerState }> = {};
+  const newPermanentBlocks: Record<
+    string,
+    {
+      did: string;
+      handle: string;
+      displayName?: string;
+      avatar?: string;
+      createdAt?: number;
+      syncedAt: number;
+      rkey?: string;
+      viewer?: ProfileViewerState;
+    }
+  > = {};
 
   for (const block of bskyBlocks) {
     // Skip if it's a temp block (we track those separately)
@@ -455,7 +476,8 @@ async function syncBlocks(auth: AuthData): Promise<{ added: number; removed: num
     }
 
     const recordData = recordMap.get(block.did);
-    const viewer = viewerStates.get(block.did);
+    // Use new viewer state if available, otherwise preserve existing
+    const viewer = viewerStates.get(block.did) || permanentBlocks[block.did]?.viewer;
 
     // Add to permanent blocks
     // IMPORTANT: Preserve existing createdAt if we have it - the Bluesky record's createdAt
@@ -513,19 +535,32 @@ async function syncMutes(auth: AuthData): Promise<{ added: number; removed: numb
   const bskyMutes = await fetchAllMutes(auth);
   const bskyMuteDids = new Set(bskyMutes.map((m) => m.did));
 
-  // Fetch viewer states for all muted users (relationship info)
-  const allMuteDids = bskyMutes.map((m) => m.did);
-  console.log(`[ErgoBlock BG] Fetching viewer states for ${allMuteDids.length} muted users`);
-  const viewerStates = await fetchViewerStates(auth, allMuteDids);
+  // Get current storage first to identify NEW mutes
+  const [tempMutes, permanentMutes] = await Promise.all([getTempMutes(), getPermanentMutes()]);
 
-  // Get current storage
-  const [tempMutes, permanentMutes] = await Promise.all([
-    getTempMutes(),
-    getPermanentMutes(),
-  ]);
+  // Only fetch viewer states for NEW mutes (not already in permanent storage)
+  // This dramatically reduces API calls for users with large mute lists
+  const newMuteDids = bskyMutes
+    .filter((m) => !permanentMutes[m.did] && !tempMutes[m.did])
+    .map((m) => m.did);
+  console.log(
+    `[ErgoBlock BG] Fetching viewer states for ${newMuteDids.length} new mutes (skipping ${bskyMutes.length - newMuteDids.length} existing)`
+  );
+  const viewerStates =
+    newMuteDids.length > 0 ? await fetchViewerStates(auth, newMuteDids) : new Map();
 
   // Build new permanent mutes map
-  const newPermanentMutes: Record<string, { did: string; handle: string; displayName?: string; avatar?: string; syncedAt: number; viewer?: ProfileViewerState }> = {};
+  const newPermanentMutes: Record<
+    string,
+    {
+      did: string;
+      handle: string;
+      displayName?: string;
+      avatar?: string;
+      syncedAt: number;
+      viewer?: ProfileViewerState;
+    }
+  > = {};
 
   for (const mute of bskyMutes) {
     // Skip if it's a temp mute (we track those separately)
@@ -533,7 +568,8 @@ async function syncMutes(auth: AuthData): Promise<{ added: number; removed: numb
       continue;
     }
 
-    const viewer = viewerStates.get(mute.did);
+    // Use new viewer state if available, otherwise preserve existing
+    const viewer = viewerStates.get(mute.did) || permanentMutes[mute.did]?.viewer;
 
     // Add to permanent mutes
     newPermanentMutes[mute.did] = {
@@ -751,7 +787,9 @@ async function findContextViaSearch(
 
   const PUBLIC_API = 'https://public.api.bsky.app';
 
-  console.log(`[ErgoBlock BG] Searching for context via public API: ${targetHandle} → @${loggedInHandle}`);
+  console.log(
+    `[ErgoBlock BG] Searching for context via public API: ${targetHandle} → @${loggedInHandle}`
+  );
 
   try {
     // Run all searches in parallel for speed
@@ -762,15 +800,25 @@ async function findContextViaSearch(
         const mentions = encodeURIComponent(loggedInHandle);
         const endpoint = `${PUBLIC_API}/xrpc/app.bsky.feed.searchPosts?q=${query}&mentions=${mentions}&limit=1&sort=latest`;
 
-        const response = await fetch(endpoint);
-        if (!response.ok) return null;
+        try {
+          const response = await fetch(endpoint);
+          if (!response.ok) {
+            console.debug(
+              `[ErgoBlock BG] Mentions search failed: ${response.status} ${response.statusText}`
+            );
+            return null;
+          }
 
-        const data = (await response.json()) as SearchPostsResponse;
-        const post = data.posts?.[0];
-        if (post) {
-          console.log(`[ErgoBlock BG] Mentions search found: ${post.record.createdAt}`);
+          const data = (await response.json()) as SearchPostsResponse;
+          const post = data.posts?.[0];
+          if (post) {
+            console.log(`[ErgoBlock BG] Mentions search found: ${post.record.createdAt}`);
+          }
+          return post || null;
+        } catch (error) {
+          console.debug(`[ErgoBlock BG] Mentions search error:`, error);
+          return null;
         }
-        return post || null;
       })(),
 
       // Search 2: Replies to the logged-in user
@@ -778,15 +826,25 @@ async function findContextViaSearch(
         const query = encodeURIComponent(`from:${targetHandle} to:${loggedInHandle}`);
         const endpoint = `${PUBLIC_API}/xrpc/app.bsky.feed.searchPosts?q=${query}&limit=1&sort=latest`;
 
-        const response = await fetch(endpoint);
-        if (!response.ok) return null;
+        try {
+          const response = await fetch(endpoint);
+          if (!response.ok) {
+            console.debug(
+              `[ErgoBlock BG] Replies search failed: ${response.status} ${response.statusText}`
+            );
+            return null;
+          }
 
-        const data = (await response.json()) as SearchPostsResponse;
-        const post = data.posts?.[0];
-        if (post) {
-          console.log(`[ErgoBlock BG] Reply search found: ${post.record.createdAt}`);
+          const data = (await response.json()) as SearchPostsResponse;
+          const post = data.posts?.[0];
+          if (post) {
+            console.log(`[ErgoBlock BG] Reply search found: ${post.record.createdAt}`);
+          }
+          return post || null;
+        } catch (error) {
+          console.debug(`[ErgoBlock BG] Replies search error:`, error);
+          return null;
         }
-        return post || null;
       })(),
 
       // Search 3: Text search for QTs (posts containing the handle)
@@ -794,18 +852,30 @@ async function findContextViaSearch(
         const query = encodeURIComponent(`from:${targetHandle} ${loggedInHandle}`);
         const endpoint = `${PUBLIC_API}/xrpc/app.bsky.feed.searchPosts?q=${query}&limit=25&sort=latest`;
 
-        const response = await fetch(endpoint);
-        if (!response.ok) return null;
-
-        const data = (await response.json()) as SearchPostsResponse;
-        // Filter to find actual interactions (QTs, replies, mentions)
-        for (const post of data.posts || []) {
-          if (isSearchPostInteraction(post, loggedInDid, loggedInHandle)) {
-            console.log(`[ErgoBlock BG] Text search found verified interaction: ${post.record.createdAt}`);
-            return post;
+        try {
+          const response = await fetch(endpoint);
+          if (!response.ok) {
+            console.debug(
+              `[ErgoBlock BG] Text search failed: ${response.status} ${response.statusText}`
+            );
+            return null;
           }
+
+          const data = (await response.json()) as SearchPostsResponse;
+          // Filter to find actual interactions (QTs, replies, mentions)
+          for (const post of data.posts || []) {
+            if (isSearchPostInteraction(post, loggedInDid, loggedInHandle)) {
+              console.log(
+                `[ErgoBlock BG] Text search found verified interaction: ${post.record.createdAt}`
+              );
+              return post;
+            }
+          }
+          return null;
+        } catch (error) {
+          console.debug(`[ErgoBlock BG] Text search error:`, error);
+          return null;
         }
-        return null;
       })(),
     ]);
 
@@ -860,8 +930,8 @@ async function findBlockContextPost(
   exhaustive = false
 ): Promise<InteractionResult> {
   // For exhaustive search, we paginate through all posts looking for an interaction
-  // For normal search, we limit to 100 posts (10 pages max)
-  const maxPages = exhaustive ? 1000 : 10; // 1000 pages = up to 100k posts
+  // For normal search, we limit to 300 posts (3 pages) for performance
+  const maxPages = exhaustive ? 1000 : 3; // 3 pages = 300 posts (was 10 = 1000)
   const pageSize = 100;
 
   // Resolve the user's PDS URL
@@ -948,7 +1018,12 @@ async function findContextWithFallback(
   exhaustive = false
 ): Promise<InteractionResult> {
   // Try fast search API first (unauthenticated, bypasses blocks)
-  const searchResult = await findContextViaSearch(targetDid, targetHandle, loggedInDid, loggedInHandle);
+  const searchResult = await findContextViaSearch(
+    targetDid,
+    targetHandle,
+    loggedInDid,
+    loggedInHandle
+  );
   if (searchResult) {
     return { post: searchResult, blockedBy: false };
   }
@@ -981,7 +1056,12 @@ async function generateContextForNewBlocks(
     }
 
     try {
-      const result = await findContextWithFallback(block.did, block.handle, loggedInDid, loggedInHandle);
+      const result = await findContextWithFallback(
+        block.did,
+        block.handle,
+        loggedInDid,
+        loggedInHandle
+      );
 
       if (result.post) {
         await addPostContext({
@@ -1048,16 +1128,16 @@ export async function performFullSync(): Promise<{
   mutes?: { added: number; removed: number };
   guessedContexts?: number;
 }> {
-  const syncState = await getSyncState();
-
-  // Prevent concurrent syncs
-  if (syncState.syncInProgress) {
+  // Use atomic in-memory lock to prevent concurrent syncs (no TOCTOU race)
+  if (syncLockActive) {
     console.log('[ErgoBlock BG] Sync already in progress, skipping');
     return { success: false, error: 'Sync already in progress' };
   }
+  syncLockActive = true;
 
   const auth = await getAuthToken();
   if (!auth?.accessJwt || !auth?.did || !auth?.pdsUrl) {
+    syncLockActive = false;
     console.log('[ErgoBlock BG] No auth token available, skipping sync');
     return { success: false, error: 'Not authenticated' };
   }
@@ -1066,10 +1146,26 @@ export async function performFullSync(): Promise<{
   await updateSyncState({ syncInProgress: true, lastError: undefined });
 
   try {
-    const [blockResult, muteResult] = await Promise.all([
-      syncBlocks(auth),
-      syncMutes(auth),
-    ]);
+    // Use Promise.allSettled to handle partial failures gracefully
+    const results = await Promise.allSettled([syncBlocks(auth), syncMutes(auth)]);
+
+    const blockSettled = results[0];
+    const muteSettled = results[1];
+
+    const blockResult =
+      blockSettled.status === 'fulfilled'
+        ? blockSettled.value
+        : { added: 0, removed: 0, newBlocks: [] };
+    const muteResult =
+      muteSettled.status === 'fulfilled' ? muteSettled.value : { added: 0, removed: 0 };
+
+    // Log any partial failures
+    if (blockSettled.status === 'rejected') {
+      console.error('[ErgoBlock BG] Block sync failed:', blockSettled.reason);
+    }
+    if (muteSettled.status === 'rejected') {
+      console.error('[ErgoBlock BG] Mute sync failed:', muteSettled.reason);
+    }
 
     // Generate context for newly imported blocks
     let guessedContexts = 0;
@@ -1089,6 +1185,10 @@ export async function performFullSync(): Promise<{
       syncInProgress: false,
       lastBlockSync: Date.now(),
       lastMuteSync: Date.now(),
+      lastError:
+        blockSettled.status === 'rejected' || muteSettled.status === 'rejected'
+          ? 'Partial sync failure'
+          : undefined,
     });
 
     console.log('[ErgoBlock BG] Sync complete:', {
@@ -1099,11 +1199,16 @@ export async function performFullSync(): Promise<{
 
     await updateBadge();
 
+    syncLockActive = false;
     return {
-      success: true,
+      success: blockSettled.status === 'fulfilled' && muteSettled.status === 'fulfilled',
       blocks: { added: blockResult.added, removed: blockResult.removed },
       mutes: muteResult,
       guessedContexts,
+      error:
+        blockSettled.status === 'rejected' || muteSettled.status === 'rejected'
+          ? 'Partial sync failure - check console for details'
+          : undefined,
     };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -1114,6 +1219,7 @@ export async function performFullSync(): Promise<{
       lastError: errorMessage,
     });
 
+    syncLockActive = false;
     return { success: false, error: errorMessage };
   }
 }
@@ -1251,9 +1357,7 @@ async function fetchSubscribedBlocklists(auth: AuthData): Promise<ListView[]> {
 
     if (response?.lists) {
       // Only add modlists (not curate lists)
-      const modlists = response.lists.filter(
-        (l) => l.purpose === 'app.bsky.graph.defs#modlist'
-      );
+      const modlists = response.lists.filter((l) => l.purpose === 'app.bsky.graph.defs#modlist');
       allLists.push(...modlists);
     }
     cursor = response?.cursor;
@@ -1311,16 +1415,16 @@ export async function performBlocklistAuditSync(): Promise<{
   error?: string;
   conflictCount?: number;
 }> {
-  const auditState = await getBlocklistAuditState();
-
-  // Prevent concurrent syncs
-  if (auditState.syncInProgress) {
+  // Use atomic in-memory lock to prevent concurrent syncs (no TOCTOU race)
+  if (blocklistAuditLockActive) {
     console.log('[ErgoBlock BG] Blocklist audit sync already in progress');
     return { success: false, error: 'Sync already in progress' };
   }
+  blocklistAuditLockActive = true;
 
   const auth = await getAuthToken();
   if (!auth?.accessJwt || !auth?.did || !auth?.pdsUrl) {
+    blocklistAuditLockActive = false;
     return { success: false, error: 'Not authenticated' };
   }
 
@@ -1466,6 +1570,7 @@ export async function performBlocklistAuditSync(): Promise<{
     });
 
     console.log(`[ErgoBlock BG] Blocklist audit complete: ${totalConflicts} conflicts found`);
+    blocklistAuditLockActive = false;
     return { success: true, conflictCount: totalConflicts };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -1476,6 +1581,7 @@ export async function performBlocklistAuditSync(): Promise<{
       lastError: errorMessage,
     });
 
+    blocklistAuditLockActive = false;
     return { success: false, error: errorMessage };
   }
 }
@@ -1766,7 +1872,9 @@ async function handleUnmuteRequest(did: string): Promise<{ success: boolean; err
  * Handle temp unblock for viewing a post context
  * This unblocks without removing from storage - we'll reblock shortly
  */
-async function handleTempUnblockForView(did: string): Promise<{ success: boolean; error?: string }> {
+async function handleTempUnblockForView(
+  did: string
+): Promise<{ success: boolean; error?: string }> {
   try {
     const auth = await getAuthToken();
     if (!auth?.accessJwt || !auth?.did || !auth?.pdsUrl) {
@@ -1777,13 +1885,23 @@ async function handleTempUnblockForView(did: string): Promise<{ success: boolean
     const permanentBlocks = await getPermanentBlocks();
     const blockData = permanentBlocks[did];
     const rkey = blockData?.rkey;
-    console.log('[ErgoBlock BG] Permanent block data for', did, ':', blockData ? { rkey: blockData.rkey, handle: blockData.handle } : 'not found');
+    console.log(
+      '[ErgoBlock BG] Permanent block data for',
+      did,
+      ':',
+      blockData ? { rkey: blockData.rkey, handle: blockData.handle } : 'not found'
+    );
 
     // Also check temp blocks
     const tempBlocks = await getTempBlocks();
     const tempBlockData = tempBlocks[did];
     const tempRkey = tempBlockData?.rkey;
-    console.log('[ErgoBlock BG] Temp block data for', did, ':', tempBlockData ? { rkey: tempBlockData.rkey, handle: tempBlockData.handle } : 'not found');
+    console.log(
+      '[ErgoBlock BG] Temp block data for',
+      did,
+      ':',
+      tempBlockData ? { rkey: tempBlockData.rkey, handle: tempBlockData.handle } : 'not found'
+    );
 
     const rkeyToUse = rkey || tempRkey;
     console.log('[ErgoBlock BG] Using rkey:', rkeyToUse || '(none - will scan)');
@@ -1881,68 +1999,64 @@ async function handleFindContext(
   }
 }
 
-browser.runtime.onMessage.addListener(
-  (message: ExtensionMessage, _sender, sendResponse: (response: MessageResponse) => void) => {
-    console.log('[ErgoBlock BG] Received message:', message.type);
+// Async message handler for communication with content scripts and popup
+// Using the async pattern which returns Promise<unknown> per webextension-polyfill types
+const messageHandler = async (rawMessage: unknown): Promise<MessageResponse | undefined> => {
+  const message = rawMessage as ExtensionMessage;
+  console.log('[ErgoBlock BG] Received message:', message.type);
 
-    if (message.type === 'TEMP_BLOCK_ADDED' || message.type === 'TEMP_MUTE_ADDED') {
-      setupAlarm();
-      updateBadge();
-    }
-
-    if (message.type === 'SET_AUTH_TOKEN' && message.auth) {
-      browser.storage.local.set({ authToken: message.auth });
-      sendResponse({ success: true });
-    }
-
-    if (message.type === 'CHECK_NOW') {
-      checkExpirations().then(() => sendResponse({ success: true }));
-      return true; // Indicates async response
-    }
-
-    if (message.type === 'SYNC_NOW') {
-      performFullSync().then((result) => sendResponse(result));
-      return true; // Indicates async response
-    }
-
-    if (message.type === 'UNBLOCK_USER' && message.did) {
-      handleUnblockRequest(message.did).then(sendResponse);
-      return true; // Indicates async response
-    }
-
-    if (message.type === 'UNMUTE_USER' && message.did) {
-      handleUnmuteRequest(message.did).then(sendResponse);
-      return true; // Indicates async response
-    }
-
-    if (message.type === 'TEMP_UNBLOCK_FOR_VIEW' && message.did) {
-      handleTempUnblockForView(message.did).then(sendResponse);
-      return true; // Indicates async response
-    }
-
-    if (message.type === 'REBLOCK_USER' && message.did) {
-      handleReblockUser(message.did).then(sendResponse);
-      return true; // Indicates async response
-    }
-
-    if (message.type === 'FIND_CONTEXT' && message.did && message.handle) {
-      handleFindContext(message.did, message.handle).then(sendResponse);
-      return true; // Indicates async response
-    }
-
-    if (message.type === 'BLOCKLIST_AUDIT_SYNC') {
-      performBlocklistAuditSync().then(sendResponse);
-      return true; // Indicates async response
-    }
-
-    if (message.type === 'UNSUBSCRIBE_BLOCKLIST' && message.listUri) {
-      handleUnsubscribeFromBlocklist(message.listUri as string).then(sendResponse);
-      return true; // Indicates async response
-    }
-
-    return false;
+  if (message.type === 'TEMP_BLOCK_ADDED' || message.type === 'TEMP_MUTE_ADDED') {
+    setupAlarm();
+    updateBadge();
+    return undefined;
   }
-);
+
+  if (message.type === 'SET_AUTH_TOKEN' && message.auth) {
+    await browser.storage.local.set({ authToken: message.auth });
+    return { success: true };
+  }
+
+  if (message.type === 'CHECK_NOW') {
+    await checkExpirations();
+    return { success: true };
+  }
+
+  if (message.type === 'SYNC_NOW') {
+    return await performFullSync();
+  }
+
+  if (message.type === 'UNBLOCK_USER' && message.did) {
+    return await handleUnblockRequest(message.did);
+  }
+
+  if (message.type === 'UNMUTE_USER' && message.did) {
+    return await handleUnmuteRequest(message.did);
+  }
+
+  if (message.type === 'TEMP_UNBLOCK_FOR_VIEW' && message.did) {
+    return await handleTempUnblockForView(message.did);
+  }
+
+  if (message.type === 'REBLOCK_USER' && message.did) {
+    return await handleReblockUser(message.did);
+  }
+
+  if (message.type === 'FIND_CONTEXT' && message.did && message.handle) {
+    return await handleFindContext(message.did, message.handle);
+  }
+
+  if (message.type === 'BLOCKLIST_AUDIT_SYNC') {
+    return await performBlocklistAuditSync();
+  }
+
+  if (message.type === 'UNSUBSCRIBE_BLOCKLIST' && message.listUri) {
+    return await handleUnsubscribeFromBlocklist(message.listUri as string);
+  }
+
+  return undefined;
+};
+
+browser.runtime.onMessage.addListener(messageHandler);
 
 /**
  * Clear any stale sync state on startup

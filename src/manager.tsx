@@ -51,6 +51,36 @@ import {
 
 const TEMP_UNBLOCK_DURATION = 60 * 1000; // 60 seconds
 
+// Response validation types
+interface MessageResponse {
+  success: boolean;
+  error?: string;
+  found?: boolean;
+}
+
+/**
+ * Validate that a response has the expected shape
+ */
+function isValidResponse(response: unknown): response is MessageResponse {
+  if (typeof response !== 'object' || response === null) {
+    return false;
+  }
+  const resp = response as Record<string, unknown>;
+  return typeof resp.success === 'boolean';
+}
+
+/**
+ * Send a message and validate the response
+ */
+async function sendValidatedMessage(message: Record<string, unknown>): Promise<MessageResponse> {
+  const response = await browser.runtime.sendMessage(message);
+  if (!isValidResponse(response)) {
+    console.error('[Manager] Invalid response shape:', response);
+    return { success: false, error: 'Invalid response from background' };
+  }
+  return response;
+}
+
 function ManagerApp(): JSX.Element {
   // Load all data
   const loadData = useCallback(async () => {
@@ -102,10 +132,7 @@ function ManagerApp(): JSX.Element {
   // Sync handler
   const handleSync = async () => {
     try {
-      const response = (await browser.runtime.sendMessage({ type: 'SYNC_NOW' })) as {
-        success: boolean;
-        error?: string;
-      };
+      const response = await sendValidatedMessage({ type: 'SYNC_NOW' });
       if (response.success) {
         await loadData();
       } else {
@@ -117,20 +144,19 @@ function ManagerApp(): JSX.Element {
     }
   };
 
-  // Unblock handler
+  // Unblock handler - API call first, then storage removal on success
   const handleUnblock = async (did: string, handle?: string) => {
     if (handle && !confirm(`Unblock @${handle}?`)) return;
 
     try {
-      await removeTempBlock(did);
-      const response = (await browser.runtime.sendMessage({ type: 'UNBLOCK_USER', did })) as {
-        success: boolean;
-        error?: string;
-      };
+      const response = await sendValidatedMessage({ type: 'UNBLOCK_USER', did });
       if (!response.success) {
         console.error('[Manager] Unblock failed:', response.error);
         alert(`Failed to unblock: ${response.error}`);
+        return;
       }
+      // Only remove from storage after API success
+      await removeTempBlock(did);
       await loadData();
     } catch (error) {
       console.error('[Manager] Unblock error:', error);
@@ -138,20 +164,19 @@ function ManagerApp(): JSX.Element {
     }
   };
 
-  // Unmute handler
+  // Unmute handler - API call first, then storage removal on success
   const handleUnmute = async (did: string, handle?: string) => {
     if (handle && !confirm(`Unmute @${handle}?`)) return;
 
     try {
-      await removeTempMute(did);
-      const response = (await browser.runtime.sendMessage({ type: 'UNMUTE_USER', did })) as {
-        success: boolean;
-        error?: string;
-      };
+      const response = await sendValidatedMessage({ type: 'UNMUTE_USER', did });
       if (!response.success) {
         console.error('[Manager] Unmute failed:', response.error);
         alert(`Failed to unmute: ${response.error}`);
+        return;
       }
+      // Only remove from storage after API success
+      await removeTempMute(did);
       await loadData();
     } catch (error) {
       console.error('[Manager] Unmute error:', error);
@@ -162,11 +187,11 @@ function ManagerApp(): JSX.Element {
   // Find context handler
   const handleFindContext = async (did: string, handle: string) => {
     try {
-      const response = (await browser.runtime.sendMessage({
+      const response = await sendValidatedMessage({
         type: 'FIND_CONTEXT',
         did,
         handle,
-      })) as { success: boolean; error?: string; found?: boolean };
+      });
 
       if (!response.success) {
         throw new Error(response.error || 'Failed to search');
@@ -192,11 +217,11 @@ function ManagerApp(): JSX.Element {
     }
 
     try {
-      const response = (await browser.runtime.sendMessage({
+      const response = await sendValidatedMessage({
         type: 'TEMP_UNBLOCK_FOR_VIEW',
         did,
         handle,
-      })) as { success: boolean; error?: string };
+      });
 
       if (!response.success) {
         throw new Error(response.error || 'Failed to unblock');
@@ -221,11 +246,11 @@ function ManagerApp(): JSX.Element {
 
   const reblockUser = async (did: string, handle: string) => {
     try {
-      const response = (await browser.runtime.sendMessage({
+      const response = await sendValidatedMessage({
         type: 'REBLOCK_USER',
         did,
         handle,
-      })) as { success: boolean; error?: string };
+      });
 
       if (!response.success) {
         console.error('[Manager] Reblock failed:', response.error);

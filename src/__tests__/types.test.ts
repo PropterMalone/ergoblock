@@ -84,6 +84,7 @@ describe('types module', () => {
         theme: 'dark',
         savePostContext: true,
         postContextRetentionDays: 60,
+        forgivenessPeriodDays: 90,
       };
 
       expect(options.defaultDuration).toBe(3600000);

@@ -459,12 +459,10 @@ describe('API Module', () => {
         text: () => Promise.resolve('{}'),
       });
 
-      await executeApiRequest(
-        'app.bsky.actor.getProfile?actor=test',
-        'GET',
-        null,
-        { accessJwt: 'test-jwt', pdsUrl: 'https://my-pds.com' }
-      );
+      await executeApiRequest('app.bsky.actor.getProfile?actor=test', 'GET', null, {
+        accessJwt: 'test-jwt',
+        pdsUrl: 'https://my-pds.com',
+      });
 
       expect(fetch).toHaveBeenCalledWith(
         'https://public.api.bsky.app/xrpc/app.bsky.actor.getProfile?actor=test',
@@ -480,10 +478,15 @@ describe('API Module', () => {
       });
 
       await expect(
-        executeApiRequest('com.atproto.repo.createRecord', 'POST', {}, {
-          accessJwt: 'bad-jwt',
-          pdsUrl: 'https://pds.com',
-        })
+        executeApiRequest(
+          'com.atproto.repo.createRecord',
+          'POST',
+          {},
+          {
+            accessJwt: 'bad-jwt',
+            pdsUrl: 'https://pds.com',
+          }
+        )
       ).rejects.toThrow('Auth error');
     });
 
@@ -495,10 +498,15 @@ describe('API Module', () => {
       });
 
       await expect(
-        executeApiRequest('com.atproto.repo.createRecord', 'POST', {}, {
-          accessJwt: 'jwt',
-          pdsUrl: 'https://pds.com',
-        })
+        executeApiRequest(
+          'com.atproto.repo.createRecord',
+          'POST',
+          {},
+          {
+            accessJwt: 'jwt',
+            pdsUrl: 'https://pds.com',
+          }
+        )
       ).rejects.toThrow('Server error');
     });
 
@@ -762,9 +770,7 @@ describe('API Module', () => {
     });
 
     it('should handle fetch errors gracefully', async () => {
-      (fetch as unknown as ReturnType<typeof vi.fn>).mockRejectedValue(
-        new Error('Network error')
-      );
+      (fetch as unknown as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('Network error'));
 
       const result = await findRecentInteraction('did:blocker:456', 'did:test:123');
 

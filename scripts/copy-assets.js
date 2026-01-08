@@ -12,7 +12,13 @@ export function copyAssets() {
   }
 
   // Build manager.css by concatenating Open Props + custom styles
-  const openPropsPath = path.join(__dirname, '..', 'node_modules', 'open-props', 'open-props.min.css');
+  const openPropsPath = path.join(
+    __dirname,
+    '..',
+    'node_modules',
+    'open-props',
+    'open-props.min.css'
+  );
   const customCssPath = path.join(__dirname, '..', 'src', 'styles', 'manager.css');
 
   if (fs.existsSync(openPropsPath) && fs.existsSync(customCssPath)) {
