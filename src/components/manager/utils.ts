@@ -92,7 +92,8 @@ export function filterAndSort<T extends ManagedEntry | HistoryEntry | PostContex
   search: string,
   sourceFilter: string,
   column: SortColumn,
-  direction: SortDirection
+  direction: SortDirection,
+  amnestyMap?: Map<string, 'denied'>
 ): T[] {
   let filtered = items.filter((item) => {
     if (search) {
@@ -123,6 +124,15 @@ export function filterAndSort<T extends ManagedEntry | HistoryEntry | PostContex
         const sourceA = 'source' in a ? (a as ManagedEntry).source : '';
         const sourceB = 'source' in b ? (b as ManagedEntry).source : '';
         cmp = sourceA.localeCompare(sourceB);
+        break;
+      }
+      case 'amnesty': {
+        // Denied sorts before Unreviewed
+        const didA = 'did' in a ? (a as ManagedEntry).did : '';
+        const didB = 'did' in b ? (b as ManagedEntry).did : '';
+        const statusA = amnestyMap?.get(didA) === 'denied' ? 0 : 1;
+        const statusB = amnestyMap?.get(didB) === 'denied' ? 0 : 1;
+        cmp = statusA - statusB;
         break;
       }
       case 'expires': {

@@ -48,7 +48,7 @@ export const blocklistConflicts = signal<BlocklistConflictGroup[]>([]);
 
 // UI state
 export type TabType = 'blocks' | 'mutes' | 'history' | 'amnesty' | 'blocklist-audit';
-export type SortColumn = 'user' | 'source' | 'status' | 'expires' | 'date';
+export type SortColumn = 'user' | 'source' | 'status' | 'amnesty' | 'expires' | 'date';
 export type SortDirection = 'asc' | 'desc';
 
 export const currentTab = signal<TabType>('blocks');

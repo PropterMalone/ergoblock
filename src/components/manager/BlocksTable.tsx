@@ -33,7 +33,8 @@ export function BlocksTable({
     searchQuery.value,
     filterSource.value,
     sortColumn.value,
-    sortDirection.value
+    sortDirection.value,
+    amnestyStatusMap.value
   );
 
   if (filtered.length === 0) {
@@ -68,7 +69,7 @@ export function BlocksTable({
           <th>Context</th>
           <SortableHeader column="source" label="Source" />
           <th>Status</th>
-          <th>Amnesty</th>
+          <SortableHeader column="amnesty" label="Amnesty" />
           <SortableHeader column="expires" label="Expires" />
           <SortableHeader column="date" label="Date" />
           <th>Actions</th>
