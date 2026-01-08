@@ -10,6 +10,7 @@ import type {
   ExtensionOptions,
   BlocklistAuditState,
   BlocklistConflictGroup,
+  AmnestyReview,
 } from '../types.js';
 
 // Core data signals
@@ -22,10 +23,24 @@ export const options = signal<ExtensionOptions | null>(null);
 
 // Amnesty state
 export const amnestyReviewedDids = signal<Set<string>>(new Set());
+export const amnestyReviews = signal<AmnestyReview[]>([]); // Full review records for showing status
 export const amnestyCandidate = signal<ManagedEntry | null>(null);
 export const amnestySearching = signal(false);
 // Track DIDs where we already searched and found no context (avoids repeated searches)
 export const amnestySearchedNoContext = signal<Set<string>>(new Set());
+
+// Computed map of DID -> amnesty status ('denied' or undefined for unreviewed)
+export const amnestyStatusMap = computed(() => {
+  const map = new Map<string, 'denied'>();
+  for (const review of amnestyReviews.value) {
+    // 'kept_blocked' or 'kept_muted' means user decided to keep the block/mute
+    if (review.decision === 'kept_blocked' || review.decision === 'kept_muted') {
+      map.set(review.did, 'denied');
+    }
+    // 'unblocked' or 'unmuted' means they were freed - they won't be in the list anymore
+  }
+  return map;
+});
 
 // Blocklist audit state
 export const blocklistAuditState = signal<BlocklistAuditState | null>(null);

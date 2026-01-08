@@ -9,6 +9,7 @@ import {
   selectAll,
   clearSelection,
   toggleSelection,
+  amnestyStatusMap,
 } from '../../signals/manager.js';
 import { filterAndSort, formatTimeRemaining, formatDate } from './utils.js';
 import { SortableHeader } from './SortableHeader.js';
@@ -67,6 +68,7 @@ export function BlocksTable({
           <th>Context</th>
           <SortableHeader column="source" label="Source" />
           <th>Status</th>
+          <th>Amnesty</th>
           <SortableHeader column="expires" label="Expires" />
           <SortableHeader column="date" label="Date" />
           <th>Actions</th>
@@ -79,6 +81,7 @@ export function BlocksTable({
             isTemp && block.expiresAt && block.expiresAt - Date.now() < 24 * 60 * 60 * 1000;
           const isMutual = block.viewer?.blockedBy === true;
           const isSelected = selectedItems.value.has(block.did);
+          const amnestyStatus = amnestyStatusMap.value.get(block.did);
 
           return (
             <tr key={block.did} class={isMutual ? 'mutual-block' : ''}>
@@ -107,6 +110,11 @@ export function BlocksTable({
                 </span>
               </td>
               <StatusIndicators viewer={block.viewer} isBlocksTab={true} />
+              <td>
+                <span class={`badge ${amnestyStatus === 'denied' ? 'badge-denied' : 'badge-unreviewed'}`}>
+                  {amnestyStatus === 'denied' ? 'Denied' : 'Unreviewed'}
+                </span>
+              </td>
               <td>
                 {isTemp && block.expiresAt ? (
                   <span class={`badge ${isExpiringSoon ? 'badge-expiring' : ''}`}>

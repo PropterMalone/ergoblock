@@ -9,6 +9,7 @@ import {
   selectAll,
   clearSelection,
   toggleSelection,
+  amnestyStatusMap,
 } from '../../signals/manager.js';
 import { filterAndSort, formatTimeRemaining, formatDate } from './utils.js';
 import { SortableHeader } from './SortableHeader.js';
@@ -67,6 +68,7 @@ export function MutesTable({
           <th>Context</th>
           <SortableHeader column="source" label="Source" />
           <th>Status</th>
+          <th>Amnesty</th>
           <SortableHeader column="expires" label="Expires" />
           <SortableHeader column="date" label="Date" />
           <th>Actions</th>
@@ -88,6 +90,7 @@ export function MutesTable({
                   ? 'mutual-block'
                   : '';
           const isSelected = selectedItems.value.has(mute.did);
+          const amnestyStatus = amnestyStatusMap.value.get(mute.did);
 
           return (
             <tr key={mute.did} class={rowClass}>
@@ -116,6 +119,11 @@ export function MutesTable({
                 </span>
               </td>
               <StatusIndicators viewer={mute.viewer} isBlocksTab={false} />
+              <td>
+                <span class={`badge ${amnestyStatus === 'denied' ? 'badge-denied' : 'badge-unreviewed'}`}>
+                  {amnestyStatus === 'denied' ? 'Denied' : 'Unreviewed'}
+                </span>
+              </td>
               <td>
                 {isTemp && mute.expiresAt ? (
                   <span class={`badge ${isExpiringSoon ? 'badge-expiring' : ''}`}>

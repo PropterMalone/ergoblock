@@ -488,6 +488,16 @@ tr:hover {
   margin-left: var(--space-xs);
 }
 
+.badge-denied {
+  background: var(--red-1);
+  color: var(--red-7);
+}
+
+.badge-unreviewed {
+  background: var(--gray-2);
+  color: var(--gray-6);
+}
+
 /* Relationship indicators */
 .rel-indicators {
   display: inline-flex;

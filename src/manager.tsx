@@ -12,6 +12,7 @@ import {
   getPostContexts,
   getSyncState,
   getAmnestyReviewedDids,
+  getAmnestyReviews,
   getOptions,
   getBlocklistAuditState,
   getBlocklistConflicts,
@@ -26,6 +27,7 @@ import {
   syncState,
   options,
   amnestyReviewedDids,
+  amnestyReviews,
   blocklistAuditState,
   blocklistConflicts,
   currentTab,
@@ -59,6 +61,7 @@ function ManagerApp(): JSX.Element {
       contextsData,
       syncData,
       reviewedDids,
+      reviewsData,
       optionsData,
       auditState,
       auditConflicts,
@@ -69,6 +72,7 @@ function ManagerApp(): JSX.Element {
       getPostContexts(),
       getSyncState(),
       getAmnestyReviewedDids(),
+      getAmnestyReviews(),
       getOptions(),
       getBlocklistAuditState(),
       getBlocklistConflicts(),
@@ -80,6 +84,7 @@ function ManagerApp(): JSX.Element {
     contexts.value = contextsData;
     syncState.value = syncData;
     amnestyReviewedDids.value = reviewedDids;
+    amnestyReviews.value = reviewsData;
     options.value = optionsData;
     blocklistAuditState.value = auditState;
     blocklistConflicts.value = auditConflicts;
