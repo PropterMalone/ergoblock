@@ -16,6 +16,10 @@ import {
   getAmnestyStats,
   getOptions,
   setOptions,
+  getBlocklistAuditState,
+  getBlocklistConflicts,
+  dismissBlocklistConflicts,
+  undismissBlocklistConflicts,
 } from './storage.js';
 import type {
   ManagedEntry,
@@ -25,6 +29,8 @@ import type {
   ProfileViewerState,
   AmnestyReview,
   ExtensionOptions,
+  BlocklistAuditState,
+  BlocklistConflictGroup,
 } from './types.js';
 
 // State
@@ -41,6 +47,10 @@ let options: ExtensionOptions | null = null;
 let amnestyReviewedDids: Set<string> = new Set();
 let amnestyCandidate: ManagedEntry | null = null;
 let amnestySearching = false;
+
+// Blocklist audit state
+let blocklistAuditState: BlocklistAuditState | null = null;
+let blocklistConflicts: BlocklistConflictGroup[] = [];
 
 // Sort state
 type SortColumn = 'user' | 'source' | 'status' | 'expires' | 'date';
@@ -69,7 +79,7 @@ const elements = {
 // ============================================================================
 
 async function loadData(): Promise<void> {
-  [allBlocks, allMutes, history, contexts, syncState, amnestyReviewedDids, options] = await Promise.all([
+  [allBlocks, allMutes, history, contexts, syncState, amnestyReviewedDids, options, blocklistAuditState, blocklistConflicts] = await Promise.all([
     getAllManagedBlocks(),
     getAllManagedMutes(),
     getActionHistory(),
@@ -77,6 +87,8 @@ async function loadData(): Promise<void> {
     getSyncState(),
     getAmnestyReviewedDids(),
     getOptions(),
+    getBlocklistAuditState(),
+    getBlocklistConflicts(),
   ]);
 }
 
@@ -293,10 +305,10 @@ function renderCurrentTab(): void {
   updateBulkActions();
   buildContextMap();
 
-  // Hide toolbar for amnesty tab
+  // Hide toolbar for amnesty and blocklist-audit tabs
   const toolbar = document.querySelector('.toolbar') as HTMLElement;
   if (toolbar) {
-    toolbar.style.display = currentTab === 'amnesty' ? 'none' : 'flex';
+    toolbar.style.display = (currentTab === 'amnesty' || currentTab === 'blocklist-audit') ? 'none' : 'flex';
   }
 
   switch (currentTab) {
@@ -311,6 +323,9 @@ function renderCurrentTab(): void {
       break;
     case 'amnesty':
       renderAmnestyTab();
+      break;
+    case 'blocklist-audit':
+      renderBlocklistAuditTab();
       break;
   }
 }
@@ -1027,6 +1042,240 @@ async function handleAmnestyDecision(decision: 'unblocked' | 'unmuted' | 'kept_b
 
 // Track active temp unblock timers by DID
 const tempUnblockTimers: Map<string, { timerId: number; expiresAt: number }> = new Map();
+
+// ============================================================================
+// Blocklist Audit Tab
+// ============================================================================
+
+function renderBlocklistAuditTab(): void {
+  const state = blocklistAuditState;
+  const conflicts = blocklistConflicts;
+
+  // Format last sync time
+  const lastSyncText = state?.lastSyncAt
+    ? `Last synced: ${formatDate(state.lastSyncAt)}`
+    : 'Never synced';
+
+  // Count non-dismissed conflicts
+  const activeConflicts = conflicts.filter((g) => !g.dismissed);
+  const dismissedConflicts = conflicts.filter((g) => g.dismissed);
+
+  if (conflicts.length === 0) {
+    // No conflicts or never synced
+    elements.dataContainer.innerHTML = `
+      <div class="blocklist-audit-container">
+        <div class="blocklist-audit-empty">
+          <h3>${state?.lastSyncAt ? 'No Conflicts Found' : 'Blocklist Audit'}</h3>
+          <p>${state?.lastSyncAt
+            ? 'None of your follows or followers are on any of your subscribed blocklists.'
+            : 'Check if any of your follows or followers are on blocklists you subscribe to.'}</p>
+          <button class="audit-sync-btn" id="audit-sync-btn" ${state?.syncInProgress ? 'disabled' : ''}>
+            ${state?.syncInProgress ? 'Syncing...' : 'Run Audit'}
+          </button>
+          <div class="audit-last-sync">${lastSyncText}</div>
+        </div>
+      </div>
+    `;
+  } else {
+    // Has conflicts - show grouped by blocklist
+    let groupsHtml = '';
+
+    // Active conflicts first
+    for (const group of activeConflicts) {
+      groupsHtml += renderBlocklistGroup(group);
+    }
+
+    // Dismissed conflicts (collapsed by default)
+    if (dismissedConflicts.length > 0) {
+      groupsHtml += `<h4 style="margin: 20px 0 10px; color: #888;">Dismissed (${dismissedConflicts.length})</h4>`;
+      for (const group of dismissedConflicts) {
+        groupsHtml += renderBlocklistGroup(group);
+      }
+    }
+
+    const totalActiveConflicts = activeConflicts.reduce((sum, g) => sum + g.conflicts.length, 0);
+
+    elements.dataContainer.innerHTML = `
+      <div class="blocklist-audit-container">
+        <div class="blocklist-audit-header">
+          <div class="blocklist-audit-stats">
+            <div class="audit-stat">
+              <div class="audit-stat-value">${state?.followCount || 0}</div>
+              <div class="audit-stat-label">Following</div>
+            </div>
+            <div class="audit-stat">
+              <div class="audit-stat-value">${state?.followerCount || 0}</div>
+              <div class="audit-stat-label">Followers</div>
+            </div>
+            <div class="audit-stat">
+              <div class="audit-stat-value">${state?.blocklistCount || 0}</div>
+              <div class="audit-stat-label">Blocklists</div>
+            </div>
+            <div class="audit-stat">
+              <div class="audit-stat-value" style="color: ${totalActiveConflicts > 0 ? '#dc2626' : '#16a34a'}">
+                ${totalActiveConflicts}
+              </div>
+              <div class="audit-stat-label">Conflicts</div>
+            </div>
+          </div>
+          <div class="blocklist-audit-actions">
+            <button class="audit-sync-btn" id="audit-sync-btn" ${state?.syncInProgress ? 'disabled' : ''}>
+              ${state?.syncInProgress ? 'Syncing...' : 'Re-run Audit'}
+            </button>
+          </div>
+        </div>
+        <div class="audit-last-sync">${lastSyncText}</div>
+        ${groupsHtml}
+      </div>
+    `;
+  }
+
+  setupBlocklistAuditEvents();
+}
+
+function renderBlocklistGroup(group: BlocklistConflictGroup): string {
+  const list = group.list;
+  const avatarUrl = list.avatar || 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="%23666"><path d="M3 4h18v16H3V4zm2 2v12h14V6H5z"/></svg>';
+
+  let conflictsHtml = '';
+  for (const conflict of group.conflicts) {
+    const user = conflict.user;
+    const userAvatar = user.avatar || 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="%23666"><circle cx="12" cy="8" r="4"/><path d="M12 14c-4 0-8 2-8 4v2h16v-2c0-2-4-4-8-4z"/></svg>';
+
+    const relationshipClass = user.relationship;
+    const relationshipText = user.relationship === 'mutual' ? 'Mutual' :
+      user.relationship === 'following' ? 'You follow' : 'Follows you';
+
+    conflictsHtml += `
+      <div class="blocklist-conflict-row">
+        <img class="conflict-user-avatar" src="${userAvatar}" alt="">
+        <div class="conflict-user-info">
+          <span class="conflict-user-handle">@${user.handle}</span>
+          ${user.displayName ? `<span class="conflict-user-name">${escapeHtml(user.displayName)}</span>` : ''}
+        </div>
+        <span class="conflict-relationship ${relationshipClass}">${relationshipText}</span>
+        <a class="conflict-view-profile" href="https://bsky.app/profile/${user.handle}" target="_blank">View Profile</a>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="blocklist-group ${group.dismissed ? 'dismissed' : ''}" data-list-uri="${list.uri}">
+      <div class="blocklist-group-header">
+        <div class="blocklist-info">
+          <img class="blocklist-avatar" src="${avatarUrl}" alt="">
+          <div class="blocklist-details">
+            <span class="blocklist-name">${escapeHtml(list.name)}</span>
+            <span class="blocklist-creator">by @${list.creator.handle}</span>
+          </div>
+          <span class="blocklist-conflict-count">${group.conflicts.length} conflict${group.conflicts.length === 1 ? '' : 's'}</span>
+        </div>
+        <div class="blocklist-actions">
+          ${group.dismissed ? `
+            <button class="blocklist-action-btn blocklist-undismiss" data-list-uri="${list.uri}">Show Again</button>
+          ` : `
+            <button class="blocklist-action-btn blocklist-dismiss" data-list-uri="${list.uri}">Dismiss</button>
+          `}
+          <button class="blocklist-action-btn blocklist-unsubscribe" data-list-uri="${list.uri}">Unsubscribe</button>
+        </div>
+      </div>
+      <div class="blocklist-conflicts">
+        ${conflictsHtml}
+      </div>
+    </div>
+  `;
+}
+
+function setupBlocklistAuditEvents(): void {
+  // Sync button
+  const syncBtn = document.getElementById('audit-sync-btn');
+  if (syncBtn) {
+    syncBtn.addEventListener('click', async () => {
+      syncBtn.setAttribute('disabled', 'true');
+      syncBtn.textContent = 'Syncing...';
+
+      try {
+        const result = await browser.runtime.sendMessage({ type: 'BLOCKLIST_AUDIT_SYNC' });
+        if (result.success) {
+          await loadData();
+          renderBlocklistAuditTab();
+        } else {
+          alert(`Audit failed: ${result.error || 'Unknown error'}`);
+        }
+      } catch (error) {
+        console.error('[Manager] Blocklist audit sync failed:', error);
+        alert('Failed to run blocklist audit');
+      }
+
+      syncBtn.removeAttribute('disabled');
+      syncBtn.textContent = 'Re-run Audit';
+    });
+  }
+
+  // Dismiss buttons
+  document.querySelectorAll('.blocklist-dismiss').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const listUri = (btn as HTMLElement).dataset.listUri;
+      if (listUri) {
+        await dismissBlocklistConflicts(listUri);
+        await loadData();
+        renderBlocklistAuditTab();
+      }
+    });
+  });
+
+  // Undismiss buttons
+  document.querySelectorAll('.blocklist-undismiss').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const listUri = (btn as HTMLElement).dataset.listUri;
+      if (listUri) {
+        await undismissBlocklistConflicts(listUri);
+        await loadData();
+        renderBlocklistAuditTab();
+      }
+    });
+  });
+
+  // Unsubscribe buttons
+  document.querySelectorAll('.blocklist-unsubscribe').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const listUri = (btn as HTMLElement).dataset.listUri;
+      if (!listUri) return;
+
+      const group = blocklistConflicts.find((g) => g.list.uri === listUri);
+      if (!group) return;
+
+      const confirmed = confirm(
+        `Are you sure you want to unsubscribe from "${group.list.name}"?\n\n` +
+        `This will remove all blocks/mutes from this list.`
+      );
+
+      if (!confirmed) return;
+
+      (btn as HTMLButtonElement).disabled = true;
+      (btn as HTMLButtonElement).textContent = 'Unsubscribing...';
+
+      try {
+        const result = await browser.runtime.sendMessage({
+          type: 'UNSUBSCRIBE_BLOCKLIST',
+          listUri,
+        });
+
+        if (result.success) {
+          // Re-run audit to refresh the data
+          await browser.runtime.sendMessage({ type: 'BLOCKLIST_AUDIT_SYNC' });
+          await loadData();
+          renderBlocklistAuditTab();
+        } else {
+          alert(`Failed to unsubscribe: ${result.error || 'Unknown error'}`);
+        }
+      } catch (error) {
+        console.error('[Manager] Unsubscribe failed:', error);
+        alert('Failed to unsubscribe from blocklist');
+      }
+    });
+  });
+}
 
 // ============================================================================
 // Event Handlers

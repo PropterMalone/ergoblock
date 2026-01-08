@@ -305,3 +305,149 @@ export interface AmnestyReview {
   type: 'block' | 'mute';
   decision: 'unblocked' | 'unmuted' | 'kept_blocked' | 'kept_muted';
 }
+
+// ============================================================================
+// Blocklist Audit Types
+// ============================================================================
+
+/**
+ * A blocklist (moderation list) the user subscribes to
+ */
+export interface SubscribedBlocklist {
+  uri: string; // at://did/app.bsky.graph.list/rkey
+  name: string;
+  description?: string;
+  avatar?: string;
+  creator: {
+    did: string;
+    handle: string;
+    displayName?: string;
+  };
+  listItemCount?: number;
+  subscribedAt?: number; // When we first detected subscription
+  syncedAt: number; // When we last synced members
+}
+
+/**
+ * A follow relationship
+ */
+export interface FollowRelation {
+  did: string;
+  handle: string;
+  displayName?: string;
+  avatar?: string;
+  relationship: 'following' | 'follower' | 'mutual';
+}
+
+/**
+ * A conflict between a follow and a blocklist
+ */
+export interface BlocklistConflict {
+  user: FollowRelation;
+  listUri: string;
+  listName: string;
+  listCreatorHandle: string;
+}
+
+/**
+ * Grouped conflicts by blocklist
+ */
+export interface BlocklistConflictGroup {
+  list: SubscribedBlocklist;
+  conflicts: BlocklistConflict[];
+  dismissed: boolean; // User has acknowledged these conflicts
+}
+
+/**
+ * Blocklist audit sync state
+ */
+export interface BlocklistAuditState {
+  lastSyncAt: number;
+  syncInProgress: boolean;
+  followCount: number;
+  followerCount: number;
+  blocklistCount: number;
+  conflictCount: number;
+  lastError?: string;
+}
+
+/**
+ * Response from app.bsky.graph.getFollows
+ */
+export interface GetFollowsResponse {
+  follows: ProfileView[];
+  cursor?: string;
+}
+
+/**
+ * Response from app.bsky.graph.getFollowers
+ */
+export interface GetFollowersResponse {
+  followers: ProfileView[];
+  cursor?: string;
+}
+
+/**
+ * Response from app.bsky.graph.getLists (user's own lists)
+ */
+export interface GetListsResponse {
+  lists: ListView[];
+  cursor?: string;
+}
+
+/**
+ * List view from API
+ */
+export interface ListView {
+  uri: string;
+  cid: string;
+  name: string;
+  purpose: 'app.bsky.graph.defs#modlist' | 'app.bsky.graph.defs#curatelist';
+  description?: string;
+  avatar?: string;
+  listItemCount?: number;
+  creator: {
+    did: string;
+    handle: string;
+    displayName?: string;
+    avatar?: string;
+  };
+  indexedAt: string;
+  viewer?: {
+    muted?: boolean;
+    blocked?: string;
+  };
+}
+
+/**
+ * Response from app.bsky.graph.getListBlocks (blocklists user subscribes to)
+ */
+export interface GetListBlocksResponse {
+  lists: ListView[];
+  cursor?: string;
+}
+
+/**
+ * Response from app.bsky.graph.getListMutes (mutelists user subscribes to)
+ */
+export interface GetListMutesResponse {
+  lists: ListView[];
+  cursor?: string;
+}
+
+/**
+ * Response from app.bsky.graph.getList (members of a list)
+ */
+export interface GetListResponse {
+  list: ListView;
+  items: ListItemView[];
+  cursor?: string;
+}
+
+/**
+ * List item (member) view
+ */
+export interface ListItemView {
+  uri: string;
+  subject: ProfileView;
+}

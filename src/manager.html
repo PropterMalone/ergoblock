@@ -982,6 +982,276 @@
       font-size: 32px;
     }
 
+    /* Blocklist Audit Styles */
+    .blocklist-audit-container {
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+      padding: 20px;
+    }
+
+    .blocklist-audit-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 16px;
+    }
+
+    .blocklist-audit-stats {
+      display: flex;
+      gap: 20px;
+      flex-wrap: wrap;
+    }
+
+    .audit-stat {
+      text-align: center;
+    }
+
+    .audit-stat-value {
+      font-size: 24px;
+      font-weight: 600;
+      color: #1a1a1a;
+    }
+
+    .audit-stat-label {
+      font-size: 12px;
+      color: #666;
+      margin-top: 4px;
+    }
+
+    .blocklist-audit-actions {
+      display: flex;
+      gap: 10px;
+    }
+
+    .audit-sync-btn {
+      padding: 10px 20px;
+      background: #0085ff;
+      color: white;
+      border: none;
+      border-radius: 6px;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      transition: background 0.2s;
+    }
+
+    .audit-sync-btn:hover {
+      background: #0073e6;
+    }
+
+    .audit-sync-btn:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+    }
+
+    .blocklist-group {
+      background: white;
+      border-radius: 10px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+      overflow: hidden;
+    }
+
+    .blocklist-group.dismissed {
+      opacity: 0.6;
+    }
+
+    .blocklist-group-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 16px 20px;
+      background: #f8f9fa;
+      border-bottom: 1px solid #e5e5e5;
+    }
+
+    .blocklist-info {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .blocklist-avatar {
+      width: 40px;
+      height: 40px;
+      border-radius: 8px;
+      object-fit: cover;
+      background: #e5e5e5;
+    }
+
+    .blocklist-details {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .blocklist-name {
+      font-weight: 600;
+      font-size: 16px;
+      color: #1a1a1a;
+    }
+
+    .blocklist-creator {
+      font-size: 13px;
+      color: #666;
+    }
+
+    .blocklist-conflict-count {
+      background: #fee2e2;
+      color: #dc2626;
+      padding: 4px 10px;
+      border-radius: 20px;
+      font-weight: 600;
+      font-size: 13px;
+    }
+
+    .blocklist-actions {
+      display: flex;
+      gap: 10px;
+    }
+
+    .blocklist-action-btn {
+      padding: 8px 16px;
+      border-radius: 6px;
+      font-weight: 500;
+      cursor: pointer;
+      font-size: 13px;
+      transition: all 0.2s;
+    }
+
+    .blocklist-unsubscribe {
+      background: #fee2e2;
+      color: #dc2626;
+      border: none;
+    }
+
+    .blocklist-unsubscribe:hover {
+      background: #fecaca;
+    }
+
+    .blocklist-dismiss {
+      background: #f3f4f6;
+      color: #666;
+      border: 1px solid #e5e5e5;
+    }
+
+    .blocklist-dismiss:hover {
+      background: #e5e5e5;
+    }
+
+    .blocklist-undismiss {
+      background: #dbeafe;
+      color: #1d4ed8;
+      border: none;
+    }
+
+    .blocklist-undismiss:hover {
+      background: #bfdbfe;
+    }
+
+    .blocklist-conflicts {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .blocklist-conflict-row {
+      display: flex;
+      align-items: center;
+      padding: 12px 20px;
+      border-bottom: 1px solid #f3f4f6;
+      gap: 12px;
+    }
+
+    .blocklist-conflict-row:last-child {
+      border-bottom: none;
+    }
+
+    .conflict-user-avatar {
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      object-fit: cover;
+      background: #e5e5e5;
+    }
+
+    .conflict-user-info {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .conflict-user-handle {
+      font-weight: 500;
+      color: #1a1a1a;
+    }
+
+    .conflict-user-name {
+      font-size: 12px;
+      color: #666;
+    }
+
+    .conflict-relationship {
+      padding: 4px 10px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: 500;
+    }
+
+    .conflict-relationship.mutual {
+      background: #dcfce7;
+      color: #16a34a;
+    }
+
+    .conflict-relationship.following {
+      background: #dbeafe;
+      color: #1d4ed8;
+    }
+
+    .conflict-relationship.follower {
+      background: #fef3c7;
+      color: #d97706;
+    }
+
+    .conflict-view-profile {
+      padding: 6px 12px;
+      background: #f3f4f6;
+      color: #1a1a1a;
+      border: 1px solid #e5e5e5;
+      border-radius: 4px;
+      font-size: 12px;
+      cursor: pointer;
+      text-decoration: none;
+    }
+
+    .conflict-view-profile:hover {
+      background: #e5e5e5;
+    }
+
+    .blocklist-audit-empty {
+      text-align: center;
+      padding: 60px 20px;
+      color: #666;
+    }
+
+    .blocklist-audit-empty h3 {
+      font-size: 20px;
+      color: #1a1a1a;
+      margin-bottom: 10px;
+    }
+
+    .blocklist-audit-empty p {
+      margin-bottom: 20px;
+    }
+
+    .audit-last-sync {
+      font-size: 12px;
+      color: #888;
+    }
+
     /* Responsive */
     @media (max-width: 768px) {
       .toolbar {
@@ -1034,6 +1304,7 @@
       <button class="tab" data-tab="mutes">All Mutes</button>
       <button class="tab" data-tab="history">History</button>
       <button class="tab" data-tab="amnesty">Amnesty</button>
+      <button class="tab" data-tab="blocklist-audit">Blocklist Audit</button>
     </div>
 
     <!-- Toolbar -->

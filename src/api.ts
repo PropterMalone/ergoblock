@@ -11,6 +11,12 @@ import {
   ListBlockRecordsResponse,
   FeedPost,
   GetAuthorFeedResponse,
+  GetFollowsResponse,
+  GetFollowersResponse,
+  GetListBlocksResponse,
+  GetListMutesResponse,
+  GetListResponse,
+  ListView,
 } from './types.js';
 
 // AT Protocol API helpers for Bluesky
@@ -586,4 +592,280 @@ export async function findRecentInteraction(
     );
     return null;
   }
+}
+
+// ============================================================================
+// Blocklist Audit API Functions
+// ============================================================================
+
+/**
+ * Get a page of accounts the user follows
+ * @param actor - DID or handle of the user
+ * @param cursor - Pagination cursor
+ * @param limit - Number of results per page (max 100)
+ */
+export async function getFollows(
+  actor: string,
+  cursor?: string,
+  limit = 100
+): Promise<GetFollowsResponse> {
+  let endpoint = `app.bsky.graph.getFollows?actor=${encodeURIComponent(actor)}&limit=${limit}`;
+  if (cursor) {
+    endpoint += `&cursor=${encodeURIComponent(cursor)}`;
+  }
+
+  const response = await apiRequest<GetFollowsResponse>(endpoint);
+  return response || { follows: [] };
+}
+
+/**
+ * Fetch all accounts the user follows (paginated)
+ * @param actor - DID or handle of the user
+ * @param onProgress - Optional callback with current count
+ */
+export async function getAllFollows(
+  actor: string,
+  onProgress?: (count: number) => void
+): Promise<ProfileView[]> {
+  const allFollows: ProfileView[] = [];
+  let cursor: string | undefined;
+
+  do {
+    const response = await getFollows(actor, cursor);
+    allFollows.push(...response.follows);
+    cursor = response.cursor;
+    onProgress?.(allFollows.length);
+
+    if (cursor) {
+      await sleep(PAGINATION_DELAY);
+    }
+  } while (cursor);
+
+  console.log('[ErgoBlock] Fetched all follows:', allFollows.length);
+  return allFollows;
+}
+
+/**
+ * Get a page of accounts following the user
+ * @param actor - DID or handle of the user
+ * @param cursor - Pagination cursor
+ * @param limit - Number of results per page (max 100)
+ */
+export async function getFollowers(
+  actor: string,
+  cursor?: string,
+  limit = 100
+): Promise<GetFollowersResponse> {
+  let endpoint = `app.bsky.graph.getFollowers?actor=${encodeURIComponent(actor)}&limit=${limit}`;
+  if (cursor) {
+    endpoint += `&cursor=${encodeURIComponent(cursor)}`;
+  }
+
+  const response = await apiRequest<GetFollowersResponse>(endpoint);
+  return response || { followers: [] };
+}
+
+/**
+ * Fetch all accounts following the user (paginated)
+ * @param actor - DID or handle of the user
+ * @param onProgress - Optional callback with current count
+ */
+export async function getAllFollowers(
+  actor: string,
+  onProgress?: (count: number) => void
+): Promise<ProfileView[]> {
+  const allFollowers: ProfileView[] = [];
+  let cursor: string | undefined;
+
+  do {
+    const response = await getFollowers(actor, cursor);
+    allFollowers.push(...response.followers);
+    cursor = response.cursor;
+    onProgress?.(allFollowers.length);
+
+    if (cursor) {
+      await sleep(PAGINATION_DELAY);
+    }
+  } while (cursor);
+
+  console.log('[ErgoBlock] Fetched all followers:', allFollowers.length);
+  return allFollowers;
+}
+
+/**
+ * Get blocklists the user subscribes to (list blocks)
+ * @param cursor - Pagination cursor
+ * @param limit - Number of results per page (max 100)
+ */
+export async function getListBlocks(
+  cursor?: string,
+  limit = 100
+): Promise<GetListBlocksResponse> {
+  const session = getSession();
+  if (!session) throw new Error('Not logged in');
+
+  let endpoint = `app.bsky.graph.getListBlocks?limit=${limit}`;
+  if (cursor) {
+    endpoint += `&cursor=${encodeURIComponent(cursor)}`;
+  }
+
+  // getListBlocks goes to user's PDS
+  const response = await apiRequest<GetListBlocksResponse>(endpoint, 'GET', null, session.pdsUrl);
+  return response || { lists: [] };
+}
+
+/**
+ * Fetch all blocklists the user subscribes to (paginated)
+ * @param onProgress - Optional callback with current count
+ */
+export async function getAllListBlocks(
+  onProgress?: (count: number) => void
+): Promise<ListView[]> {
+  const allLists: ListView[] = [];
+  let cursor: string | undefined;
+
+  do {
+    const response = await getListBlocks(cursor);
+    allLists.push(...response.lists);
+    cursor = response.cursor;
+    onProgress?.(allLists.length);
+
+    if (cursor) {
+      await sleep(PAGINATION_DELAY);
+    }
+  } while (cursor);
+
+  console.log('[ErgoBlock] Fetched all subscribed blocklists:', allLists.length);
+  return allLists;
+}
+
+/**
+ * Get mutelists the user subscribes to (list mutes)
+ * @param cursor - Pagination cursor
+ * @param limit - Number of results per page (max 100)
+ */
+export async function getListMutes(
+  cursor?: string,
+  limit = 100
+): Promise<GetListMutesResponse> {
+  const session = getSession();
+  if (!session) throw new Error('Not logged in');
+
+  let endpoint = `app.bsky.graph.getListMutes?limit=${limit}`;
+  if (cursor) {
+    endpoint += `&cursor=${encodeURIComponent(cursor)}`;
+  }
+
+  // getListMutes goes to user's PDS
+  const response = await apiRequest<GetListMutesResponse>(endpoint, 'GET', null, session.pdsUrl);
+  return response || { lists: [] };
+}
+
+/**
+ * Fetch all mutelists the user subscribes to (paginated)
+ * @param onProgress - Optional callback with current count
+ */
+export async function getAllListMutes(
+  onProgress?: (count: number) => void
+): Promise<ListView[]> {
+  const allLists: ListView[] = [];
+  let cursor: string | undefined;
+
+  do {
+    const response = await getListMutes(cursor);
+    allLists.push(...response.lists);
+    cursor = response.cursor;
+    onProgress?.(allLists.length);
+
+    if (cursor) {
+      await sleep(PAGINATION_DELAY);
+    }
+  } while (cursor);
+
+  console.log('[ErgoBlock] Fetched all subscribed mutelists:', allLists.length);
+  return allLists;
+}
+
+/**
+ * Get members of a list
+ * @param listUri - AT Protocol URI of the list (at://did/app.bsky.graph.list/rkey)
+ * @param cursor - Pagination cursor
+ * @param limit - Number of results per page (max 100)
+ */
+export async function getList(
+  listUri: string,
+  cursor?: string,
+  limit = 100
+): Promise<GetListResponse> {
+  let endpoint = `app.bsky.graph.getList?list=${encodeURIComponent(listUri)}&limit=${limit}`;
+  if (cursor) {
+    endpoint += `&cursor=${encodeURIComponent(cursor)}`;
+  }
+
+  const response = await apiRequest<GetListResponse>(endpoint);
+  return response || { list: {} as ListView, items: [] };
+}
+
+/**
+ * Fetch all members of a list (paginated)
+ * @param listUri - AT Protocol URI of the list
+ * @param onProgress - Optional callback with current count
+ */
+export async function getAllListMembers(
+  listUri: string,
+  onProgress?: (count: number) => void
+): Promise<ProfileView[]> {
+  const allMembers: ProfileView[] = [];
+  let cursor: string | undefined;
+
+  do {
+    const response = await getList(listUri, cursor);
+    for (const item of response.items) {
+      allMembers.push(item.subject);
+    }
+    cursor = response.cursor;
+    onProgress?.(allMembers.length);
+
+    if (cursor) {
+      await sleep(PAGINATION_DELAY);
+    }
+  } while (cursor);
+
+  console.log('[ErgoBlock] Fetched all list members for', listUri, ':', allMembers.length);
+  return allMembers;
+}
+
+/**
+ * Unsubscribe from a blocklist
+ * @param listUri - AT Protocol URI of the list to unsubscribe from
+ */
+export async function unsubscribeFromBlocklist(listUri: string): Promise<void> {
+  const session = getSession();
+  if (!session) throw new Error('Not logged in');
+
+  // Find the listblock record for this list
+  const records = await apiRequest<{
+    records: Array<{ uri: string; value: { subject: string } }>;
+  }>(
+    `com.atproto.repo.listRecords?repo=${session.did}&collection=app.bsky.graph.listblock&limit=100`
+  );
+
+  const record = records?.records?.find((r) => r.value.subject === listUri);
+  if (!record) {
+    console.log('[ErgoBlock] No listblock record found for', listUri);
+    return;
+  }
+
+  const rkey = record.uri.split('/').pop();
+  if (!rkey) {
+    throw new Error('Could not extract rkey from listblock record URI');
+  }
+
+  await apiRequest('com.atproto.repo.deleteRecord', 'POST', {
+    repo: session.did,
+    collection: 'app.bsky.graph.listblock',
+    rkey,
+  });
+
+  console.log('[ErgoBlock] Unsubscribed from blocklist:', listUri);
 }
