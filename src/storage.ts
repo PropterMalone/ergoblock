@@ -502,11 +502,15 @@ export async function getAmnestyStats(): Promise<{
   totalReviewed: number;
   unblocked: number;
   keptBlocked: number;
+  unmuted: number;
+  keptMuted: number;
 }> {
   const reviews = await getAmnestyReviews();
   return {
     totalReviewed: reviews.length,
     unblocked: reviews.filter((r) => r.decision === 'unblocked').length,
     keptBlocked: reviews.filter((r) => r.decision === 'kept_blocked').length,
+    unmuted: reviews.filter((r) => r.decision === 'unmuted').length,
+    keptMuted: reviews.filter((r) => r.decision === 'kept_muted').length,
   };
 }

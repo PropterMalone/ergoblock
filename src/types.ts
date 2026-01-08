@@ -302,5 +302,6 @@ export interface AmnestyReview {
   did: string;
   handle: string;
   reviewedAt: number;
-  decision: 'unblocked' | 'kept_blocked';
+  type: 'block' | 'mute';
+  decision: 'unblocked' | 'unmuted' | 'kept_blocked' | 'kept_muted';
 }

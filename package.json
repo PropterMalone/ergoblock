@@ -1,6 +1,6 @@
 {
   "name": "ergoblock",
-  "version": "1.6.1",
+  "version": "1.6.2",
   "description": "Temporary block and mute for Bluesky",
   "type": "module",
   "engines": {

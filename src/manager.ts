@@ -626,16 +626,16 @@ function getForgivenessPeriodMs(): number {
 }
 
 /**
- * Get eligible amnesty candidates:
- * - Blocked at least N days ago (based on forgivenessPeriodDays option)
- * - Not blocking us back
+ * Get eligible amnesty candidates (blocks and mutes):
+ * - Action at least N days ago (based on forgivenessPeriodDays option)
+ * - For blocks: not blocking us back
  * - Not previously reviewed by amnesty
  */
 function getAmnestyCandidates(): ManagedEntry[] {
   const now = Date.now();
   const cutoff = now - getForgivenessPeriodMs();
 
-  return allBlocks.filter((block) => {
+  const blockCandidates = allBlocks.filter((block) => {
     // Must be blocked at least N days ago
     const blockDate = block.createdAt || block.syncedAt || now;
     if (blockDate > cutoff) return false;
@@ -648,6 +648,20 @@ function getAmnestyCandidates(): ManagedEntry[] {
 
     return true;
   });
+
+  const muteCandidates = allMutes.filter((mute) => {
+    // Must be muted at least N days ago
+    const muteDate = mute.createdAt || mute.syncedAt || now;
+    if (muteDate > cutoff) return false;
+
+    // Must not have been reviewed already
+    if (amnestyReviewedDids.has(mute.did)) return false;
+
+    return true;
+  });
+
+  // Combine and return
+  return [...blockCandidates, ...muteCandidates];
 }
 
 /**
@@ -681,12 +695,17 @@ async function renderAmnestyTab(): Promise<void> {
     `<option value="${opt.value}" ${opt.value === currentPeriod ? 'selected' : ''}>${opt.label}</option>`
   ).join('');
 
+  // Count blocks vs mutes in candidates
+  const blockCount = candidates.filter(c => c.type === 'block').length;
+  const muteCount = candidates.filter(c => c.type === 'mute').length;
+  const freedCount = stats.unblocked + stats.unmuted;
+
   // Otherwise, show the intro screen
   elements.dataContainer.innerHTML = `
     <div class="amnesty-container">
       <div class="amnesty-intro">
-        <h3>Block Amnesty</h3>
-        <p>Review old blocks and decide if they still deserve to be blocked.</p>
+        <h3>Amnesty</h3>
+        <p>Review old blocks and mutes to decide if they still deserve it.</p>
       </div>
 
       <div class="amnesty-forgiveness">
@@ -694,21 +713,22 @@ async function renderAmnestyTab(): Promise<void> {
         <select id="forgiveness-period" class="amnesty-forgiveness-select">
           ${periodOptions}
         </select>
-        <p class="amnesty-forgiveness-hint">Only blocks older than this that aren't blocking you back will appear.</p>
+        <p class="amnesty-forgiveness-hint">Only actions older than this will appear. Blocks from users blocking you back are excluded.</p>
       </div>
 
       <div class="amnesty-stats">
         <div class="amnesty-stat amnesty-stat-primary">
           <div class="amnesty-stat-value">${candidates.length}</div>
           <div class="amnesty-stat-label">Ready for Review</div>
+          ${candidates.length > 0 ? `<div class="amnesty-stat-detail">${blockCount} blocks, ${muteCount} mutes</div>` : ''}
         </div>
         <div class="amnesty-stat">
           <div class="amnesty-stat-value">${stats.totalReviewed}</div>
           <div class="amnesty-stat-label">Reviewed</div>
         </div>
         <div class="amnesty-stat">
-          <div class="amnesty-stat-value">${stats.unblocked}</div>
-          <div class="amnesty-stat-label">Unblocked</div>
+          <div class="amnesty-stat-value">${freedCount}</div>
+          <div class="amnesty-stat-label">Freed</div>
         </div>
       </div>
 
@@ -719,7 +739,7 @@ async function renderAmnestyTab(): Promise<void> {
       ` : `
         <div class="amnesty-empty">
           <h3>No candidates available</h3>
-          <p>All eligible blocks have been reviewed, or you don't have any blocks older than ${currentPeriodLabel}.</p>
+          <p>All eligible entries have been reviewed, or you don't have any blocks/mutes older than ${currentPeriodLabel}.</p>
         </div>
       `}
     </div>
@@ -788,11 +808,15 @@ async function startAmnestyReview(): Promise<void> {
  */
 async function renderAmnestyCard(
   candidate: ManagedEntry,
-  stats: { totalReviewed: number; unblocked: number; keptBlocked: number }
+  stats: { totalReviewed: number; unblocked: number; keptBlocked: number; unmuted: number; keptMuted: number }
 ): Promise<void> {
   const ctx = contextMap.get(candidate.did);
-  const blockDate = candidate.createdAt || candidate.syncedAt;
-  const blockDateStr = blockDate ? new Date(blockDate).toLocaleDateString() : 'Unknown';
+  const actionDate = candidate.createdAt || candidate.syncedAt;
+  const actionDateStr = actionDate ? new Date(actionDate).toLocaleDateString() : 'Unknown';
+  const isBlock = candidate.type === 'block';
+  const actionVerb = isBlock ? 'Blocked' : 'Muted';
+  const actionVerbLower = isBlock ? 'block' : 'mute';
+  const freedCount = stats.unblocked + stats.unmuted;
 
   const postUrl = ctx?.postUri
     ? ctx.postUri.replace('at://', 'https://bsky.app/profile/').replace('/app.bsky.feed.post/', '/post/')
@@ -810,23 +834,26 @@ async function renderAmnestyCard(
           <div class="amnesty-stat-label">Reviewed</div>
         </div>
         <div class="amnesty-stat">
-          <div class="amnesty-stat-value">${stats.unblocked}</div>
-          <div class="amnesty-stat-label">Unblocked</div>
+          <div class="amnesty-stat-value">${freedCount}</div>
+          <div class="amnesty-stat-label">Freed</div>
         </div>
       </div>
 
-      <div class="amnesty-card">
+      <div class="amnesty-card ${isBlock ? 'amnesty-card-block' : 'amnesty-card-mute'}">
         <div class="amnesty-card-header">
           ${candidate.avatar ? `<img src="${candidate.avatar}" class="amnesty-avatar" alt="">` : '<div class="amnesty-avatar"></div>'}
           <div class="amnesty-user-info">
             <div class="amnesty-handle">@${escapeHtml(candidate.handle)}</div>
             ${candidate.displayName ? `<div class="amnesty-display-name">${escapeHtml(candidate.displayName)}</div>` : ''}
-            <div class="amnesty-blocked-date">Blocked on ${blockDateStr}</div>
+            <div class="amnesty-blocked-date">
+              <span class="amnesty-type-badge ${isBlock ? 'badge-block' : 'badge-mute'}">${actionVerb}</span>
+              on ${actionDateStr}
+            </div>
           </div>
         </div>
 
         <div class="amnesty-card-context" id="amnesty-context">
-          <div class="amnesty-context-label">Why did you block them?</div>
+          <div class="amnesty-context-label">Why did you ${actionVerbLower} them?</div>
           ${amnestySearching ? `
             <div class="amnesty-searching">
               <div class="spinner"></div>
@@ -836,20 +863,24 @@ async function renderAmnestyCard(
             <div class="amnesty-context-text">${escapeHtml(ctx.postText || 'No post text available')}</div>
             ${postUrl ? `
               <div class="amnesty-context-link">
-                <button class="context-btn amnesty-view-btn" data-did="${escapeHtml(candidate.did)}" data-handle="${escapeHtml(candidate.handle)}" data-url="${escapeHtml(postUrl)}">View Post</button>
+                ${isBlock ? `
+                  <button class="context-btn amnesty-view-btn" data-did="${escapeHtml(candidate.did)}" data-handle="${escapeHtml(candidate.handle)}" data-url="${escapeHtml(postUrl)}">View Post</button>
+                ` : `
+                  <a href="${escapeHtml(postUrl)}" target="_blank" class="context-btn">View Post</a>
+                `}
               </div>
             ` : ''}
           ` : `
-            <div class="amnesty-no-context">No context found for this block</div>
+            <div class="amnesty-no-context">No context found for this ${actionVerbLower}</div>
           `}
         </div>
 
         <div class="amnesty-card-actions">
-          <button class="amnesty-btn amnesty-btn-unblock" id="amnesty-unblock">
-            👍 Unblock
+          <button class="amnesty-btn ${isBlock ? 'amnesty-btn-unblock' : 'amnesty-btn-unmute'}" id="amnesty-free">
+            👍 ${isBlock ? 'Unblock' : 'Unmute'}
           </button>
           <button class="amnesty-btn amnesty-btn-keep" id="amnesty-keep">
-            👎 Keep Blocked
+            👎 Keep ${actionVerb}
           </button>
         </div>
       </div>
@@ -869,12 +900,14 @@ function updateAmnestyContext(): void {
   if (!contextEl) return;
 
   const ctx = contextMap.get(amnestyCandidate.did);
+  const isBlock = amnestyCandidate.type === 'block';
+  const actionVerbLower = isBlock ? 'block' : 'mute';
   const postUrl = ctx?.postUri
     ? ctx.postUri.replace('at://', 'https://bsky.app/profile/').replace('/app.bsky.feed.post/', '/post/')
     : '';
 
   contextEl.innerHTML = `
-    <div class="amnesty-context-label">Why did you block them?</div>
+    <div class="amnesty-context-label">Why did you ${actionVerbLower} them?</div>
     ${amnestySearching ? `
       <div class="amnesty-searching">
         <div class="spinner"></div>
@@ -884,25 +917,31 @@ function updateAmnestyContext(): void {
       <div class="amnesty-context-text">${escapeHtml(ctx.postText || 'No post text available')}</div>
       ${postUrl ? `
         <div class="amnesty-context-link">
-          <button class="context-btn amnesty-view-btn" data-did="${escapeHtml(amnestyCandidate.did)}" data-handle="${escapeHtml(amnestyCandidate.handle)}" data-url="${escapeHtml(postUrl)}">View Post</button>
+          ${isBlock ? `
+            <button class="context-btn amnesty-view-btn" data-did="${escapeHtml(amnestyCandidate.did)}" data-handle="${escapeHtml(amnestyCandidate.handle)}" data-url="${escapeHtml(postUrl)}">View Post</button>
+          ` : `
+            <a href="${escapeHtml(postUrl)}" target="_blank" class="context-btn">View Post</a>
+          `}
         </div>
       ` : ''}
     ` : `
-      <div class="amnesty-no-context">No context found for this block</div>
+      <div class="amnesty-no-context">No context found for this ${actionVerbLower}</div>
     `}
   `;
 
-  // Re-setup view button
-  const viewBtn = document.querySelector('.amnesty-view-btn') as HTMLButtonElement;
-  if (viewBtn) {
-    viewBtn.addEventListener('click', async () => {
-      const did = viewBtn.dataset.did;
-      const handle = viewBtn.dataset.handle;
-      const url = viewBtn.dataset.url;
-      if (did && handle && url) {
-        await handleTempUnblockAndView(did, handle, url, viewBtn);
-      }
-    });
+  // Re-setup view button (only for blocks, mutes can link directly)
+  if (isBlock) {
+    const viewBtn = document.querySelector('.amnesty-view-btn') as HTMLButtonElement;
+    if (viewBtn) {
+      viewBtn.addEventListener('click', async () => {
+        const did = viewBtn.dataset.did;
+        const handle = viewBtn.dataset.handle;
+        const url = viewBtn.dataset.url;
+        if (did && handle && url) {
+          await handleTempUnblockAndView(did, handle, url, viewBtn);
+        }
+      });
+    }
   }
 }
 
@@ -910,19 +949,25 @@ function updateAmnestyContext(): void {
  * Setup event listeners for amnesty card
  */
 function setupAmnestyEvents(): void {
-  const unblockBtn = document.getElementById('amnesty-unblock');
+  const freeBtn = document.getElementById('amnesty-free');
   const keepBtn = document.getElementById('amnesty-keep');
   const viewBtn = document.querySelector('.amnesty-view-btn') as HTMLButtonElement;
+  const isBlock = amnestyCandidate?.type === 'block';
 
-  if (unblockBtn) {
-    unblockBtn.addEventListener('click', () => handleAmnestyDecision('unblocked'));
+  if (freeBtn) {
+    freeBtn.addEventListener('click', () => {
+      handleAmnestyDecision(isBlock ? 'unblocked' : 'unmuted');
+    });
   }
 
   if (keepBtn) {
-    keepBtn.addEventListener('click', () => handleAmnestyDecision('kept_blocked'));
+    keepBtn.addEventListener('click', () => {
+      handleAmnestyDecision(isBlock ? 'kept_blocked' : 'kept_muted');
+    });
   }
 
-  if (viewBtn) {
+  // View button only exists for blocks (mutes use a direct link)
+  if (viewBtn && isBlock) {
     viewBtn.addEventListener('click', async () => {
       const did = viewBtn.dataset.did;
       const handle = viewBtn.dataset.handle;
@@ -935,22 +980,24 @@ function setupAmnestyEvents(): void {
 }
 
 /**
- * Handle amnesty decision (unblock or keep blocked)
+ * Handle amnesty decision (unblock/unmute or keep blocked/muted)
  */
-async function handleAmnestyDecision(decision: 'unblocked' | 'kept_blocked'): Promise<void> {
+async function handleAmnestyDecision(decision: 'unblocked' | 'unmuted' | 'kept_blocked' | 'kept_muted'): Promise<void> {
   if (!amnestyCandidate) return;
 
-  const unblockBtn = document.getElementById('amnesty-unblock') as HTMLButtonElement;
+  const freeBtn = document.getElementById('amnesty-free') as HTMLButtonElement;
   const keepBtn = document.getElementById('amnesty-keep') as HTMLButtonElement;
 
   // Disable buttons
-  if (unblockBtn) unblockBtn.disabled = true;
+  if (freeBtn) freeBtn.disabled = true;
   if (keepBtn) keepBtn.disabled = true;
 
+  const isBlock = amnestyCandidate.type === 'block';
   const review: AmnestyReview = {
     did: amnestyCandidate.did,
     handle: amnestyCandidate.handle,
     reviewedAt: Date.now(),
+    type: isBlock ? 'block' : 'mute',
     decision,
   };
 
@@ -959,9 +1006,11 @@ async function handleAmnestyDecision(decision: 'unblocked' | 'kept_blocked'): Pr
     await addAmnestyReview(review);
     amnestyReviewedDids.add(amnestyCandidate.did);
 
-    // If unblocking, actually unblock them
+    // If freeing, actually unblock/unmute them
     if (decision === 'unblocked') {
       await handleUnblock(amnestyCandidate.did);
+    } else if (decision === 'unmuted') {
+      await handleUnmute(amnestyCandidate.did);
     }
 
     // Move to next candidate
@@ -971,7 +1020,7 @@ async function handleAmnestyDecision(decision: 'unblocked' | 'kept_blocked'): Pr
   } catch (error) {
     console.error('[Manager] Amnesty decision failed:', error);
     alert('Failed to process decision');
-    if (unblockBtn) unblockBtn.disabled = false;
+    if (freeBtn) freeBtn.disabled = false;
     if (keepBtn) keepBtn.disabled = false;
   }
 }
