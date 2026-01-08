@@ -32,11 +32,11 @@ const CONFIG = {
 // Duration options
 const DURATION_OPTIONS: DurationOption[] = [
   { label: '1 hour', ms: 1 * 60 * 60 * 1000 },
-  { label: '6 hours', ms: 6 * 60 * 60 * 1000 },
   { label: '12 hours', ms: 12 * 60 * 60 * 1000 },
-  { label: '24 hours', ms: 24 * 60 * 60 * 1000 },
-  { label: '3 days', ms: 3 * 24 * 60 * 60 * 1000 },
+  { label: '72 hours', ms: 72 * 60 * 60 * 1000 },
   { label: '1 week', ms: 7 * 24 * 60 * 60 * 1000 },
+  { label: '1 month', ms: 30 * 24 * 60 * 60 * 1000 },
+  { label: '6 months', ms: 180 * 24 * 60 * 60 * 1000 },
   { label: 'Permanent', ms: -1 },
 ];
 

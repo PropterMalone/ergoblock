@@ -1,5 +1,6 @@
 import type { JSX } from 'preact';
 import { useState } from 'preact/hooks';
+import { RefreshCw, Eye, EyeOff, UserX, ExternalLink } from 'lucide-preact';
 import type { BlocklistConflictGroup } from '../../types.js';
 import { blocklistAuditState, blocklistConflicts } from '../../signals/manager.js';
 import { formatDate } from './utils.js';
@@ -94,7 +95,7 @@ export function BlocklistAuditTab({ onReload }: BlocklistAuditTabProps): JSX.Ele
               : 'Check if any of your follows or followers are on blocklists you subscribe to.'}
           </p>
           <button class="audit-sync-btn" onClick={handleSync} disabled={syncing}>
-            {syncing ? 'Syncing...' : 'Run Audit'}
+            <RefreshCw size={16} class={syncing ? 'spinner' : ''} /> {syncing ? 'Syncing...' : 'Run Audit'}
           </button>
           <div class="audit-last-sync">{lastSyncText}</div>
         </div>
@@ -130,7 +131,7 @@ export function BlocklistAuditTab({ onReload }: BlocklistAuditTabProps): JSX.Ele
         </div>
         <div class="blocklist-audit-actions">
           <button class="audit-sync-btn" onClick={handleSync} disabled={syncing}>
-            {syncing ? 'Syncing...' : 'Re-run Audit'}
+            <RefreshCw size={16} class={syncing ? 'spinner' : ''} /> {syncing ? 'Syncing...' : 'Re-run Audit'}
           </button>
         </div>
       </div>
@@ -203,21 +204,21 @@ function BlocklistGroup({
               class="blocklist-action-btn blocklist-undismiss"
               onClick={() => onUndismiss(list.uri)}
             >
-              Show Again
+              <Eye size={14} /> Show Again
             </button>
           ) : (
             <button
               class="blocklist-action-btn blocklist-dismiss"
               onClick={() => onDismiss(list.uri)}
             >
-              Dismiss
+              <EyeOff size={14} /> Dismiss
             </button>
           )}
           <button
             class="blocklist-action-btn blocklist-unsubscribe"
             onClick={() => onUnsubscribe(list.uri)}
           >
-            Unsubscribe
+            <UserX size={14} /> Unsubscribe
           </button>
         </div>
       </div>
@@ -250,7 +251,7 @@ function BlocklistGroup({
                 target="_blank"
                 rel="noopener"
               >
-                View Profile
+                <ExternalLink size={12} /> View Profile
               </a>
             </div>
           );

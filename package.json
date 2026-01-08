@@ -1,6 +1,6 @@
 {
   "name": "ergoblock",
-  "version": "1.7.0",
+  "version": "1.7.1",
   "description": "Temporary block and mute for Bluesky",
   "type": "module",
   "engines": {
@@ -50,6 +50,8 @@
   },
   "dependencies": {
     "@preact/signals": "^2.5.1",
+    "lucide-preact": "^0.562.0",
+    "open-props": "^1.7.17",
     "preact": "^10.28.2",
     "webextension-polyfill": "^0.12.0"
   }

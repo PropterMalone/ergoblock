@@ -1,5 +1,6 @@
 import type { JSX } from 'preact';
 import { useState, useEffect } from 'preact/hooks';
+import { ThumbsUp, ThumbsDown, Play, ExternalLink, Loader2 } from 'lucide-preact';
 import type { ManagedEntry, AmnestyReview } from '../../types.js';
 import {
   blocks,
@@ -230,7 +231,7 @@ export function AmnestyTab({
 
       {candidates.length > 0 ? (
         <button class="amnesty-start-btn" onClick={startReview}>
-          Start Review
+          <Play size={20} /> Start Review
         </button>
       ) : (
         <div class="amnesty-empty">
@@ -314,7 +315,7 @@ function AmnestyCard({
           <div class="amnesty-context-label">Why did you {actionVerbLower} them?</div>
           {amnestySearching.value ? (
             <div class="amnesty-searching">
-              <div class="spinner" />
+              <Loader2 size={16} class="spinner" />
               Searching for interaction...
             </div>
           ) : ctx ? (
@@ -327,11 +328,11 @@ function AmnestyCard({
                       class="context-btn amnesty-view-btn"
                       onClick={() => onViewPost(candidate.did, candidate.handle, postUrl)}
                     >
-                      View Post
+                      <ExternalLink size={12} /> View Post
                     </button>
                   ) : (
                     <a href={postUrl} target="_blank" rel="noopener" class="context-btn">
-                      View Post
+                      <ExternalLink size={12} /> View Post
                     </a>
                   )}
                 </div>
@@ -352,7 +353,7 @@ function AmnestyCard({
             }}
             disabled={processing}
           >
-            👍 {isBlock ? 'Unblock' : 'Unmute'}
+            <ThumbsUp size={18} /> {isBlock ? 'Unblock' : 'Unmute'}
           </button>
           <button
             class="amnesty-btn amnesty-btn-keep"
@@ -363,7 +364,7 @@ function AmnestyCard({
             }}
             disabled={processing}
           >
-            👎 Keep {actionVerb}
+            <ThumbsDown size={18} /> Keep {actionVerb}
           </button>
         </div>
       </div>

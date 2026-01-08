@@ -11,6 +11,22 @@ export function copyAssets() {
     fs.mkdirSync(distDir, { recursive: true });
   }
 
+  // Build manager.css by concatenating Open Props + custom styles
+  const openPropsPath = path.join(__dirname, '..', 'node_modules', 'open-props', 'open-props.min.css');
+  const customCssPath = path.join(__dirname, '..', 'src', 'styles', 'manager.css');
+
+  if (fs.existsSync(openPropsPath) && fs.existsSync(customCssPath)) {
+    const openPropsCSS = fs.readFileSync(openPropsPath, 'utf8');
+    let customCSS = fs.readFileSync(customCssPath, 'utf8');
+
+    // Remove @import statements since we're concatenating
+    customCSS = customCSS.replace(/@import\s+['"][^'"]+['"];?\s*/g, '');
+
+    const combinedCSS = `/* Open Props */\n${openPropsCSS}\n\n/* ErgoBlock Custom Styles */\n${customCSS}`;
+    fs.writeFileSync(path.join(distDir, 'manager.css'), combinedCSS);
+    console.log('Built manager.css with Open Props');
+  }
+
   // Copy and transform manifest.json
   const manifestPath = path.join(__dirname, '..', 'manifest.json');
   const packageJsonPath = path.join(__dirname, '..', 'package.json');
