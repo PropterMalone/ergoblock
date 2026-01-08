@@ -213,6 +213,9 @@ export interface PostContext {
   permanent: boolean;
   timestamp: number; // When the block/mute action occurred
   guessed?: boolean; // True if auto-detected from interactions, not captured during block
+  // Engagement context - when blocking from liked-by/reposted-by pages
+  engagementType?: 'like' | 'repost'; // Why they were on your radar
+  engagedPostUri?: string; // The post they liked/reposted
 }
 
 /**

@@ -6,7 +6,7 @@ import { render } from 'preact';
 import browser from './browser.js';
 import { getSession, getProfile, blockUser, muteUser } from './api.js';
 import { addTempBlock, addTempMute } from './storage.js';
-import { capturePostContext, findPostContainer } from './post-context.js';
+import { capturePostContext, findPostContainer, type EngagementContext } from './post-context.js';
 import { DurationPicker, type DurationOption } from './components/content/DurationPicker.js';
 import { ContentToast } from './components/content/ContentToast.js';
 
@@ -23,6 +23,9 @@ const CONFIG = {
   },
   REGEX: {
     PROFILE_PATH: /\/profile\/([^/]+)/,
+    // Match /profile/{handle}/post/{rkey}/liked-by or /reposted-by
+    LIKED_BY: /\/profile\/([^/]+)\/post\/([^/]+)\/liked-by/,
+    REPOSTED_BY: /\/profile\/([^/]+)\/post\/([^/]+)\/reposted-by/,
   },
   ATTRIBUTES: {
     INJECTED: 'data-temp-block-injected',
@@ -48,6 +51,94 @@ let lastClickedPostContainer: HTMLElement | null = null;
 // Shadow DOM containers for isolated UI
 let pickerHost: HTMLElement | null = null;
 let toastHost: HTMLElement | null = null;
+
+// Engagement context tracking (liked-by/reposted-by pages)
+let currentEngagementContext: EngagementContext | null = null;
+
+/**
+ * Extract engagement context from URL (liked-by or reposted-by pages)
+ */
+function getEngagementContextFromUrl(url: string): EngagementContext | null {
+  const likedMatch = url.match(CONFIG.REGEX.LIKED_BY);
+  if (likedMatch) {
+    const [, handle, rkey] = likedMatch;
+    return {
+      type: 'like',
+      postUri: `at://${handle}/app.bsky.feed.post/${rkey}`,
+      sourceUrl: url,
+    };
+  }
+
+  const repostedMatch = url.match(CONFIG.REGEX.REPOSTED_BY);
+  if (repostedMatch) {
+    const [, handle, rkey] = repostedMatch;
+    return {
+      type: 'repost',
+      postUri: `at://${handle}/app.bsky.feed.post/${rkey}`,
+      sourceUrl: url,
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Check if current URL should preserve engagement context
+ * Context is preserved on: engagement pages, profile pages, and the original post
+ */
+function shouldPreserveEngagementContext(url: string, context: EngagementContext | null): boolean {
+  if (!context) return false;
+
+  // Still on the same engagement page
+  if (url === context.sourceUrl) return true;
+
+  // On the original engagement page type (liked-by or reposted-by)
+  if (url.match(CONFIG.REGEX.LIKED_BY) || url.match(CONFIG.REGEX.REPOSTED_BY)) {
+    // Check if it's for the same post
+    const newContext = getEngagementContextFromUrl(url);
+    if (newContext && newContext.postUri === context.postUri) return true;
+    // Different engagement page - will get new context
+    return false;
+  }
+
+  // On a profile page - preserve context (user clicked through to view profile)
+  if (url.match(/\/profile\/[^/]+$/) || url.match(/\/profile\/[^/]+\/?$/)) {
+    return true;
+  }
+
+  // On the original post page - preserve context
+  if (context.postUri) {
+    const postMatch = context.postUri.match(/at:\/\/([^/]+)\/app\.bsky\.feed\.post\/([^/]+)/);
+    if (postMatch) {
+      const [, handle, rkey] = postMatch;
+      if (url.includes(`/profile/${handle}/post/${rkey}`)) return true;
+    }
+  }
+
+  // Any other page - clear context
+  return false;
+}
+
+/**
+ * Update engagement context based on current URL
+ */
+function updateEngagementContext(): void {
+  const url = window.location.href;
+
+  // Check if we're on an engagement page
+  const newContext = getEngagementContextFromUrl(url);
+  if (newContext) {
+    currentEngagementContext = newContext;
+    console.log('[ErgoBlock] Engagement context set:', newContext.type, newContext.postUri);
+    return;
+  }
+
+  // Check if we should preserve existing context
+  if (currentEngagementContext && !shouldPreserveEngagementContext(url, currentEngagementContext)) {
+    console.log('[ErgoBlock] Engagement context cleared (navigated away)');
+    currentEngagementContext = null;
+  }
+}
 
 /**
  * Create a Shadow DOM container for isolated rendering
@@ -274,7 +365,7 @@ async function handleTempBlock(
 
     await addTempBlock(profile.did, profile.handle || handle, durationMs, rkey);
 
-    capturePostContext(postContainer, handle, profile.did, 'block', false).catch((e) =>
+    capturePostContext(postContainer, handle, profile.did, 'block', false, currentEngagementContext).catch((e) =>
       console.warn('[ErgoBlock] Post context capture failed:', e)
     );
 
@@ -305,7 +396,7 @@ async function handleTempMute(
     await muteUser(profile.did);
     await addTempMute(profile.did, profile.handle || handle, durationMs);
 
-    capturePostContext(postContainer, handle, profile.did, 'mute', false).catch((e) =>
+    capturePostContext(postContainer, handle, profile.did, 'mute', false, currentEngagementContext).catch((e) =>
       console.warn('[ErgoBlock] Post context capture failed:', e)
     );
 
@@ -335,7 +426,7 @@ async function handlePermanentAction(actionType: 'block' | 'mute', handle: strin
       await muteUser(profile.did);
     }
 
-    capturePostContext(postContainer, handle, profile.did, actionType, true).catch((e) =>
+    capturePostContext(postContainer, handle, profile.did, actionType, true, currentEngagementContext).catch((e) =>
       console.warn('[ErgoBlock] Post context capture failed:', e)
     );
 
@@ -514,6 +605,26 @@ function init(): void {
   // Sync auth frequently to keep background tokens fresh
   // Bluesky tokens expire after ~2 hours, so sync every minute
   setInterval(syncAuthToBackground, 60 * 1000);
+
+  // Track URL changes for engagement context (liked-by/reposted-by pages)
+  // Check on init and whenever URL changes (SPA navigation)
+  updateEngagementContext();
+
+  // Listen for SPA navigation (popstate for back/forward)
+  window.addEventListener('popstate', () => {
+    updateEngagementContext();
+  });
+
+  // Observe URL changes via History API (pushState/replaceState)
+  // Bluesky uses client-side routing, so we need to detect these changes
+  let lastUrl = window.location.href;
+  const urlObserver = new MutationObserver(() => {
+    if (window.location.href !== lastUrl) {
+      lastUrl = window.location.href;
+      updateEngagementContext();
+    }
+  });
+  urlObserver.observe(document.body, { childList: true, subtree: true });
 
   console.log('[TempBlock] Extension initialized');
 }

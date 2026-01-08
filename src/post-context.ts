@@ -130,6 +130,15 @@ function generateContextId(): string {
 }
 
 /**
+ * Engagement context from liked-by/reposted-by pages
+ */
+export interface EngagementContext {
+  type: 'like' | 'repost';
+  postUri: string;
+  sourceUrl: string;
+}
+
+/**
  * Capture post context when blocking/muting from a post
  */
 export async function capturePostContext(
@@ -137,7 +146,8 @@ export async function capturePostContext(
   targetHandle: string,
   targetDid: string,
   actionType: 'block' | 'mute',
-  permanent: boolean
+  permanent: boolean,
+  engagementContext?: EngagementContext | null
 ): Promise<PostContext | null> {
   const options = await getOptions();
 
@@ -177,6 +187,9 @@ export async function capturePostContext(
       actionType,
       permanent,
       timestamp: Date.now(),
+      // Add engagement context if blocking from liked-by/reposted-by page
+      engagementType: engagementContext?.type,
+      engagedPostUri: engagementContext?.postUri,
     };
 
     await addPostContext(context);
