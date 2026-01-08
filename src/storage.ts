@@ -96,11 +96,15 @@ export async function addTempBlock(
   };
   await browser.storage.sync.set({ [STORAGE_KEYS.TEMP_BLOCKS]: blocks });
   // Notify background to set alarm
-  browser.runtime.sendMessage({
-    type: 'TEMP_BLOCK_ADDED',
-    did,
-    expiresAt: blocks[did].expiresAt,
-  });
+  browser.runtime
+    .sendMessage({
+      type: 'TEMP_BLOCK_ADDED',
+      did,
+      expiresAt: blocks[did].expiresAt,
+    })
+    .catch(() => {
+      // Background may be inactive in MV3 - alarm will be set on next wake
+    });
 }
 
 /**
@@ -132,11 +136,15 @@ export async function addTempMute(
   };
   await browser.storage.sync.set({ [STORAGE_KEYS.TEMP_MUTES]: mutes });
   // Notify background to set alarm
-  browser.runtime.sendMessage({
-    type: 'TEMP_MUTE_ADDED',
-    did,
-    expiresAt: mutes[did].expiresAt,
-  });
+  browser.runtime
+    .sendMessage({
+      type: 'TEMP_MUTE_ADDED',
+      did,
+      expiresAt: mutes[did].expiresAt,
+    })
+    .catch(() => {
+      // Background may be inactive in MV3 - alarm will be set on next wake
+    });
 }
 
 /**

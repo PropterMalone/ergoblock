@@ -473,20 +473,23 @@ function observeMenus(): void {
 function syncAuthToBackground(): void {
   const session = getSession();
   if (session?.accessJwt && session?.did && session?.pdsUrl) {
-    try {
-      browser.runtime.sendMessage({
+    browser.runtime
+      .sendMessage({
         type: 'SET_AUTH_TOKEN',
         auth: {
           accessJwt: session.accessJwt,
           did: session.did,
           pdsUrl: session.pdsUrl,
         },
+      })
+      .then(() => {
+        browser.storage.local.set({ authStatus: 'valid' });
+        console.log('[TempBlock] Auth synced to background (PDS:', session.pdsUrl, ')');
+      })
+      .catch(() => {
+        // Background service worker may be inactive - this is normal in MV3
+        console.log('[TempBlock] Background not ready, skipping auth sync');
       });
-      browser.storage.local.set({ authStatus: 'valid' });
-      console.log('[TempBlock] Auth synced to background (PDS:', session.pdsUrl, ')');
-    } catch (_error) {
-      console.log('[TempBlock] Extension context invalidated, skipping auth sync');
-    }
   }
 }
 
