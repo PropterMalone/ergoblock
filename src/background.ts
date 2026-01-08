@@ -793,8 +793,16 @@ async function findContextViaSearch(
 
   try {
     // Run all searches in parallel for speed
-    const [mentionsResult, repliesResult, textResult] = await Promise.all([
-      // Search 1: Posts that mention the logged-in user
+    // Search both directions: their posts → you, and your posts → them
+    const [
+      mentionsResult,
+      repliesResult,
+      textResult,
+      reverseMentionsResult,
+      reverseRepliesResult,
+      reverseTextResult,
+    ] = await Promise.all([
+      // Search 1: Their posts that mention you
       (async (): Promise<SearchPostView | null> => {
         const query = encodeURIComponent(`from:${targetHandle}`);
         const mentions = encodeURIComponent(loggedInHandle);
@@ -821,7 +829,7 @@ async function findContextViaSearch(
         }
       })(),
 
-      // Search 2: Replies to the logged-in user
+      // Search 2: Their replies to you
       (async (): Promise<SearchPostView | null> => {
         const query = encodeURIComponent(`from:${targetHandle} to:${loggedInHandle}`);
         const endpoint = `${PUBLIC_API}/xrpc/app.bsky.feed.searchPosts?q=${query}&limit=1&sort=latest`;
@@ -847,7 +855,7 @@ async function findContextViaSearch(
         }
       })(),
 
-      // Search 3: Text search for QTs (posts containing the handle)
+      // Search 3: Their posts containing your handle (for QTs)
       (async (): Promise<SearchPostView | null> => {
         const query = encodeURIComponent(`from:${targetHandle} ${loggedInHandle}`);
         const endpoint = `${PUBLIC_API}/xrpc/app.bsky.feed.searchPosts?q=${query}&limit=25&sort=latest`;
@@ -877,13 +885,100 @@ async function findContextViaSearch(
           return null;
         }
       })(),
+
+      // Search 4: YOUR posts that mention THEM (reverse direction)
+      (async (): Promise<SearchPostView | null> => {
+        const query = encodeURIComponent(`from:${loggedInHandle}`);
+        const mentions = encodeURIComponent(targetHandle);
+        const endpoint = `${PUBLIC_API}/xrpc/app.bsky.feed.searchPosts?q=${query}&mentions=${mentions}&limit=1&sort=latest`;
+
+        try {
+          const response = await fetch(endpoint);
+          if (!response.ok) {
+            console.debug(
+              `[ErgoBlock BG] Reverse mentions search failed: ${response.status} ${response.statusText}`
+            );
+            return null;
+          }
+
+          const data = (await response.json()) as SearchPostsResponse;
+          const post = data.posts?.[0];
+          if (post) {
+            console.log(`[ErgoBlock BG] Reverse mentions search found: ${post.record.createdAt}`);
+          }
+          return post || null;
+        } catch (error) {
+          console.debug(`[ErgoBlock BG] Reverse mentions search error:`, error);
+          return null;
+        }
+      })(),
+
+      // Search 5: YOUR replies to THEM (reverse direction)
+      (async (): Promise<SearchPostView | null> => {
+        const query = encodeURIComponent(`from:${loggedInHandle} to:${targetHandle}`);
+        const endpoint = `${PUBLIC_API}/xrpc/app.bsky.feed.searchPosts?q=${query}&limit=1&sort=latest`;
+
+        try {
+          const response = await fetch(endpoint);
+          if (!response.ok) {
+            console.debug(
+              `[ErgoBlock BG] Reverse replies search failed: ${response.status} ${response.statusText}`
+            );
+            return null;
+          }
+
+          const data = (await response.json()) as SearchPostsResponse;
+          const post = data.posts?.[0];
+          if (post) {
+            console.log(`[ErgoBlock BG] Reverse reply search found: ${post.record.createdAt}`);
+          }
+          return post || null;
+        } catch (error) {
+          console.debug(`[ErgoBlock BG] Reverse replies search error:`, error);
+          return null;
+        }
+      })(),
+
+      // Search 6: YOUR posts containing their handle (reverse QTs)
+      (async (): Promise<SearchPostView | null> => {
+        const query = encodeURIComponent(`from:${loggedInHandle} ${targetHandle}`);
+        const endpoint = `${PUBLIC_API}/xrpc/app.bsky.feed.searchPosts?q=${query}&limit=25&sort=latest`;
+
+        try {
+          const response = await fetch(endpoint);
+          if (!response.ok) {
+            console.debug(
+              `[ErgoBlock BG] Reverse text search failed: ${response.status} ${response.statusText}`
+            );
+            return null;
+          }
+
+          const data = (await response.json()) as SearchPostsResponse;
+          // Filter to find actual interactions (QTs, replies, mentions)
+          for (const post of data.posts || []) {
+            if (isSearchPostInteraction(post, targetDid, targetHandle)) {
+              console.log(
+                `[ErgoBlock BG] Reverse text search found verified interaction: ${post.record.createdAt}`
+              );
+              return post;
+            }
+          }
+          return null;
+        } catch (error) {
+          console.debug(`[ErgoBlock BG] Reverse text search error:`, error);
+          return null;
+        }
+      })(),
     ]);
 
-    // Collect all found posts
+    // Collect all found posts from both directions
     const candidates: SearchPostView[] = [];
     if (mentionsResult) candidates.push(mentionsResult);
     if (repliesResult) candidates.push(repliesResult);
     if (textResult) candidates.push(textResult);
+    if (reverseMentionsResult) candidates.push(reverseMentionsResult);
+    if (reverseRepliesResult) candidates.push(reverseRepliesResult);
+    if (reverseTextResult) candidates.push(reverseTextResult);
 
     if (candidates.length === 0) {
       console.log(`[ErgoBlock BG] No context found via search`);
