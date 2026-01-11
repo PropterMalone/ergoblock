@@ -47,6 +47,7 @@ import {
   FollowRelation,
   BlocklistConflictGroup,
   BlocklistConflict,
+  PostContext,
 } from './types.js';
 
 const ALARM_NAME = 'checkExpirations';
@@ -794,19 +795,20 @@ async function findContextViaSearch(
   try {
     // Run all searches in parallel for speed
     // Search both directions: their posts → you, and your posts → them
+    // Each search now returns an array of results for proper sorting
     const [
-      mentionsResult,
-      repliesResult,
-      textResult,
-      reverseMentionsResult,
-      reverseRepliesResult,
-      reverseTextResult,
+      mentionsResults,
+      repliesResults,
+      textResults,
+      reverseMentionsResults,
+      reverseRepliesResults,
+      reverseTextResults,
     ] = await Promise.all([
       // Search 1: Their posts that mention you
-      (async (): Promise<SearchPostView | null> => {
+      (async (): Promise<SearchPostView[]> => {
         const query = encodeURIComponent(`from:${targetHandle}`);
         const mentions = encodeURIComponent(loggedInHandle);
-        const endpoint = `${PUBLIC_API}/xrpc/app.bsky.feed.searchPosts?q=${query}&mentions=${mentions}&limit=1&sort=latest`;
+        const endpoint = `${PUBLIC_API}/xrpc/app.bsky.feed.searchPosts?q=${query}&mentions=${mentions}&limit=10&sort=latest`;
 
         try {
           const response = await fetch(endpoint);
@@ -814,25 +816,25 @@ async function findContextViaSearch(
             console.debug(
               `[ErgoBlock BG] Mentions search failed: ${response.status} ${response.statusText}`
             );
-            return null;
+            return [];
           }
 
           const data = (await response.json()) as SearchPostsResponse;
-          const post = data.posts?.[0];
-          if (post) {
-            console.log(`[ErgoBlock BG] Mentions search found: ${post.record.createdAt}`);
+          const posts = data.posts || [];
+          if (posts.length > 0) {
+            console.log(`[ErgoBlock BG] Mentions search found ${posts.length} results`);
           }
-          return post || null;
+          return posts;
         } catch (error) {
           console.debug(`[ErgoBlock BG] Mentions search error:`, error);
-          return null;
+          return [];
         }
       })(),
 
       // Search 2: Their replies to you
-      (async (): Promise<SearchPostView | null> => {
+      (async (): Promise<SearchPostView[]> => {
         const query = encodeURIComponent(`from:${targetHandle} to:${loggedInHandle}`);
-        const endpoint = `${PUBLIC_API}/xrpc/app.bsky.feed.searchPosts?q=${query}&limit=1&sort=latest`;
+        const endpoint = `${PUBLIC_API}/xrpc/app.bsky.feed.searchPosts?q=${query}&limit=10&sort=latest`;
 
         try {
           const response = await fetch(endpoint);
@@ -840,23 +842,23 @@ async function findContextViaSearch(
             console.debug(
               `[ErgoBlock BG] Replies search failed: ${response.status} ${response.statusText}`
             );
-            return null;
+            return [];
           }
 
           const data = (await response.json()) as SearchPostsResponse;
-          const post = data.posts?.[0];
-          if (post) {
-            console.log(`[ErgoBlock BG] Reply search found: ${post.record.createdAt}`);
+          const posts = data.posts || [];
+          if (posts.length > 0) {
+            console.log(`[ErgoBlock BG] Reply search found ${posts.length} results`);
           }
-          return post || null;
+          return posts;
         } catch (error) {
           console.debug(`[ErgoBlock BG] Replies search error:`, error);
-          return null;
+          return [];
         }
       })(),
 
       // Search 3: Their posts containing your handle (for QTs)
-      (async (): Promise<SearchPostView | null> => {
+      (async (): Promise<SearchPostView[]> => {
         const query = encodeURIComponent(`from:${targetHandle} ${loggedInHandle}`);
         const endpoint = `${PUBLIC_API}/xrpc/app.bsky.feed.searchPosts?q=${query}&limit=25&sort=latest`;
 
@@ -866,31 +868,31 @@ async function findContextViaSearch(
             console.debug(
               `[ErgoBlock BG] Text search failed: ${response.status} ${response.statusText}`
             );
-            return null;
+            return [];
           }
 
           const data = (await response.json()) as SearchPostsResponse;
           // Filter to find actual interactions (QTs, replies, mentions)
-          for (const post of data.posts || []) {
-            if (isSearchPostInteraction(post, loggedInDid, loggedInHandle)) {
-              console.log(
-                `[ErgoBlock BG] Text search found verified interaction: ${post.record.createdAt}`
-              );
-              return post;
-            }
+          const verified = (data.posts || []).filter((post) =>
+            isSearchPostInteraction(post, loggedInDid, loggedInHandle)
+          );
+          if (verified.length > 0) {
+            console.log(
+              `[ErgoBlock BG] Text search found ${verified.length} verified interactions`
+            );
           }
-          return null;
+          return verified;
         } catch (error) {
           console.debug(`[ErgoBlock BG] Text search error:`, error);
-          return null;
+          return [];
         }
       })(),
 
       // Search 4: YOUR posts that mention THEM (reverse direction)
-      (async (): Promise<SearchPostView | null> => {
+      (async (): Promise<SearchPostView[]> => {
         const query = encodeURIComponent(`from:${loggedInHandle}`);
         const mentions = encodeURIComponent(targetHandle);
-        const endpoint = `${PUBLIC_API}/xrpc/app.bsky.feed.searchPosts?q=${query}&mentions=${mentions}&limit=1&sort=latest`;
+        const endpoint = `${PUBLIC_API}/xrpc/app.bsky.feed.searchPosts?q=${query}&mentions=${mentions}&limit=10&sort=latest`;
 
         try {
           const response = await fetch(endpoint);
@@ -898,25 +900,25 @@ async function findContextViaSearch(
             console.debug(
               `[ErgoBlock BG] Reverse mentions search failed: ${response.status} ${response.statusText}`
             );
-            return null;
+            return [];
           }
 
           const data = (await response.json()) as SearchPostsResponse;
-          const post = data.posts?.[0];
-          if (post) {
-            console.log(`[ErgoBlock BG] Reverse mentions search found: ${post.record.createdAt}`);
+          const posts = data.posts || [];
+          if (posts.length > 0) {
+            console.log(`[ErgoBlock BG] Reverse mentions search found ${posts.length} results`);
           }
-          return post || null;
+          return posts;
         } catch (error) {
           console.debug(`[ErgoBlock BG] Reverse mentions search error:`, error);
-          return null;
+          return [];
         }
       })(),
 
       // Search 5: YOUR replies to THEM (reverse direction)
-      (async (): Promise<SearchPostView | null> => {
+      (async (): Promise<SearchPostView[]> => {
         const query = encodeURIComponent(`from:${loggedInHandle} to:${targetHandle}`);
-        const endpoint = `${PUBLIC_API}/xrpc/app.bsky.feed.searchPosts?q=${query}&limit=1&sort=latest`;
+        const endpoint = `${PUBLIC_API}/xrpc/app.bsky.feed.searchPosts?q=${query}&limit=10&sort=latest`;
 
         try {
           const response = await fetch(endpoint);
@@ -924,23 +926,23 @@ async function findContextViaSearch(
             console.debug(
               `[ErgoBlock BG] Reverse replies search failed: ${response.status} ${response.statusText}`
             );
-            return null;
+            return [];
           }
 
           const data = (await response.json()) as SearchPostsResponse;
-          const post = data.posts?.[0];
-          if (post) {
-            console.log(`[ErgoBlock BG] Reverse reply search found: ${post.record.createdAt}`);
+          const posts = data.posts || [];
+          if (posts.length > 0) {
+            console.log(`[ErgoBlock BG] Reverse reply search found ${posts.length} results`);
           }
-          return post || null;
+          return posts;
         } catch (error) {
           console.debug(`[ErgoBlock BG] Reverse replies search error:`, error);
-          return null;
+          return [];
         }
       })(),
 
       // Search 6: YOUR posts containing their handle (reverse QTs)
-      (async (): Promise<SearchPostView | null> => {
+      (async (): Promise<SearchPostView[]> => {
         const query = encodeURIComponent(`from:${loggedInHandle} ${targetHandle}`);
         const endpoint = `${PUBLIC_API}/xrpc/app.bsky.feed.searchPosts?q=${query}&limit=25&sort=latest`;
 
@@ -950,35 +952,46 @@ async function findContextViaSearch(
             console.debug(
               `[ErgoBlock BG] Reverse text search failed: ${response.status} ${response.statusText}`
             );
-            return null;
+            return [];
           }
 
           const data = (await response.json()) as SearchPostsResponse;
           // Filter to find actual interactions (QTs, replies, mentions)
-          for (const post of data.posts || []) {
-            if (isSearchPostInteraction(post, targetDid, targetHandle)) {
-              console.log(
-                `[ErgoBlock BG] Reverse text search found verified interaction: ${post.record.createdAt}`
-              );
-              return post;
-            }
+          const verified = (data.posts || []).filter((post) =>
+            isSearchPostInteraction(post, targetDid, targetHandle)
+          );
+          if (verified.length > 0) {
+            console.log(
+              `[ErgoBlock BG] Reverse text search found ${verified.length} verified interactions`
+            );
           }
-          return null;
+          return verified;
         } catch (error) {
           console.debug(`[ErgoBlock BG] Reverse text search error:`, error);
-          return null;
+          return [];
         }
       })(),
     ]);
 
-    // Collect all found posts from both directions
+    // Collect all found posts from both directions and dedupe by URI
+    const seenUris = new Set<string>();
     const candidates: SearchPostView[] = [];
-    if (mentionsResult) candidates.push(mentionsResult);
-    if (repliesResult) candidates.push(repliesResult);
-    if (textResult) candidates.push(textResult);
-    if (reverseMentionsResult) candidates.push(reverseMentionsResult);
-    if (reverseRepliesResult) candidates.push(reverseRepliesResult);
-    if (reverseTextResult) candidates.push(reverseTextResult);
+
+    for (const results of [
+      mentionsResults,
+      repliesResults,
+      textResults,
+      reverseMentionsResults,
+      reverseRepliesResults,
+      reverseTextResults,
+    ]) {
+      for (const post of results) {
+        if (!seenUris.has(post.uri)) {
+          seenUris.add(post.uri);
+          candidates.push(post);
+        }
+      }
+    }
 
     if (candidates.length === 0) {
       console.log(`[ErgoBlock BG] No context found via search`);
@@ -1131,6 +1144,7 @@ async function findContextWithFallback(
 /**
  * Generate context for newly imported blocks during sync.
  * Uses PDS-based fetch to find most recent interaction.
+ * Always searches for new context and compares with existing - keeps the newer one.
  */
 async function generateContextForNewBlocks(
   newBlocks: Array<{ did: string; handle: string }>,
@@ -1140,16 +1154,18 @@ async function generateContextForNewBlocks(
   if (newBlocks.length === 0) return 0;
 
   const existingContexts = await getPostContexts();
-  const existingTargetDids = new Set(existingContexts.map((c) => c.targetDid));
+  // Build a map of DID -> most recent context for comparison
+  const existingContextMap = new Map<string, PostContext>();
+  for (const ctx of existingContexts) {
+    const existing = existingContextMap.get(ctx.targetDid);
+    if (!existing || (ctx.postCreatedAt || 0) > (existing.postCreatedAt || 0)) {
+      existingContextMap.set(ctx.targetDid, ctx);
+    }
+  }
 
   let generated = 0;
 
   for (const block of newBlocks) {
-    // Skip if we already have context for this user
-    if (existingTargetDids.has(block.did)) {
-      continue;
-    }
-
     try {
       const result = await findContextWithFallback(
         block.did,
@@ -1159,22 +1175,38 @@ async function generateContextForNewBlocks(
       );
 
       if (result.post) {
-        await addPostContext({
-          id: `guessed_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-          postUri: result.post.uri,
-          postAuthorDid: result.post.author.did,
-          postAuthorHandle: result.post.author.handle || block.handle,
-          postText: result.post.record.text,
-          postCreatedAt: new Date(result.post.record.createdAt).getTime(),
-          targetHandle: block.handle,
-          targetDid: block.did,
-          actionType: 'block',
-          permanent: true,
-          timestamp: Date.now(),
-          guessed: true,
-        });
-        generated++;
-        console.log(`[ErgoBlock BG] Generated context for new block: ${block.handle}`);
+        const newPostCreatedAt = new Date(result.post.record.createdAt).getTime();
+        const existingContext = existingContextMap.get(block.did);
+
+        // Only add if no existing context OR new interaction is more recent
+        if (!existingContext || newPostCreatedAt > (existingContext.postCreatedAt || 0)) {
+          await addPostContext({
+            id: `guessed_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+            postUri: result.post.uri,
+            postAuthorDid: result.post.author.did,
+            postAuthorHandle: result.post.author.handle || block.handle,
+            postText: result.post.record.text,
+            postCreatedAt: newPostCreatedAt,
+            targetHandle: block.handle,
+            targetDid: block.did,
+            actionType: 'block',
+            permanent: true,
+            timestamp: Date.now(),
+            guessed: true,
+          });
+          generated++;
+          if (existingContext) {
+            console.log(
+              `[ErgoBlock BG] Updated context for ${block.handle} (newer interaction found)`
+            );
+          } else {
+            console.log(`[ErgoBlock BG] Generated context for new block: ${block.handle}`);
+          }
+        } else {
+          console.log(
+            `[ErgoBlock BG] Keeping existing context for ${block.handle} (already have newer)`
+          );
+        }
       }
 
       // Rate limit
