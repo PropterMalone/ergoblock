@@ -1218,6 +1218,85 @@ async function generateContextForNewBlocks(
 
   return generated;
 }
+/**
+ * Refresh auto-detected contexts for existing blocks.
+ * Checks if there are newer interactions than what we have stored.
+ * Only refreshes contexts that were auto-detected (guessed: true), not manually captured.
+ */
+async function refreshGuessedContexts(
+  currentBlocks: Record<string, { did: string; handle: string }>,
+  loggedInDid: string,
+  loggedInHandle: string | undefined
+): Promise<number> {
+  const existingContexts = await getPostContexts();
+
+  // Find blocks with guessed contexts that might need refreshing
+  const guessedContextMap = new Map<string, PostContext>();
+  for (const ctx of existingContexts) {
+    if (ctx.guessed) {
+      const existing = guessedContextMap.get(ctx.targetDid);
+      if (!existing || (ctx.postCreatedAt || 0) > (existing.postCreatedAt || 0)) {
+        guessedContextMap.set(ctx.targetDid, ctx);
+      }
+    }
+  }
+
+  // Get blocks that have guessed contexts to refresh
+  const blocksToRefresh: Array<{ did: string; handle: string; existingContext: PostContext }> = [];
+  for (const [did, block] of Object.entries(currentBlocks)) {
+    const guessedCtx = guessedContextMap.get(did);
+    if (guessedCtx) {
+      blocksToRefresh.push({ did, handle: block.handle, existingContext: guessedCtx });
+    }
+  }
+
+  if (blocksToRefresh.length === 0) {
+    return 0;
+  }
+
+  console.log(`[ErgoBlock BG] Refreshing ${blocksToRefresh.length} auto-detected contexts...`);
+
+  let refreshed = 0;
+
+  for (const { did, handle, existingContext } of blocksToRefresh) {
+    try {
+      const result = await findContextWithFallback(did, handle, loggedInDid, loggedInHandle);
+
+      if (result.post) {
+        const newPostCreatedAt = new Date(result.post.record.createdAt).getTime();
+
+        // Only update if new interaction is more recent
+        if (newPostCreatedAt > (existingContext.postCreatedAt || 0)) {
+          await addPostContext({
+            id: `guessed_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+            postUri: result.post.uri,
+            postAuthorDid: result.post.author.did,
+            postAuthorHandle: result.post.author.handle || handle,
+            postText: result.post.record.text,
+            postCreatedAt: newPostCreatedAt,
+            targetHandle: handle,
+            targetDid: did,
+            actionType: 'block',
+            permanent: true,
+            timestamp: Date.now(),
+            guessed: true,
+          });
+          refreshed++;
+          console.log(
+            `[ErgoBlock BG] Refreshed context for ${handle} (found newer: ${result.post.record.createdAt})`
+          );
+        }
+      }
+
+      // Rate limit
+      await sleep(GUESSED_CONTEXT_DELAY);
+    } catch (error) {
+      console.debug(`[ErgoBlock BG] Could not refresh context for ${handle}:`, error);
+    }
+  }
+
+  return refreshed;
+}
 
 /**
  * Get the logged-in user's handle for @mention detection
@@ -1293,20 +1372,25 @@ export async function performFullSync(): Promise<{
     if (muteSettled.status === 'rejected') {
       console.error('[ErgoBlock BG] Mute sync failed:', muteSettled.reason);
     }
-
-    // Generate context for newly imported blocks
+    // Generate context for newly imported blocks and refresh existing guessed contexts
     let guessedContexts = 0;
+    let refreshedContexts = 0;
+    const loggedInHandle = await getLoggedInHandle(auth);
+
     if (blockResult.newBlocks.length > 0) {
       console.log(
         `[ErgoBlock BG] Generating context for ${blockResult.newBlocks.length} new blocks...`
       );
-      const loggedInHandle = await getLoggedInHandle(auth);
       guessedContexts = await generateContextForNewBlocks(
         blockResult.newBlocks,
         auth.did,
         loggedInHandle
       );
     }
+
+    // Refresh auto-detected contexts for existing blocks (check for newer interactions)
+    const currentBlocks = await getPermanentBlocks();
+    refreshedContexts = await refreshGuessedContexts(currentBlocks, auth.did, loggedInHandle);
 
     await updateSyncState({
       syncInProgress: false,
@@ -1322,10 +1406,10 @@ export async function performFullSync(): Promise<{
       blocks: { added: blockResult.added, removed: blockResult.removed },
       mutes: muteResult,
       guessedContexts,
+      refreshedContexts,
     });
 
     await updateBadge();
-
     syncLockActive = false;
     return {
       success: blockSettled.status === 'fulfilled' && muteSettled.status === 'fulfilled',
