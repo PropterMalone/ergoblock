@@ -48,6 +48,7 @@ import {
   BlocklistConflictGroup,
   BlocklistConflict,
   PostContext,
+  Interaction,
 } from './types.js';
 
 const ALARM_NAME = 'checkExpirations';
@@ -1010,6 +1011,15 @@ async function findContextViaSearch(
       `[ErgoBlock BG] Found ${candidates.length} candidates, returning most recent: ${mostRecent.uri} (${mostRecent.record.createdAt})`
     );
 
+    // Log all candidates for debugging
+    if (candidates.length > 1) {
+      console.log('[ErgoBlock BG] All candidates by date:');
+      for (let i = 0; i < Math.min(candidates.length, 5); i++) {
+        const c = candidates[i];
+        console.log(`  ${i + 1}. ${c.record.createdAt}: "${c.record.text?.slice(0, 50)}..."`);
+      }
+    }
+
     return searchPostToFeedPost(mostRecent);
   } catch (error) {
     console.error('[ErgoBlock BG] Search API error:', error);
@@ -1033,86 +1043,124 @@ async function findContextViaSearch(
  */
 async function findBlockContextPost(
   targetDid: string,
+  targetHandle: string | undefined,
   loggedInDid: string,
   loggedInHandle: string | undefined,
   exhaustive = false
 ): Promise<InteractionResult> {
   // For exhaustive search, we paginate through all posts looking for an interaction
-  // For normal search, we limit to 300 posts (3 pages) for performance
-  const maxPages = exhaustive ? 1000 : 3; // 3 pages = 300 posts (was 10 = 1000)
+  // For normal search, we limit to 500 posts (5 pages) for performance
+  // 500 posts covers more history for blocks made on mobile and synced later
+  const maxPages = exhaustive ? 1000 : 5; // 5 pages = 500 posts
   const pageSize = 100;
 
-  // Resolve the user's PDS URL
-  const pdsUrl = await resolvePdsUrl(targetDid);
-  if (!pdsUrl) {
-    console.log(`[ErgoBlock BG] Could not resolve PDS URL for ${targetDid}`);
-    return { post: null, blockedBy: false };
-  }
+  // Search their posts
+  const searchTheirPosts = async (): Promise<FeedPost | null> => {
+    const pdsUrl = await resolvePdsUrl(targetDid);
+    if (!pdsUrl) {
+      console.log(`[ErgoBlock BG] Could not resolve PDS URL for ${targetDid}`);
+      return null;
+    }
 
-  let cursor: string | undefined;
-  let pageCount = 0;
-  let totalPostsSearched = 0;
+    let cursor: string | undefined;
+    let pageCount = 0;
+    let totalPostsSearched = 0;
 
-  try {
-    while (pageCount < maxPages) {
-      let endpoint = `${pdsUrl}/xrpc/com.atproto.repo.listRecords?repo=${encodeURIComponent(targetDid)}&collection=app.bsky.feed.post&limit=${pageSize}&reverse=true`;
-      if (cursor) {
-        endpoint += `&cursor=${encodeURIComponent(cursor)}`;
-      }
+    try {
+      while (pageCount < maxPages) {
+        let endpoint = `${pdsUrl}/xrpc/com.atproto.repo.listRecords?repo=${encodeURIComponent(targetDid)}&collection=app.bsky.feed.post&limit=${pageSize}`;
+        if (cursor) {
+          endpoint += `&cursor=${encodeURIComponent(cursor)}`;
+        }
 
-      if (pageCount === 0 || (exhaustive && pageCount % 10 === 0)) {
-        console.log(
-          `[ErgoBlock BG] Searching posts for ${targetDid}` +
-            (exhaustive ? ` (exhaustive, page ${pageCount + 1})` : '')
-        );
-      }
-
-      const response = await fetch(endpoint);
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error(`[ErgoBlock BG] PDS fetch failed: ${response.status} ${errorText}`);
-        break;
-      }
-
-      const data = (await response.json()) as ListPostRecordsResponse;
-      const records = data.records || [];
-      pageCount++;
-      totalPostsSearched += records.length;
-
-      if (records.length === 0) {
-        break;
-      }
-
-      // Check each post for interaction
-      for (const record of records) {
-        if (isInteractionWithUser(record, loggedInDid, loggedInHandle)) {
+        if (pageCount === 0 || (exhaustive && pageCount % 10 === 0)) {
           console.log(
-            `[ErgoBlock BG] Found block context for ${targetDid}: ${record.uri}` +
-              ` (searched ${totalPostsSearched} posts)`
+            `[ErgoBlock BG] Searching their posts for ${targetDid}` +
+              (exhaustive ? ` (exhaustive, page ${pageCount + 1})` : '')
           );
-          return { post: rawRecordToFeedPost(record, targetDid), blockedBy: false };
+        }
+
+        const response = await fetch(endpoint);
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error(`[ErgoBlock BG] PDS fetch failed: ${response.status} ${errorText}`);
+          break;
+        }
+
+        const data = (await response.json()) as ListPostRecordsResponse;
+        const records = data.records || [];
+        pageCount++;
+        totalPostsSearched += records.length;
+
+        if (records.length === 0) {
+          break;
+        }
+
+        // Check each post for interaction
+        for (const record of records) {
+          if (isInteractionWithUser(record, loggedInDid, loggedInHandle)) {
+            console.log(
+              `[ErgoBlock BG] Found context (their post) for ${targetDid}: ${record.uri}` +
+                ` (searched ${totalPostsSearched} posts)`
+            );
+            return rawRecordToFeedPost(record, targetDid);
+          }
+        }
+
+        cursor = data.cursor;
+        if (!cursor) break;
+
+        await new Promise((resolve) => setTimeout(resolve, exhaustive ? 100 : 200));
+      }
+
+      console.log(
+        `[ErgoBlock BG] No interactions in their posts for ${targetDid}` +
+          ` (searched ${totalPostsSearched} posts)`
+      );
+      return null;
+    } catch (error) {
+      console.error(`[ErgoBlock BG] Error searching their posts for ${targetDid}:`, error);
+      return null;
+    }
+  };
+
+  // Search my posts (using cache)
+  const searchMyPosts = async (): Promise<FeedPost | null> => {
+    try {
+      const myPosts = await getMyPosts(loggedInDid);
+
+      for (const record of myPosts) {
+        if (isInteractionWithUser(record, targetDid, targetHandle)) {
+          console.log(
+            `[ErgoBlock BG] Found context (my post) for ${targetDid}: ${record.uri}`
+          );
+          return rawRecordToFeedPost(record, loggedInDid);
         }
       }
 
-      // Get cursor for next page
-      cursor = data.cursor;
-      if (!cursor) {
-        break;
-      }
-
-      // Rate limit between pages
-      await new Promise((resolve) => setTimeout(resolve, exhaustive ? 100 : 200));
+      console.log(`[ErgoBlock BG] No interactions in my posts for ${targetDid}`);
+      return null;
+    } catch (error) {
+      console.error(`[ErgoBlock BG] Error searching my posts:`, error);
+      return null;
     }
+  };
 
-    console.log(
-      `[ErgoBlock BG] No interactions found for ${targetDid}` +
-        ` (searched ${totalPostsSearched} posts in ${pageCount} pages)`
-    );
-    return { post: null, blockedBy: false };
-  } catch (error) {
-    console.error(`[ErgoBlock BG] Error searching posts for ${targetDid}:`, error);
-    return { post: null, blockedBy: false };
+  // Search both directions in parallel
+  const [theirPost, myPost] = await Promise.all([searchTheirPosts(), searchMyPosts()]);
+
+  // Return the most recent interaction
+  if (theirPost !== null && myPost !== null) {
+    const theirTime = new Date(theirPost.record.createdAt).getTime();
+    const myTime = new Date(myPost.record.createdAt).getTime();
+    if (theirTime >= myTime) {
+      return { post: theirPost, blockedBy: false };
+    } else {
+      return { post: myPost, blockedBy: false };
+    }
   }
+
+  return { post: theirPost ?? myPost, blockedBy: false };
 }
 
 /**
@@ -1138,7 +1186,7 @@ async function findContextWithFallback(
 
   // Fall back to PDS pagination if search didn't find anything
   console.log(`[ErgoBlock BG] Search didn't find context, trying PDS for ${targetHandle}`);
-  return findBlockContextPost(targetDid, loggedInDid, loggedInHandle, exhaustive);
+  return findBlockContextPost(targetDid, targetHandle, loggedInDid, loggedInHandle, exhaustive);
 }
 
 /**
@@ -2210,6 +2258,237 @@ async function handleFindContext(
   }
 }
 
+/**
+ * Classify interaction type from a raw post record
+ */
+function classifyRawInteractionType(
+  record: RawPostRecord,
+  otherDid: string
+): 'reply' | 'quote' | 'mention' {
+  const value = record.value;
+
+  if (value.reply?.parent?.uri?.includes(otherDid)) {
+    return 'reply';
+  }
+
+  if (
+    value.embed?.$type === 'app.bsky.embed.record' &&
+    value.embed.record?.uri?.includes(otherDid)
+  ) {
+    return 'quote';
+  }
+
+  return 'mention';
+}
+
+// Cache for logged-in user's posts (cleared on auth change)
+let myPostsCache: { did: string; posts: RawPostRecord[]; fetchedAt: number } | null = null;
+const MY_POSTS_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+/**
+ * Fetch and cache the logged-in user's recent posts
+ */
+async function getMyPosts(loggedInDid: string): Promise<RawPostRecord[]> {
+  // Return cached if valid
+  if (
+    myPostsCache &&
+    myPostsCache.did === loggedInDid &&
+    Date.now() - myPostsCache.fetchedAt < MY_POSTS_CACHE_TTL
+  ) {
+    console.log(`[ErgoBlock BG] Using cached posts for logged-in user (${myPostsCache.posts.length} posts)`);
+    return myPostsCache.posts;
+  }
+
+  console.log('[ErgoBlock BG] Fetching logged-in user posts...');
+  const pdsUrl = await resolvePdsUrl(loggedInDid);
+  if (!pdsUrl) {
+    console.log('[ErgoBlock BG] Could not resolve PDS for logged-in user');
+    return [];
+  }
+
+  const posts: RawPostRecord[] = [];
+  const maxPages = 5;
+  const pageSize = 100;
+  let cursor: string | undefined;
+  let pageCount = 0;
+
+  while (pageCount < maxPages) {
+    let endpoint = `${pdsUrl}/xrpc/com.atproto.repo.listRecords?repo=${encodeURIComponent(loggedInDid)}&collection=app.bsky.feed.post&limit=${pageSize}`;
+    if (cursor) {
+      endpoint += `&cursor=${encodeURIComponent(cursor)}`;
+    }
+
+    try {
+      const response = await fetch(endpoint);
+      if (!response.ok) break;
+
+      const data = (await response.json()) as ListPostRecordsResponse;
+      const records = data.records || [];
+      posts.push(...records);
+      pageCount++;
+
+      cursor = data.cursor;
+      if (!cursor || records.length === 0) break;
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    } catch {
+      break;
+    }
+  }
+
+  console.log(`[ErgoBlock BG] Cached ${posts.length} posts for logged-in user`);
+  myPostsCache = { did: loggedInDid, posts, fetchedAt: Date.now() };
+  return posts;
+}
+
+/**
+ * Find all interactions between logged-in user and target user.
+ * Uses PDS pagination to fetch posts directly (bypasses search API).
+ * Caches logged-in user's posts for efficiency across multiple lookups.
+ */
+async function findAllInteractions(
+  targetDid: string,
+  targetHandle: string,
+  loggedInDid: string,
+  loggedInHandle: string | undefined
+): Promise<Interaction[]> {
+  console.log(
+    `[ErgoBlock BG] Finding all interactions via PDS: ${targetHandle} <-> ${loggedInHandle || loggedInDid}`
+  );
+
+  const interactions: Interaction[] = [];
+  const seenUris = new Set<string>();
+  const maxPages = 5;
+  const pageSize = 100;
+
+  // Fetch target user's posts (always fresh)
+  const fetchTargetPosts = async (): Promise<void> => {
+    const pdsUrl = await resolvePdsUrl(targetDid);
+    if (!pdsUrl) {
+      console.log(`[ErgoBlock BG] Could not resolve PDS for ${targetHandle}`);
+      return;
+    }
+
+    let cursor: string | undefined;
+    let pageCount = 0;
+    let totalPosts = 0;
+    let foundCount = 0;
+
+    while (pageCount < maxPages) {
+      let endpoint = `${pdsUrl}/xrpc/com.atproto.repo.listRecords?repo=${encodeURIComponent(targetDid)}&collection=app.bsky.feed.post&limit=${pageSize}`;
+      if (cursor) {
+        endpoint += `&cursor=${encodeURIComponent(cursor)}`;
+      }
+
+      try {
+        const response = await fetch(endpoint);
+        if (!response.ok) {
+          console.log(`[ErgoBlock BG] PDS fetch for ${targetHandle}: HTTP ${response.status}`);
+          break;
+        }
+
+        const data = (await response.json()) as ListPostRecordsResponse;
+        const records = data.records || [];
+        pageCount++;
+        totalPosts += records.length;
+
+        if (records.length === 0) break;
+
+        for (const record of records) {
+          if (seenUris.has(record.uri)) continue;
+          if (isInteractionWithUser(record, loggedInDid, loggedInHandle)) {
+            seenUris.add(record.uri);
+            foundCount++;
+            interactions.push({
+              uri: record.uri,
+              text: record.value.text.slice(0, 300),
+              createdAt: new Date(record.value.createdAt).getTime(),
+              type: classifyRawInteractionType(record, loggedInDid),
+              author: 'them',
+              authorHandle: targetHandle,
+            });
+          }
+        }
+
+        cursor = data.cursor;
+        if (!cursor) break;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      } catch (err) {
+        console.log(`[ErgoBlock BG] PDS fetch error for ${targetHandle}: ${err}`);
+        break;
+      }
+    }
+
+    console.log(`[ErgoBlock BG] ${targetHandle}: searched ${totalPosts} posts, found ${foundCount} interactions`);
+  };
+
+  // Search cached logged-in user posts
+  const searchMyPosts = async (): Promise<void> => {
+    const myPosts = await getMyPosts(loggedInDid);
+    let foundCount = 0;
+
+    for (const record of myPosts) {
+      if (seenUris.has(record.uri)) continue;
+      if (isInteractionWithUser(record, targetDid, targetHandle)) {
+        seenUris.add(record.uri);
+        foundCount++;
+        interactions.push({
+          uri: record.uri,
+          text: record.value.text.slice(0, 300),
+          createdAt: new Date(record.value.createdAt).getTime(),
+          type: classifyRawInteractionType(record, targetDid),
+          author: 'you',
+          authorHandle: loggedInHandle || loggedInDid,
+        });
+      }
+    }
+
+    console.log(`[ErgoBlock BG] ${loggedInHandle || 'you'}: searched ${myPosts.length} cached posts, found ${foundCount} interactions`);
+  };
+
+  try {
+    // Fetch target posts and search cached my posts in parallel
+    await Promise.all([fetchTargetPosts(), searchMyPosts()]);
+
+    // Sort by createdAt descending (most recent first)
+    interactions.sort((a, b) => b.createdAt - a.createdAt);
+
+    console.log(`[ErgoBlock BG] Found ${interactions.length} total interactions`);
+    return interactions;
+  } catch (error) {
+    console.error('[ErgoBlock BG] findAllInteractions error:', error);
+    return [];
+  }
+}
+
+/**
+ * Handle request to fetch all interactions between logged-in user and target
+ */
+async function handleFetchAllInteractions(
+  did: string,
+  handle: string
+): Promise<{ success: boolean; interactions?: Interaction[]; error?: string }> {
+  try {
+    const auth = await getAuthToken();
+    if (!auth?.accessJwt || !auth?.did || !auth?.pdsUrl) {
+      console.log('[ErgoBlock BG] FETCH_ALL_INTERACTIONS: Not authenticated');
+      return { success: false, error: 'Not authenticated' };
+    }
+
+    const loggedInHandle = await getLoggedInHandle(auth);
+    console.log(
+      `[ErgoBlock BG] FETCH_ALL_INTERACTIONS: ${handle} (${did}) <-> ${loggedInHandle} (${auth.did})`
+    );
+    const interactions = await findAllInteractions(did, handle, auth.did, loggedInHandle);
+    console.log(`[ErgoBlock BG] FETCH_ALL_INTERACTIONS: Returning ${interactions.length} interactions`);
+
+    return { success: true, interactions };
+  } catch (error) {
+    console.error('[ErgoBlock BG] Fetch all interactions failed:', error);
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+  }
+}
+
 // Async message handler for communication with content scripts and popup
 // Using the async pattern which returns Promise<unknown> per webextension-polyfill types
 const messageHandler = async (rawMessage: unknown): Promise<MessageResponse | undefined> => {
@@ -2254,6 +2533,10 @@ const messageHandler = async (rawMessage: unknown): Promise<MessageResponse | un
 
   if (message.type === 'FIND_CONTEXT' && message.did && message.handle) {
     return await handleFindContext(message.did, message.handle);
+  }
+
+  if (message.type === 'FETCH_ALL_INTERACTIONS' && message.did && message.handle) {
+    return await handleFetchAllInteractions(message.did, message.handle);
   }
 
   if (message.type === 'BLOCKLIST_AUDIT_SYNC') {

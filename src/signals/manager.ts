@@ -11,6 +11,7 @@ import type {
   BlocklistAuditState,
   BlocklistConflictGroup,
   AmnestyReview,
+  Interaction,
 } from '../types.js';
 
 // Core data signals
@@ -63,6 +64,37 @@ export const loading = signal(true);
 export const tempUnblockTimers = signal<Map<string, { timerId: number; expiresAt: number }>>(
   new Map()
 );
+
+// Expanded row state for viewing all interactions
+export const expandedRows = signal<Set<string>>(new Set());
+export const expandedInteractions = signal<Map<string, Interaction[]>>(new Map());
+export const expandedLoading = signal<Set<string>>(new Set());
+
+export function toggleExpanded(did: string): void {
+  const newSet = new Set(expandedRows.value);
+  if (newSet.has(did)) {
+    newSet.delete(did);
+  } else {
+    newSet.add(did);
+  }
+  expandedRows.value = newSet;
+}
+
+export function setInteractions(did: string, interactions: Interaction[]): void {
+  const newMap = new Map(expandedInteractions.value);
+  newMap.set(did, interactions);
+  expandedInteractions.value = newMap;
+}
+
+export function setExpandedLoading(did: string, loading: boolean): void {
+  const newSet = new Set(expandedLoading.value);
+  if (loading) {
+    newSet.add(did);
+  } else {
+    newSet.delete(did);
+  }
+  expandedLoading.value = newSet;
+}
 
 // Context map computed from contexts
 export const contextMap = computed(() => {

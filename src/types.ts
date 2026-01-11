@@ -219,6 +219,19 @@ export interface PostContext {
 }
 
 /**
+ * An interaction between two users (reply, quote, or mention)
+ * Used in the expanded context view to show all interactions
+ */
+export interface Interaction {
+  uri: string;
+  text: string;
+  createdAt: number;
+  type: 'reply' | 'quote' | 'mention';
+  author: 'them' | 'you';
+  authorHandle: string;
+}
+
+/**
  * Block record from com.atproto.repo.listRecords
  */
 export interface BlockRecord {

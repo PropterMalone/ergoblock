@@ -1,5 +1,4 @@
 import type { JSX } from 'preact';
-import type { PostContext } from '../../types.js';
 import { contextMap, tempUnblockTimers } from '../../signals/manager.js';
 import { postUriToUrl } from './utils.js';
 
@@ -7,16 +6,20 @@ interface ContextCellProps {
   did: string;
   handle: string;
   isBlocked: boolean;
+  isExpanded: boolean;
   onFindContext: (did: string, handle: string) => void;
   onViewPost: (did: string, handle: string, url: string) => void;
+  onToggleExpand: () => void;
 }
 
 export function ContextCell({
   did,
   handle,
   isBlocked,
+  isExpanded,
   onFindContext,
   onViewPost,
+  onToggleExpand,
 }: ContextCellProps): JSX.Element {
   const ctx = contextMap.value.get(did);
   const tempTimer = tempUnblockTimers.value.get(did);
@@ -26,12 +29,21 @@ export function ContextCell({
       <td class="context-col">
         <div class="context-cell">
           <span class="no-context">No context</span>
-          <button
-            class="context-btn find-context-btn"
-            onClick={() => onFindContext(did, handle)}
-          >
-            Find
-          </button>
+          <div class="context-meta">
+            <button
+              class="context-btn find-context-btn"
+              onClick={() => onFindContext(did, handle)}
+            >
+              Find
+            </button>
+            <button
+              class={`context-btn expand-btn ${isExpanded ? 'expanded' : ''}`}
+              onClick={onToggleExpand}
+              title={isExpanded ? 'Collapse' : 'Show all interactions'}
+            >
+              {isExpanded ? '▼' : '▶'}
+            </button>
+          </div>
         </div>
       </td>
     );
@@ -69,6 +81,13 @@ export function ContextCell({
               </a>
             )
           )}
+          <button
+            class={`context-btn expand-btn ${isExpanded ? 'expanded' : ''}`}
+            onClick={onToggleExpand}
+            title={isExpanded ? 'Collapse' : 'Show all interactions'}
+          >
+            {isExpanded ? '▼' : '▶'}
+          </button>
         </div>
       </div>
     </td>

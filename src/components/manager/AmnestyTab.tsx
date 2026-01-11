@@ -1,6 +1,6 @@
 import type { JSX } from 'preact';
 import { useState, useEffect } from 'preact/hooks';
-import { ThumbsUp, ThumbsDown, Play, ExternalLink, Loader2 } from 'lucide-preact';
+import { ThumbsUp, ThumbsDown, Play, ExternalLink, Loader2, ChevronDown, ChevronRight } from 'lucide-preact';
 import type { ManagedEntry, AmnestyReview } from '../../types.js';
 import {
   blocks,
@@ -12,6 +12,8 @@ import {
   amnestySearchedNoContext,
   contextMap,
   contexts,
+  expandedRows,
+  toggleExpanded,
 } from '../../signals/manager.js';
 import {
   FORGIVENESS_OPTIONS,
@@ -21,11 +23,13 @@ import {
 } from './utils.js';
 import { setOptions, getPostContexts, addAmnestyReview, getAmnestyStats } from '../../storage.js';
 import browser from '../../browser.js';
+import { InteractionsList } from './InteractionsList.js';
 
 interface AmnestyTabProps {
   onUnblock: (did: string) => Promise<void>;
   onUnmute: (did: string) => Promise<void>;
   onTempUnblockAndView: (did: string, handle: string, url: string) => Promise<void>;
+  onFetchInteractions: (did: string, handle: string) => Promise<void>;
   onReload: () => Promise<void>;
 }
 
@@ -41,6 +45,7 @@ export function AmnestyTab({
   onUnblock,
   onUnmute,
   onTempUnblockAndView,
+  onFetchInteractions,
   onReload,
 }: AmnestyTabProps): JSX.Element {
   const [stats, setStats] = useState<AmnestyStats>({
@@ -174,6 +179,7 @@ export function AmnestyTab({
         processing={processing}
         onDecision={handleDecision}
         onViewPost={onTempUnblockAndView}
+        onFetchInteractions={onFetchInteractions}
       />
     );
   }
@@ -253,6 +259,7 @@ interface AmnestyCardProps {
   processing: boolean;
   onDecision: (decision: 'unblocked' | 'unmuted' | 'kept_blocked' | 'kept_muted') => Promise<void>;
   onViewPost: (did: string, handle: string, url: string) => Promise<void>;
+  onFetchInteractions: (did: string, handle: string) => Promise<void>;
 }
 
 function AmnestyCard({
@@ -262,6 +269,7 @@ function AmnestyCard({
   processing,
   onDecision,
   onViewPost,
+  onFetchInteractions,
 }: AmnestyCardProps): JSX.Element {
   const ctx = contextMap.value.get(candidate.did);
   const actionDate = candidate.createdAt || candidate.syncedAt;
@@ -270,6 +278,7 @@ function AmnestyCard({
   const actionVerb = isBlock ? 'Blocked' : 'Muted';
   const actionVerbLower = isBlock ? 'block' : 'mute';
   const freedCount = stats.unblocked + stats.unmuted;
+  const isExpanded = expandedRows.value.has(candidate.did);
 
   const postUrl = ctx?.postUri ? postUriToUrl(ctx.postUri) : '';
 
@@ -312,7 +321,17 @@ function AmnestyCard({
         </div>
 
         <div class="amnesty-card-context">
-          <div class="amnesty-context-label">Why did you {actionVerbLower} them?</div>
+          <div class="amnesty-context-header">
+            <div class="amnesty-context-label">Why did you {actionVerbLower} them?</div>
+            <button
+              class={`context-btn expand-btn ${isExpanded ? 'expanded' : ''}`}
+              onClick={() => toggleExpanded(candidate.did)}
+              title={isExpanded ? 'Collapse' : 'Show all interactions'}
+            >
+              {isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+              {isExpanded ? 'Less' : 'More'}
+            </button>
+          </div>
           {amnestySearching.value ? (
             <div class="amnesty-searching">
               <Loader2 size={16} class="spinner" />
@@ -340,6 +359,17 @@ function AmnestyCard({
             </>
           ) : (
             <div class="amnesty-no-context">No context found for this {actionVerbLower}</div>
+          )}
+          {isExpanded && (
+            <div class="amnesty-interactions-expanded">
+              <InteractionsList
+                did={candidate.did}
+                handle={candidate.handle}
+                isBlocked={isBlock}
+                onFetchInteractions={onFetchInteractions}
+                onViewPost={onViewPost}
+              />
+            </div>
           )}
         </div>
 

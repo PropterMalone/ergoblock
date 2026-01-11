@@ -1,4 +1,5 @@
 import type { JSX } from 'preact';
+import { Fragment } from 'preact';
 import {
   blocks,
   searchQuery,
@@ -10,23 +11,28 @@ import {
   clearSelection,
   toggleSelection,
   amnestyStatusMap,
+  expandedRows,
+  toggleExpanded,
 } from '../../signals/manager.js';
 import { filterAndSort, formatTimeRemaining, formatDate } from './utils.js';
 import { SortableHeader } from './SortableHeader.js';
 import { UserCell } from './UserCell.js';
 import { ContextCell } from './ContextCell.js';
 import { StatusIndicators } from './StatusIndicators.js';
+import { InteractionsList } from './InteractionsList.js';
 
 interface BlocksTableProps {
   onUnblock: (did: string, handle: string) => void;
   onFindContext: (did: string, handle: string) => void;
   onViewPost: (did: string, handle: string, url: string) => void;
+  onFetchInteractions: (did: string, handle: string) => Promise<void>;
 }
 
 export function BlocksTable({
   onUnblock,
   onFindContext,
   onViewPost,
+  onFetchInteractions,
 }: BlocksTableProps): JSX.Element {
   const filtered = filterAndSort(
     blocks.value,
@@ -83,64 +89,82 @@ export function BlocksTable({
           const isMutual = block.viewer?.blockedBy === true;
           const isSelected = selectedItems.value.has(block.did);
           const amnestyStatus = amnestyStatusMap.value.get(block.did);
+          const isExpanded = expandedRows.value.has(block.did);
 
           return (
-            <tr key={block.did} class={isMutual ? 'mutual-block' : ''}>
-              <td>
-                <input
-                  type="checkbox"
-                  checked={isSelected}
-                  onChange={() => toggleSelection(block.did)}
+            <Fragment key={block.did}>
+              <tr class={`${isMutual ? 'mutual-block' : ''} ${isExpanded ? 'row-expanded' : ''}`}>
+                <td>
+                  <input
+                    type="checkbox"
+                    checked={isSelected}
+                    onChange={() => toggleSelection(block.did)}
+                  />
+                </td>
+                <UserCell
+                  handle={block.handle}
+                  displayName={block.displayName}
+                  avatar={block.avatar}
                 />
-              </td>
-              <UserCell
-                handle={block.handle}
-                displayName={block.displayName}
-                avatar={block.avatar}
-              />
-              <ContextCell
-                did={block.did}
-                handle={block.handle}
-                isBlocked={true}
-                onFindContext={onFindContext}
-                onViewPost={onViewPost}
-              />
-              <td>
-                <span class={`badge ${isTemp ? 'badge-temp' : 'badge-permanent'}`}>
-                  {isTemp ? 'Temp' : 'Perm'}
-                </span>
-              </td>
-              <StatusIndicators viewer={block.viewer} isBlocksTab={true} />
-              <td>
-                <span class={`badge ${amnestyStatus === 'denied' ? 'badge-denied' : 'badge-unreviewed'}`}>
-                  {amnestyStatus === 'denied' ? 'Denied' : 'Unreviewed'}
-                </span>
-              </td>
-              <td>
-                {isTemp && block.expiresAt ? (
-                  <span class={`badge ${isExpiringSoon ? 'badge-expiring' : ''}`}>
-                    {formatTimeRemaining(block.expiresAt)}
+                <ContextCell
+                  did={block.did}
+                  handle={block.handle}
+                  isBlocked={true}
+                  isExpanded={isExpanded}
+                  onFindContext={onFindContext}
+                  onViewPost={onViewPost}
+                  onToggleExpand={() => toggleExpanded(block.did)}
+                />
+                <td>
+                  <span class={`badge ${isTemp ? 'badge-temp' : 'badge-permanent'}`}>
+                    {isTemp ? 'Temp' : 'Perm'}
                   </span>
-                ) : (
-                  '-'
-                )}
-              </td>
-              <td>
-                {block.createdAt
-                  ? formatDate(block.createdAt)
-                  : block.syncedAt
-                    ? formatDate(block.syncedAt)
-                    : '-'}
-              </td>
-              <td>
-                <button
-                  class="action-btn danger unblock-btn"
-                  onClick={() => onUnblock(block.did, block.handle)}
-                >
-                  Unblock
-                </button>
-              </td>
-            </tr>
+                </td>
+                <StatusIndicators viewer={block.viewer} isBlocksTab={true} />
+                <td>
+                  <span class={`badge ${amnestyStatus === 'denied' ? 'badge-denied' : 'badge-unreviewed'}`}>
+                    {amnestyStatus === 'denied' ? 'Denied' : 'Unreviewed'}
+                  </span>
+                </td>
+                <td>
+                  {isTemp && block.expiresAt ? (
+                    <span class={`badge ${isExpiringSoon ? 'badge-expiring' : ''}`}>
+                      {formatTimeRemaining(block.expiresAt)}
+                    </span>
+                  ) : (
+                    '-'
+                  )}
+                </td>
+                <td>
+                  {block.createdAt
+                    ? formatDate(block.createdAt)
+                    : block.syncedAt
+                      ? formatDate(block.syncedAt)
+                      : '-'}
+                </td>
+                <td>
+                  <button
+                    class="action-btn danger unblock-btn"
+                    onClick={() => onUnblock(block.did, block.handle)}
+                  >
+                    Unblock
+                  </button>
+                </td>
+              </tr>
+              {isExpanded && (
+                <tr class="expanded-row">
+                  <td colSpan={9}>
+                    <InteractionsList
+                      did={block.did}
+                      handle={block.handle}
+                      isBlocked={true}
+                      onFetchInteractions={onFetchInteractions}
+                      onViewPost={onViewPost}
+                    />
+                  </td>
+                </tr>
+              )}
+            </Fragment>
           );
         })}
       </tbody>

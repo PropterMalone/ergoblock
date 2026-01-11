@@ -35,7 +35,10 @@ import {
   clearSelection,
   loading,
   tempUnblockTimers,
+  setInteractions,
+  setExpandedLoading,
 } from './signals/manager.js';
+import type { Interaction } from './types.js';
 import {
   StatsBar,
   TabNav,
@@ -56,6 +59,7 @@ interface MessageResponse {
   success: boolean;
   error?: string;
   found?: boolean;
+  interactions?: Interaction[];
 }
 
 /**
@@ -208,6 +212,29 @@ function ManagerApp(): JSX.Element {
     }
   };
 
+  // Fetch all interactions for expanded row
+  const handleFetchInteractions = async (did: string, handle: string) => {
+    setExpandedLoading(did, true);
+    try {
+      const response = await sendValidatedMessage({
+        type: 'FETCH_ALL_INTERACTIONS',
+        did,
+        handle,
+      });
+
+      if (!response.success) {
+        throw new Error(response.error || 'Failed to fetch interactions');
+      }
+
+      setInteractions(did, response.interactions || []);
+    } catch (error) {
+      console.error('[Manager] Fetch interactions failed:', error);
+      setInteractions(did, []);
+    } finally {
+      setExpandedLoading(did, false);
+    }
+  };
+
   // Temp unblock for viewing
   const handleTempUnblockAndView = async (did: string, handle: string, url: string) => {
     // Check if already temp unblocked
@@ -334,6 +361,7 @@ function ManagerApp(): JSX.Element {
             onUnblock={handleUnblock}
             onFindContext={handleFindContext}
             onViewPost={handleTempUnblockAndView}
+            onFetchInteractions={handleFetchInteractions}
           />
         );
       case 'mutes':
@@ -342,6 +370,7 @@ function ManagerApp(): JSX.Element {
             onUnmute={handleUnmute}
             onFindContext={handleFindContext}
             onViewPost={handleTempUnblockAndView}
+            onFetchInteractions={handleFetchInteractions}
           />
         );
       case 'history':
@@ -352,6 +381,7 @@ function ManagerApp(): JSX.Element {
             onUnblock={async (did) => handleUnblock(did)}
             onUnmute={async (did) => handleUnmute(did)}
             onTempUnblockAndView={handleTempUnblockAndView}
+            onFetchInteractions={handleFetchInteractions}
             onReload={loadData}
           />
         );
@@ -368,8 +398,15 @@ function ManagerApp(): JSX.Element {
         <h1>ErgoBlock Manager</h1>
         <div class="sync-status">
           <span>{getSyncStatusText()}</span>
-          <button onClick={handleSync} disabled={isSyncing}>
-            Sync Now
+          <button onClick={handleSync} disabled={isSyncing} class={isSyncing ? 'syncing' : ''}>
+            {isSyncing ? (
+              <>
+                <span class="spinner" />
+                Syncing...
+              </>
+            ) : (
+              'Sync Now'
+            )}
           </button>
         </div>
       </header>

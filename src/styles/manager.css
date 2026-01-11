@@ -125,6 +125,29 @@ header h1 {
   cursor: not-allowed;
 }
 
+.sync-status button.syncing {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  background: var(--brand-primary);
+  opacity: 0.85;
+}
+
+.sync-status button .spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.3);
+  border-top-color: white;
+  border-radius: 50%;
+  animation: sync-spin 0.8s linear infinite;
+}
+
+@keyframes sync-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 /* Stats Bar */
 .stats-bar {
   display: grid;
@@ -876,13 +899,26 @@ input[type="checkbox"] {
   border-bottom: 1px solid var(--border-color);
 }
 
+.amnesty-context-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--space-xs);
+}
+
 .amnesty-context-label {
   font-size: var(--font-size-0);
   font-weight: var(--font-weight-6);
   color: var(--text-2);
   text-transform: uppercase;
   letter-spacing: 0.5px;
-  margin-bottom: var(--space-xs);
+}
+
+.amnesty-context-header .expand-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xxs);
+  font-size: var(--font-size-0);
 }
 
 .amnesty-context-text {
@@ -911,6 +947,18 @@ input[type="checkbox"] {
   align-items: center;
   gap: var(--space-xs);
   color: var(--text-2);
+}
+
+.amnesty-interactions-expanded {
+  margin-top: var(--space-md);
+  padding-top: var(--space-md);
+  border-top: 1px solid var(--border-color);
+}
+
+.amnesty-interactions-expanded .interactions-list {
+  background: var(--surface-1);
+  border-radius: var(--radius-2);
+  padding: var(--space-sm);
 }
 
 .amnesty-card-actions {
@@ -1354,6 +1402,134 @@ input[type="checkbox"] {
 .audit-last-sync {
   font-size: var(--font-size-0);
   color: var(--text-3);
+}
+
+/* ================================
+   EXPANDED CONTEXT ROW
+   ================================ */
+
+.expand-btn {
+  min-width: 24px;
+  padding: var(--space-xxs);
+  font-size: var(--font-size-00);
+}
+
+.expand-btn.expanded {
+  background: var(--brand-primary-light);
+}
+
+tr.row-expanded > td {
+  border-bottom: none;
+}
+
+tr.expanded-row > td {
+  background: var(--surface-2);
+  padding: var(--space-md) var(--space-lg);
+  border-top: none;
+}
+
+.interactions-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.interactions-list.loading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  color: var(--text-3);
+  font-style: italic;
+}
+
+.interactions-list.empty {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  color: var(--text-3);
+}
+
+.interactions-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-bottom: var(--space-xs);
+  border-bottom: 1px solid var(--surface-3);
+}
+
+.interactions-count {
+  font-size: var(--font-size-0);
+  color: var(--text-2);
+  font-weight: var(--font-weight-5);
+}
+
+.interactions-items {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.interaction-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xxs);
+  padding: var(--space-sm);
+  background: var(--surface-1);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--surface-3);
+}
+
+.interaction-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  font-size: var(--font-size-00);
+}
+
+.interaction-author {
+  color: var(--text-2);
+  font-weight: var(--font-weight-5);
+}
+
+.interaction-date {
+  color: var(--text-3);
+}
+
+.interaction-text {
+  font-size: var(--font-size-0);
+  color: var(--text-1);
+  line-height: var(--font-lineheight-3);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.interaction-actions {
+  display: flex;
+  gap: var(--space-xs);
+  margin-top: var(--space-xxs);
+}
+
+.badge-reply {
+  background: var(--blue-1);
+  color: var(--blue-7);
+}
+
+.badge-quote {
+  background: var(--violet-1);
+  color: var(--violet-7);
+}
+
+.badge-mention {
+  background: var(--orange-1);
+  color: var(--orange-7);
+}
+
+.no-interactions {
+  color: var(--text-3);
+  font-style: italic;
 }
 
 /* ================================
