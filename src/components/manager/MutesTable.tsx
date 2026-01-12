@@ -12,6 +12,7 @@ import {
   toggleSelection,
   amnestyStatusMap,
   expandedRows,
+  expandedInteractions,
   toggleExpanded,
 } from '../../signals/manager.js';
 import { filterAndSort, formatTimeRemaining, formatDate } from './utils.js';
@@ -99,6 +100,7 @@ export function MutesTable({
           const isSelected = selectedItems.value.has(mute.did);
           const amnestyStatus = amnestyStatusMap.value.get(mute.did);
           const isExpanded = expandedRows.value.has(mute.did);
+          const hasInteractions = (expandedInteractions.value.get(mute.did)?.length ?? 0) > 0;
 
           return (
             <Fragment key={mute.did}>
@@ -123,6 +125,7 @@ export function MutesTable({
                   onFindContext={onFindContext}
                   onViewPost={onViewPost}
                   onToggleExpand={() => toggleExpanded(mute.did)}
+                  showExpandButton={hasInteractions}
                 />
                 <td>
                   <span class={`badge ${isTemp ? 'badge-temp' : 'badge-permanent'}`}>

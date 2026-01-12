@@ -17,6 +17,10 @@ import {
   GetListMutesResponse,
   GetListResponse,
   ListView,
+  FollowRecord,
+  ListFollowRecordsResponse,
+  ListNotificationsResponse,
+  GetActorLikesResponse,
 } from './types.js';
 
 // AT Protocol API helpers for Bluesky
@@ -854,4 +858,174 @@ export async function unsubscribeFromBlocklist(listUri: string): Promise<void> {
   });
 
   console.log('[ErgoBlock] Unsubscribed from blocklist:', listUri);
+}
+
+// ============================================================================
+// Starter Pack Tools APIs
+// ============================================================================
+
+/**
+ * Get follow records with creation timestamps
+ * Used to detect "follow all" actions from starter packs
+ */
+export async function getFollowRecords(
+  limit = 100,
+  cursor?: string
+): Promise<ListFollowRecordsResponse> {
+  const session = getSession();
+  if (!session) throw new Error('Not logged in');
+
+  let endpoint = `com.atproto.repo.listRecords?repo=${encodeURIComponent(session.did)}&collection=app.bsky.graph.follow&limit=${limit}`;
+  if (cursor) {
+    endpoint += `&cursor=${encodeURIComponent(cursor)}`;
+  }
+
+  const response = await apiRequest<ListFollowRecordsResponse>(endpoint);
+  return response || { records: [] };
+}
+
+/**
+ * Get all follow records (paginated)
+ */
+export async function getAllFollowRecords(
+  onProgress?: (count: number) => void
+): Promise<FollowRecord[]> {
+  const allRecords: FollowRecord[] = [];
+  let cursor: string | undefined;
+
+  do {
+    const response = await getFollowRecords(100, cursor);
+    allRecords.push(...response.records);
+    cursor = response.cursor;
+    onProgress?.(allRecords.length);
+
+    if (cursor) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  } while (cursor);
+
+  console.log('[ErgoBlock] Fetched all follow records:', allRecords.length);
+  return allRecords;
+}
+
+/**
+ * Follow a user
+ */
+export async function followUser(did: string): Promise<{ uri: string; cid: string } | null> {
+  const session = getSession();
+  if (!session) throw new Error('Not logged in');
+
+  const record = {
+    $type: 'app.bsky.graph.follow',
+    subject: did,
+    createdAt: new Date().toISOString(),
+  };
+
+  return apiRequest<{ uri: string; cid: string }>('com.atproto.repo.createRecord', 'POST', {
+    repo: session.did,
+    collection: 'app.bsky.graph.follow',
+    record,
+  });
+}
+
+/**
+ * Unfollow a user
+ * @param did - DID of user to unfollow
+ * @param rkey - Optional rkey if known (faster)
+ */
+export async function unfollowUser(did: string, rkey?: string): Promise<void> {
+  const session = getSession();
+  if (!session) throw new Error('Not logged in');
+
+  // If we have the rkey, delete directly
+  if (rkey) {
+    await apiRequest('com.atproto.repo.deleteRecord', 'POST', {
+      repo: session.did,
+      collection: 'app.bsky.graph.follow',
+      rkey,
+    });
+    console.log('[ErgoBlock] Unfollowed user:', did);
+    return;
+  }
+
+  // Otherwise, find the follow record first
+  const records = await apiRequest<ListFollowRecordsResponse>(
+    `com.atproto.repo.listRecords?repo=${encodeURIComponent(session.did)}&collection=app.bsky.graph.follow&limit=100`
+  );
+
+  // Scan for the record (may need pagination for large follow lists)
+  let foundRkey: string | undefined;
+  let cursor = records?.cursor;
+
+  for (const record of records?.records || []) {
+    if (record.value.subject === did) {
+      foundRkey = record.uri.split('/').pop();
+      break;
+    }
+  }
+
+  // Continue paginating if not found
+  while (!foundRkey && cursor) {
+    const moreRecords = await apiRequest<ListFollowRecordsResponse>(
+      `com.atproto.repo.listRecords?repo=${encodeURIComponent(session.did)}&collection=app.bsky.graph.follow&limit=100&cursor=${encodeURIComponent(cursor)}`
+    );
+
+    for (const record of moreRecords?.records || []) {
+      if (record.value.subject === did) {
+        foundRkey = record.uri.split('/').pop();
+        break;
+      }
+    }
+    cursor = moreRecords?.cursor;
+  }
+
+  if (!foundRkey) {
+    console.log('[ErgoBlock] No follow record found for:', did);
+    return;
+  }
+
+  await apiRequest('com.atproto.repo.deleteRecord', 'POST', {
+    repo: session.did,
+    collection: 'app.bsky.graph.follow',
+    rkey: foundRkey,
+  });
+
+  console.log('[ErgoBlock] Unfollowed user:', did);
+}
+
+/**
+ * Get notifications (likes, reposts, follows, mentions, replies)
+ */
+export async function getNotifications(
+  limit = 50,
+  cursor?: string
+): Promise<ListNotificationsResponse> {
+  const session = getSession();
+  if (!session) throw new Error('Not logged in');
+
+  let endpoint = `app.bsky.notification.listNotifications?limit=${limit}`;
+  if (cursor) {
+    endpoint += `&cursor=${encodeURIComponent(cursor)}`;
+  }
+
+  const response = await apiRequest<ListNotificationsResponse>(endpoint);
+  return response || { notifications: [] };
+}
+
+/**
+ * Get posts the user has liked
+ * Used for engagement scoring (who you've engaged with)
+ */
+export async function getActorLikes(
+  actor: string,
+  limit = 50,
+  cursor?: string
+): Promise<GetActorLikesResponse> {
+  let endpoint = `app.bsky.feed.getActorLikes?actor=${encodeURIComponent(actor)}&limit=${limit}`;
+  if (cursor) {
+    endpoint += `&cursor=${encodeURIComponent(cursor)}`;
+  }
+
+  const response = await apiRequest<GetActorLikesResponse>(endpoint);
+  return response || { feed: [] };
 }

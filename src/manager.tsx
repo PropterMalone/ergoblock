@@ -37,6 +37,7 @@ import {
   tempUnblockTimers,
   setInteractions,
   setExpandedLoading,
+  setFindingContext,
 } from './signals/manager.js';
 import type { Interaction } from './types.js';
 import {
@@ -136,14 +137,26 @@ function ManagerApp(): JSX.Element {
   // Sync handler
   const handleSync = async () => {
     try {
+      // Immediately show syncing state
+      if (syncState.value) {
+        syncState.value = { ...syncState.value, syncInProgress: true };
+      }
       const response = await sendValidatedMessage({ type: 'SYNC_NOW' });
       if (response.success) {
         await loadData();
       } else {
+        // Reset sync state on failure
+        if (syncState.value) {
+          syncState.value = { ...syncState.value, syncInProgress: false };
+        }
         alert(`Sync failed: ${response.error}`);
       }
     } catch (error) {
       console.error('[Manager] Sync error:', error);
+      // Reset sync state on error
+      if (syncState.value) {
+        syncState.value = { ...syncState.value, syncInProgress: false };
+      }
       alert('Sync failed');
     }
   };
@@ -190,6 +203,7 @@ function ManagerApp(): JSX.Element {
 
   // Find context handler
   const handleFindContext = async (did: string, handle: string) => {
+    setFindingContext(did, true);
     try {
       const response = await sendValidatedMessage({
         type: 'FIND_CONTEXT',
@@ -209,6 +223,8 @@ function ManagerApp(): JSX.Element {
     } catch (error) {
       console.error('[Manager] Find context failed:', error);
       alert('Failed to search for context');
+    } finally {
+      setFindingContext(did, false);
     }
   };
 

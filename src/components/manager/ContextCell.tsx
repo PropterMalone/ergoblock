@@ -1,5 +1,5 @@
 import type { JSX } from 'preact';
-import { contextMap, tempUnblockTimers } from '../../signals/manager.js';
+import { contextMap, tempUnblockTimers, findingContext } from '../../signals/manager.js';
 import { postUriToUrl } from './utils.js';
 
 interface ContextCellProps {
@@ -10,6 +10,7 @@ interface ContextCellProps {
   onFindContext: (did: string, handle: string) => void;
   onViewPost: (did: string, handle: string, url: string) => void;
   onToggleExpand: () => void;
+  showExpandButton?: boolean;
 }
 
 export function ContextCell({
@@ -20,9 +21,11 @@ export function ContextCell({
   onFindContext,
   onViewPost,
   onToggleExpand,
+  showExpandButton = true,
 }: ContextCellProps): JSX.Element {
   const ctx = contextMap.value.get(did);
   const tempTimer = tempUnblockTimers.value.get(did);
+  const isFinding = findingContext.value.has(did);
 
   if (!ctx) {
     return (
@@ -33,16 +36,26 @@ export function ContextCell({
             <button
               class="context-btn find-context-btn"
               onClick={() => onFindContext(did, handle)}
+              disabled={isFinding}
             >
-              Find
+              {isFinding ? (
+                <>
+                  <span class="spinner" />
+                  Finding...
+                </>
+              ) : (
+                'Find'
+              )}
             </button>
-            <button
-              class={`context-btn expand-btn ${isExpanded ? 'expanded' : ''}`}
-              onClick={onToggleExpand}
-              title={isExpanded ? 'Collapse' : 'Show all interactions'}
-            >
-              {isExpanded ? '▼' : '▶'}
-            </button>
+            {showExpandButton && (
+              <button
+                class={`context-btn expand-btn ${isExpanded ? 'expanded' : ''}`}
+                onClick={onToggleExpand}
+                title={isExpanded ? 'Collapse' : 'Show all interactions'}
+              >
+                {isExpanded ? '▼' : '▶'}
+              </button>
+            )}
           </div>
         </div>
       </td>
@@ -81,13 +94,15 @@ export function ContextCell({
               </a>
             )
           )}
-          <button
-            class={`context-btn expand-btn ${isExpanded ? 'expanded' : ''}`}
-            onClick={onToggleExpand}
-            title={isExpanded ? 'Collapse' : 'Show all interactions'}
-          >
-            {isExpanded ? '▼' : '▶'}
-          </button>
+          {showExpandButton && (
+            <button
+              class={`context-btn expand-btn ${isExpanded ? 'expanded' : ''}`}
+              onClick={onToggleExpand}
+              title={isExpanded ? 'Collapse' : 'Show all interactions'}
+            >
+              {isExpanded ? '▼' : '▶'}
+            </button>
+          )}
         </div>
       </div>
     </td>

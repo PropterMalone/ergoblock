@@ -35,7 +35,6 @@ import {
   DidDocument,
   RawPostRecord,
   ListPostRecordsResponse,
-  SearchPostsResponse,
   SearchPostView,
   GetFollowsResponse,
   GetFollowersResponse,
@@ -47,7 +46,6 @@ import {
   FollowRelation,
   BlocklistConflictGroup,
   BlocklistConflict,
-  PostContext,
   Interaction,
 } from './types.js';
 
@@ -609,9 +607,6 @@ async function syncMutes(auth: AuthData): Promise<{ added: number; removed: numb
   return { added, removed };
 }
 
-// Rate limiting for guessed context lookups
-const GUESSED_CONTEXT_DELAY = 500; // ms between requests
-
 // PLC directory URL for resolving DIDs
 const PLC_DIRECTORY = 'https://plc.directory';
 
@@ -718,23 +713,6 @@ function isInteractionWithUser(
 }
 
 /**
- * Convert SearchPostView to FeedPost format
- */
-function searchPostToFeedPost(post: SearchPostView): FeedPost {
-  return {
-    uri: post.uri,
-    cid: post.cid,
-    author: { did: post.author.did, handle: post.author.handle },
-    record: {
-      text: post.record.text,
-      createdAt: post.record.createdAt,
-      reply: post.record.reply,
-      embed: post.record.embed,
-    },
-  };
-}
-
-/**
  * Check if a SearchPostView is an interaction with the logged-in user
  * (quote post or reply that the text search might have caught)
  */
@@ -767,262 +745,107 @@ export function isSearchPostInteraction(
 }
 
 /**
- * Fast context search using public Bluesky search API.
- * Uses unauthenticated requests to bypass block filtering.
- *
- * Searches for posts by the target user that mention the logged-in user.
- * Note: Quote posts don't use mentions, so we also do a text search and
- * filter results to find actual QTs.
- *
- * Runs all searches in parallel and returns the most recent result.
+ * Fetch a user's feed WITHOUT authentication.
+ * This bypasses block filtering since there's no "viewer" context.
+ * Faster than PDS direct fetch since it uses the AppView's indexed data.
  */
-async function findContextViaSearch(
+async function getAuthorFeedUnauthenticated(
+  actorDid: string,
+  limit = 100,
+  cursor?: string
+): Promise<{ feed: Array<{ post: FeedPost }>; cursor?: string }> {
+  const PUBLIC_API = 'https://public.api.bsky.app';
+  let endpoint = `${PUBLIC_API}/xrpc/app.bsky.feed.getAuthorFeed?actor=${encodeURIComponent(actorDid)}&limit=${limit}`;
+  if (cursor) {
+    endpoint += `&cursor=${encodeURIComponent(cursor)}`;
+  }
+
+  const response = await fetch(endpoint); // No Authorization header!
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error(
+      `[ErgoBlock BG] Unauthenticated getAuthorFeed failed: ${response.status} ${errorText}`
+    );
+    return { feed: [] };
+  }
+
+  return (await response.json()) as { feed: Array<{ post: FeedPost }>; cursor?: string };
+}
+
+/**
+ * Find context by fetching the target user's feed without authentication.
+ * This bypasses block filtering and is faster than PDS direct fetch.
+ *
+ * Scans their posts for interactions with the logged-in user:
+ * - Replies to logged-in user's posts
+ * - Quotes of logged-in user's posts
+ * - @mentions of logged-in user
+ */
+async function findContextViaAuthorFeed(
   targetDid: string,
   targetHandle: string,
   loggedInDid: string,
   loggedInHandle: string | undefined
 ): Promise<FeedPost | null> {
-  if (!loggedInHandle) {
-    console.log('[ErgoBlock BG] No logged-in handle for search');
-    return null;
-  }
-
-  const PUBLIC_API = 'https://public.api.bsky.app';
-
-  console.log(
-    `[ErgoBlock BG] Searching for context via public API: ${targetHandle} → @${loggedInHandle}`
-  );
+  console.log(`[ErgoBlock BG] Searching via unauthenticated getAuthorFeed for: ${targetHandle}`);
 
   try {
-    // Run all searches in parallel for speed
-    // Search both directions: their posts → you, and your posts → them
-    // Each search now returns an array of results for proper sorting
-    const [
-      mentionsResults,
-      repliesResults,
-      textResults,
-      reverseMentionsResults,
-      reverseRepliesResults,
-      reverseTextResults,
-    ] = await Promise.all([
-      // Search 1: Their posts that mention you
-      (async (): Promise<SearchPostView[]> => {
-        const query = encodeURIComponent(`from:${targetHandle}`);
-        const mentions = encodeURIComponent(loggedInHandle);
-        const endpoint = `${PUBLIC_API}/xrpc/app.bsky.feed.searchPosts?q=${query}&mentions=${mentions}&limit=10&sort=latest`;
+    // Fetch up to 200 posts (2 pages) to find an interaction
+    let cursor: string | undefined;
+    let totalChecked = 0;
+    const maxPosts = 200;
 
-        try {
-          const response = await fetch(endpoint);
-          if (!response.ok) {
-            console.debug(
-              `[ErgoBlock BG] Mentions search failed: ${response.status} ${response.statusText}`
-            );
-            return [];
-          }
+    while (totalChecked < maxPosts) {
+      const { feed, cursor: nextCursor } = await getAuthorFeedUnauthenticated(
+        targetDid,
+        100,
+        cursor
+      );
 
-          const data = (await response.json()) as SearchPostsResponse;
-          const posts = data.posts || [];
-          if (posts.length > 0) {
-            console.log(`[ErgoBlock BG] Mentions search found ${posts.length} results`);
-          }
-          return posts;
-        } catch (error) {
-          console.debug(`[ErgoBlock BG] Mentions search error:`, error);
-          return [];
+      if (feed.length === 0) {
+        break;
+      }
+
+      for (const { post } of feed) {
+        totalChecked++;
+
+        // Check if this is a reply to the logged-in user
+        const replyParent = post.record?.reply?.parent;
+        if (replyParent?.uri?.includes(loggedInDid)) {
+          console.log(`[ErgoBlock BG] Found reply to you: ${post.uri}`);
+          return post;
         }
-      })(),
 
-      // Search 2: Their replies to you
-      (async (): Promise<SearchPostView[]> => {
-        const query = encodeURIComponent(`from:${targetHandle} to:${loggedInHandle}`);
-        const endpoint = `${PUBLIC_API}/xrpc/app.bsky.feed.searchPosts?q=${query}&limit=10&sort=latest`;
-
-        try {
-          const response = await fetch(endpoint);
-          if (!response.ok) {
-            console.debug(
-              `[ErgoBlock BG] Replies search failed: ${response.status} ${response.statusText}`
-            );
-            return [];
-          }
-
-          const data = (await response.json()) as SearchPostsResponse;
-          const posts = data.posts || [];
-          if (posts.length > 0) {
-            console.log(`[ErgoBlock BG] Reply search found ${posts.length} results`);
-          }
-          return posts;
-        } catch (error) {
-          console.debug(`[ErgoBlock BG] Replies search error:`, error);
-          return [];
+        // Check if this is a quote of the logged-in user's post
+        const embed = post.record?.embed;
+        if (embed?.$type === 'app.bsky.embed.record' && embed.record?.uri?.includes(loggedInDid)) {
+          console.log(`[ErgoBlock BG] Found quote of your post: ${post.uri}`);
+          return post;
         }
-      })(),
 
-      // Search 3: Their posts containing your handle (for QTs)
-      (async (): Promise<SearchPostView[]> => {
-        const query = encodeURIComponent(`from:${targetHandle} ${loggedInHandle}`);
-        const endpoint = `${PUBLIC_API}/xrpc/app.bsky.feed.searchPosts?q=${query}&limit=25&sort=latest`;
-
-        try {
-          const response = await fetch(endpoint);
-          if (!response.ok) {
-            console.debug(
-              `[ErgoBlock BG] Text search failed: ${response.status} ${response.statusText}`
-            );
-            return [];
+        // Check for @mention in post text
+        if (loggedInHandle && post.record?.text) {
+          const text = post.record.text.toLowerCase();
+          if (text.includes(`@${loggedInHandle.toLowerCase()}`)) {
+            console.log(`[ErgoBlock BG] Found @mention of you: ${post.uri}`);
+            return post;
           }
-
-          const data = (await response.json()) as SearchPostsResponse;
-          // Filter to find actual interactions (QTs, replies, mentions)
-          const verified = (data.posts || []).filter((post) =>
-            isSearchPostInteraction(post, loggedInDid, loggedInHandle)
-          );
-          if (verified.length > 0) {
-            console.log(
-              `[ErgoBlock BG] Text search found ${verified.length} verified interactions`
-            );
-          }
-          return verified;
-        } catch (error) {
-          console.debug(`[ErgoBlock BG] Text search error:`, error);
-          return [];
-        }
-      })(),
-
-      // Search 4: YOUR posts that mention THEM (reverse direction)
-      (async (): Promise<SearchPostView[]> => {
-        const query = encodeURIComponent(`from:${loggedInHandle}`);
-        const mentions = encodeURIComponent(targetHandle);
-        const endpoint = `${PUBLIC_API}/xrpc/app.bsky.feed.searchPosts?q=${query}&mentions=${mentions}&limit=10&sort=latest`;
-
-        try {
-          const response = await fetch(endpoint);
-          if (!response.ok) {
-            console.debug(
-              `[ErgoBlock BG] Reverse mentions search failed: ${response.status} ${response.statusText}`
-            );
-            return [];
-          }
-
-          const data = (await response.json()) as SearchPostsResponse;
-          const posts = data.posts || [];
-          if (posts.length > 0) {
-            console.log(`[ErgoBlock BG] Reverse mentions search found ${posts.length} results`);
-          }
-          return posts;
-        } catch (error) {
-          console.debug(`[ErgoBlock BG] Reverse mentions search error:`, error);
-          return [];
-        }
-      })(),
-
-      // Search 5: YOUR replies to THEM (reverse direction)
-      (async (): Promise<SearchPostView[]> => {
-        const query = encodeURIComponent(`from:${loggedInHandle} to:${targetHandle}`);
-        const endpoint = `${PUBLIC_API}/xrpc/app.bsky.feed.searchPosts?q=${query}&limit=10&sort=latest`;
-
-        try {
-          const response = await fetch(endpoint);
-          if (!response.ok) {
-            console.debug(
-              `[ErgoBlock BG] Reverse replies search failed: ${response.status} ${response.statusText}`
-            );
-            return [];
-          }
-
-          const data = (await response.json()) as SearchPostsResponse;
-          const posts = data.posts || [];
-          if (posts.length > 0) {
-            console.log(`[ErgoBlock BG] Reverse reply search found ${posts.length} results`);
-          }
-          return posts;
-        } catch (error) {
-          console.debug(`[ErgoBlock BG] Reverse replies search error:`, error);
-          return [];
-        }
-      })(),
-
-      // Search 6: YOUR posts containing their handle (reverse QTs)
-      (async (): Promise<SearchPostView[]> => {
-        const query = encodeURIComponent(`from:${loggedInHandle} ${targetHandle}`);
-        const endpoint = `${PUBLIC_API}/xrpc/app.bsky.feed.searchPosts?q=${query}&limit=25&sort=latest`;
-
-        try {
-          const response = await fetch(endpoint);
-          if (!response.ok) {
-            console.debug(
-              `[ErgoBlock BG] Reverse text search failed: ${response.status} ${response.statusText}`
-            );
-            return [];
-          }
-
-          const data = (await response.json()) as SearchPostsResponse;
-          // Filter to find actual interactions (QTs, replies, mentions)
-          const verified = (data.posts || []).filter((post) =>
-            isSearchPostInteraction(post, targetDid, targetHandle)
-          );
-          if (verified.length > 0) {
-            console.log(
-              `[ErgoBlock BG] Reverse text search found ${verified.length} verified interactions`
-            );
-          }
-          return verified;
-        } catch (error) {
-          console.debug(`[ErgoBlock BG] Reverse text search error:`, error);
-          return [];
-        }
-      })(),
-    ]);
-
-    // Collect all found posts from both directions and dedupe by URI
-    const seenUris = new Set<string>();
-    const candidates: SearchPostView[] = [];
-
-    for (const results of [
-      mentionsResults,
-      repliesResults,
-      textResults,
-      reverseMentionsResults,
-      reverseRepliesResults,
-      reverseTextResults,
-    ]) {
-      for (const post of results) {
-        if (!seenUris.has(post.uri)) {
-          seenUris.add(post.uri);
-          candidates.push(post);
         }
       }
+
+      cursor = nextCursor;
+      if (!cursor) break;
+
+      // Small delay between pages
+      await new Promise((resolve) => setTimeout(resolve, 100));
     }
 
-    if (candidates.length === 0) {
-      console.log(`[ErgoBlock BG] No context found via search`);
-      return null;
-    }
-
-    // Sort by createdAt descending and return the most recent
-    candidates.sort((a, b) => {
-      const dateA = new Date(a.record.createdAt).getTime();
-      const dateB = new Date(b.record.createdAt).getTime();
-      return dateB - dateA;
-    });
-
-    const mostRecent = candidates[0];
     console.log(
-      `[ErgoBlock BG] Found ${candidates.length} candidates, returning most recent: ${mostRecent.uri} (${mostRecent.record.createdAt})`
+      `[ErgoBlock BG] No interaction found in ${totalChecked} posts from ${targetHandle}`
     );
-
-    // Log all candidates for debugging
-    if (candidates.length > 1) {
-      console.log('[ErgoBlock BG] All candidates by date:');
-      for (let i = 0; i < Math.min(candidates.length, 5); i++) {
-        const c = candidates[i];
-        console.log(`  ${i + 1}. ${c.record.createdAt}: "${c.record.text?.slice(0, 50)}..."`);
-      }
-    }
-
-    return searchPostToFeedPost(mostRecent);
+    return null;
   } catch (error) {
-    console.error('[ErgoBlock BG] Search API error:', error);
+    console.error(`[ErgoBlock BG] findContextViaAuthorFeed failed:`, error);
     return null;
   }
 }
@@ -1131,9 +954,7 @@ async function findBlockContextPost(
 
       for (const record of myPosts) {
         if (isInteractionWithUser(record, targetDid, targetHandle)) {
-          console.log(
-            `[ErgoBlock BG] Found context (my post) for ${targetDid}: ${record.uri}`
-          );
+          console.log(`[ErgoBlock BG] Found context (my post) for ${targetDid}: ${record.uri}`);
           return rawRecordToFeedPost(record, loggedInDid);
         }
       }
@@ -1164,7 +985,14 @@ async function findBlockContextPost(
 }
 
 /**
- * Find context for a blocked user - tries fast search first, then falls back to PDS.
+ * Find context for a blocked user.
+ *
+ * Strategy (in order):
+ * 1. Unauthenticated getAuthorFeed - fast, bypasses block filtering
+ * 2. PDS direct fetch - slower but comprehensive, also bypasses blocks
+ *
+ * Note: Public search API is NOT used because it respects block filtering
+ * and won't return posts from users you've blocked.
  */
 async function findContextWithFallback(
   targetDid: string,
@@ -1173,177 +1001,21 @@ async function findContextWithFallback(
   loggedInHandle: string | undefined,
   exhaustive = false
 ): Promise<InteractionResult> {
-  // Try fast search API first (unauthenticated, bypasses blocks)
-  const searchResult = await findContextViaSearch(
+  // Try unauthenticated getAuthorFeed first - fast and bypasses block filtering
+  const feedResult = await findContextViaAuthorFeed(
     targetDid,
     targetHandle,
     loggedInDid,
     loggedInHandle
   );
-  if (searchResult) {
-    return { post: searchResult, blockedBy: false };
+  if (feedResult) {
+    return { post: feedResult, blockedBy: false };
   }
 
-  // Fall back to PDS pagination if search didn't find anything
-  console.log(`[ErgoBlock BG] Search didn't find context, trying PDS for ${targetHandle}`);
+  // Fall back to PDS direct fetch if getAuthorFeed didn't find anything
+  // This searches raw records which definitely bypasses all filtering
+  console.log(`[ErgoBlock BG] getAuthorFeed didn't find context, trying PDS for ${targetHandle}`);
   return findBlockContextPost(targetDid, targetHandle, loggedInDid, loggedInHandle, exhaustive);
-}
-
-/**
- * Generate context for newly imported blocks during sync.
- * Uses PDS-based fetch to find most recent interaction.
- * Always searches for new context and compares with existing - keeps the newer one.
- */
-async function generateContextForNewBlocks(
-  newBlocks: Array<{ did: string; handle: string }>,
-  loggedInDid: string,
-  loggedInHandle: string | undefined
-): Promise<number> {
-  if (newBlocks.length === 0) return 0;
-
-  const existingContexts = await getPostContexts();
-  // Build a map of DID -> most recent context for comparison
-  const existingContextMap = new Map<string, PostContext>();
-  for (const ctx of existingContexts) {
-    const existing = existingContextMap.get(ctx.targetDid);
-    if (!existing || (ctx.postCreatedAt || 0) > (existing.postCreatedAt || 0)) {
-      existingContextMap.set(ctx.targetDid, ctx);
-    }
-  }
-
-  let generated = 0;
-
-  for (const block of newBlocks) {
-    try {
-      const result = await findContextWithFallback(
-        block.did,
-        block.handle,
-        loggedInDid,
-        loggedInHandle
-      );
-
-      if (result.post) {
-        const newPostCreatedAt = new Date(result.post.record.createdAt).getTime();
-        const existingContext = existingContextMap.get(block.did);
-
-        // Only add if no existing context OR new interaction is more recent
-        if (!existingContext || newPostCreatedAt > (existingContext.postCreatedAt || 0)) {
-          await addPostContext({
-            id: `guessed_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-            postUri: result.post.uri,
-            postAuthorDid: result.post.author.did,
-            postAuthorHandle: result.post.author.handle || block.handle,
-            postText: result.post.record.text,
-            postCreatedAt: newPostCreatedAt,
-            targetHandle: block.handle,
-            targetDid: block.did,
-            actionType: 'block',
-            permanent: true,
-            timestamp: Date.now(),
-            guessed: true,
-          });
-          generated++;
-          if (existingContext) {
-            console.log(
-              `[ErgoBlock BG] Updated context for ${block.handle} (newer interaction found)`
-            );
-          } else {
-            console.log(`[ErgoBlock BG] Generated context for new block: ${block.handle}`);
-          }
-        } else {
-          console.log(
-            `[ErgoBlock BG] Keeping existing context for ${block.handle} (already have newer)`
-          );
-        }
-      }
-
-      // Rate limit
-      await sleep(GUESSED_CONTEXT_DELAY);
-    } catch (error) {
-      console.debug(`[ErgoBlock BG] Could not find interaction for ${block.handle}:`, error);
-    }
-  }
-
-  return generated;
-}
-/**
- * Refresh auto-detected contexts for existing blocks.
- * Checks if there are newer interactions than what we have stored.
- * Only refreshes contexts that were auto-detected (guessed: true), not manually captured.
- */
-async function refreshGuessedContexts(
-  currentBlocks: Record<string, { did: string; handle: string }>,
-  loggedInDid: string,
-  loggedInHandle: string | undefined
-): Promise<number> {
-  const existingContexts = await getPostContexts();
-
-  // Find blocks with guessed contexts that might need refreshing
-  const guessedContextMap = new Map<string, PostContext>();
-  for (const ctx of existingContexts) {
-    if (ctx.guessed) {
-      const existing = guessedContextMap.get(ctx.targetDid);
-      if (!existing || (ctx.postCreatedAt || 0) > (existing.postCreatedAt || 0)) {
-        guessedContextMap.set(ctx.targetDid, ctx);
-      }
-    }
-  }
-
-  // Get blocks that have guessed contexts to refresh
-  const blocksToRefresh: Array<{ did: string; handle: string; existingContext: PostContext }> = [];
-  for (const [did, block] of Object.entries(currentBlocks)) {
-    const guessedCtx = guessedContextMap.get(did);
-    if (guessedCtx) {
-      blocksToRefresh.push({ did, handle: block.handle, existingContext: guessedCtx });
-    }
-  }
-
-  if (blocksToRefresh.length === 0) {
-    return 0;
-  }
-
-  console.log(`[ErgoBlock BG] Refreshing ${blocksToRefresh.length} auto-detected contexts...`);
-
-  let refreshed = 0;
-
-  for (const { did, handle, existingContext } of blocksToRefresh) {
-    try {
-      const result = await findContextWithFallback(did, handle, loggedInDid, loggedInHandle);
-
-      if (result.post) {
-        const newPostCreatedAt = new Date(result.post.record.createdAt).getTime();
-
-        // Only update if new interaction is more recent
-        if (newPostCreatedAt > (existingContext.postCreatedAt || 0)) {
-          await addPostContext({
-            id: `guessed_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-            postUri: result.post.uri,
-            postAuthorDid: result.post.author.did,
-            postAuthorHandle: result.post.author.handle || handle,
-            postText: result.post.record.text,
-            postCreatedAt: newPostCreatedAt,
-            targetHandle: handle,
-            targetDid: did,
-            actionType: 'block',
-            permanent: true,
-            timestamp: Date.now(),
-            guessed: true,
-          });
-          refreshed++;
-          console.log(
-            `[ErgoBlock BG] Refreshed context for ${handle} (found newer: ${result.post.record.createdAt})`
-          );
-        }
-      }
-
-      // Rate limit
-      await sleep(GUESSED_CONTEXT_DELAY);
-    } catch (error) {
-      console.debug(`[ErgoBlock BG] Could not refresh context for ${handle}:`, error);
-    }
-  }
-
-  return refreshed;
 }
 
 /**
@@ -1380,7 +1052,6 @@ export async function performFullSync(): Promise<{
   error?: string;
   blocks?: { added: number; removed: number };
   mutes?: { added: number; removed: number };
-  guessedContexts?: number;
 }> {
   // Use atomic in-memory lock to prevent concurrent syncs (no TOCTOU race)
   if (syncLockActive) {
@@ -1420,25 +1091,10 @@ export async function performFullSync(): Promise<{
     if (muteSettled.status === 'rejected') {
       console.error('[ErgoBlock BG] Mute sync failed:', muteSettled.reason);
     }
-    // Generate context for newly imported blocks and refresh existing guessed contexts
-    let guessedContexts = 0;
-    let refreshedContexts = 0;
-    const loggedInHandle = await getLoggedInHandle(auth);
 
-    if (blockResult.newBlocks.length > 0) {
-      console.log(
-        `[ErgoBlock BG] Generating context for ${blockResult.newBlocks.length} new blocks...`
-      );
-      guessedContexts = await generateContextForNewBlocks(
-        blockResult.newBlocks,
-        auth.did,
-        loggedInHandle
-      );
-    }
-
-    // Refresh auto-detected contexts for existing blocks (check for newer interactions)
-    const currentBlocks = await getPermanentBlocks();
-    refreshedContexts = await refreshGuessedContexts(currentBlocks, auth.did, loggedInHandle);
+    // NOTE: Context searching is now on-demand only.
+    // Users can search for context via the "Find" button in All Blocks or through Amnesty.
+    // This keeps sync fast - we only fetch block/mute lists, not search for interactions.
 
     await updateSyncState({
       syncInProgress: false,
@@ -1453,8 +1109,6 @@ export async function performFullSync(): Promise<{
     console.log('[ErgoBlock BG] Sync complete:', {
       blocks: { added: blockResult.added, removed: blockResult.removed },
       mutes: muteResult,
-      guessedContexts,
-      refreshedContexts,
     });
 
     await updateBadge();
@@ -1463,7 +1117,6 @@ export async function performFullSync(): Promise<{
       success: blockSettled.status === 'fulfilled' && muteSettled.status === 'fulfilled',
       blocks: { added: blockResult.added, removed: blockResult.removed },
       mutes: muteResult,
-      guessedContexts,
       error:
         blockSettled.status === 'rejected' || muteSettled.status === 'rejected'
           ? 'Partial sync failure - check console for details'
@@ -2082,7 +1735,7 @@ interface ExtensionMessage {
   listUri?: string;
 }
 
-type MessageResponse = { success: boolean; error?: string };
+type MessageResponse = { success: boolean; error?: string; [key: string]: unknown };
 
 /**
  * Handle unblock request from popup
@@ -2295,7 +1948,9 @@ async function getMyPosts(loggedInDid: string): Promise<RawPostRecord[]> {
     myPostsCache.did === loggedInDid &&
     Date.now() - myPostsCache.fetchedAt < MY_POSTS_CACHE_TTL
   ) {
-    console.log(`[ErgoBlock BG] Using cached posts for logged-in user (${myPostsCache.posts.length} posts)`);
+    console.log(
+      `[ErgoBlock BG] Using cached posts for logged-in user (${myPostsCache.posts.length} posts)`
+    );
     return myPostsCache.posts;
   }
 
@@ -2419,7 +2074,9 @@ async function findAllInteractions(
       }
     }
 
-    console.log(`[ErgoBlock BG] ${targetHandle}: searched ${totalPosts} posts, found ${foundCount} interactions`);
+    console.log(
+      `[ErgoBlock BG] ${targetHandle}: searched ${totalPosts} posts, found ${foundCount} interactions`
+    );
   };
 
   // Search cached logged-in user posts
@@ -2443,7 +2100,9 @@ async function findAllInteractions(
       }
     }
 
-    console.log(`[ErgoBlock BG] ${loggedInHandle || 'you'}: searched ${myPosts.length} cached posts, found ${foundCount} interactions`);
+    console.log(
+      `[ErgoBlock BG] ${loggedInHandle || 'you'}: searched ${myPosts.length} cached posts, found ${foundCount} interactions`
+    );
   };
 
   try {
@@ -2480,7 +2139,9 @@ async function handleFetchAllInteractions(
       `[ErgoBlock BG] FETCH_ALL_INTERACTIONS: ${handle} (${did}) <-> ${loggedInHandle} (${auth.did})`
     );
     const interactions = await findAllInteractions(did, handle, auth.did, loggedInHandle);
-    console.log(`[ErgoBlock BG] FETCH_ALL_INTERACTIONS: Returning ${interactions.length} interactions`);
+    console.log(
+      `[ErgoBlock BG] FETCH_ALL_INTERACTIONS: Returning ${interactions.length} interactions`
+    );
 
     return { success: true, interactions };
   } catch (error) {
@@ -2580,3 +2241,9 @@ browser.runtime.onStartup.addListener(() => {
   setupSyncAlarm();
   updateBadge();
 });
+
+// Also set up on script load (for when background restarts)
+clearStaleSyncState();
+setupAlarm();
+setupSyncAlarm();
+updateBadge();

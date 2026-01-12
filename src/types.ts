@@ -299,6 +299,15 @@ export interface RawPostRecord {
     createdAt: string;
     reply?: { parent: { uri: string }; root?: { uri: string } };
     embed?: { $type: string; record?: { uri: string } };
+    facets?: Array<{
+      index: { byteStart: number; byteEnd: number };
+      features: Array<{
+        $type: string;
+        did?: string;
+        uri?: string;
+        tag?: string;
+      }>;
+    }>;
   };
 }
 
@@ -504,4 +513,92 @@ export interface GetListResponse {
 export interface ListItemView {
   uri: string;
   subject: ProfileView;
+}
+
+// ============================================================================
+// Starter Pack Tools Types
+// ============================================================================
+
+/**
+ * Follow record from PDS with creation timestamp
+ */
+export interface FollowRecord {
+  uri: string;
+  cid: string;
+  value: {
+    $type: 'app.bsky.graph.follow';
+    subject: string; // DID of followed user
+    createdAt: string; // ISO timestamp
+  };
+}
+
+/**
+ * Response from listing follow records
+ */
+export interface ListFollowRecordsResponse {
+  records: FollowRecord[];
+  cursor?: string;
+}
+
+/**
+ * Notification types from Bluesky
+ */
+export type NotificationReason = 'like' | 'repost' | 'follow' | 'mention' | 'reply' | 'quote';
+
+/**
+ * Notification from Bluesky
+ */
+export interface Notification {
+  uri: string;
+  cid: string;
+  author: ProfileView;
+  reason: NotificationReason;
+  reasonSubject?: string; // URI of the subject (post that was liked, etc.)
+  record: unknown;
+  isRead: boolean;
+  indexedAt: string;
+}
+
+/**
+ * Response from listing notifications
+ */
+export interface ListNotificationsResponse {
+  notifications: Notification[];
+  cursor?: string;
+  seenAt?: string;
+}
+
+/**
+ * Like record for tracking user's likes
+ */
+export interface LikeRecord {
+  uri: string;
+  cid: string;
+  value: {
+    $type: 'app.bsky.feed.like';
+    subject: {
+      uri: string;
+      cid: string;
+    };
+    createdAt: string;
+  };
+}
+
+/**
+ * Response from getting actor's likes
+ */
+export interface GetActorLikesResponse {
+  feed: Array<{
+    post: {
+      uri: string;
+      cid: string;
+      author: ProfileView;
+      record: {
+        text: string;
+        createdAt: string;
+      };
+      indexedAt: string;
+    };
+  }>;
+  cursor?: string;
 }

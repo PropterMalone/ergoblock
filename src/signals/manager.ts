@@ -48,7 +48,12 @@ export const blocklistAuditState = signal<BlocklistAuditState | null>(null);
 export const blocklistConflicts = signal<BlocklistConflictGroup[]>([]);
 
 // UI state
-export type TabType = 'blocks' | 'mutes' | 'history' | 'amnesty' | 'blocklist-audit';
+export type TabType =
+  | 'blocks'
+  | 'mutes'
+  | 'history'
+  | 'amnesty'
+  | 'blocklist-audit';
 export type SortColumn = 'user' | 'source' | 'status' | 'amnesty' | 'expires' | 'date';
 export type SortDirection = 'asc' | 'desc';
 
@@ -64,6 +69,19 @@ export const loading = signal(true);
 export const tempUnblockTimers = signal<Map<string, { timerId: number; expiresAt: number }>>(
   new Map()
 );
+
+// Find context loading state
+export const findingContext = signal<Set<string>>(new Set());
+
+export function setFindingContext(did: string, loading: boolean): void {
+  const newSet = new Set(findingContext.value);
+  if (loading) {
+    newSet.add(did);
+  } else {
+    newSet.delete(did);
+  }
+  findingContext.value = newSet;
+}
 
 // Expanded row state for viewing all interactions
 export const expandedRows = signal<Set<string>>(new Set());

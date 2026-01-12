@@ -12,6 +12,7 @@ import {
   toggleSelection,
   amnestyStatusMap,
   expandedRows,
+  expandedInteractions,
   toggleExpanded,
 } from '../../signals/manager.js';
 import { filterAndSort, formatTimeRemaining, formatDate } from './utils.js';
@@ -90,6 +91,7 @@ export function BlocksTable({
           const isSelected = selectedItems.value.has(block.did);
           const amnestyStatus = amnestyStatusMap.value.get(block.did);
           const isExpanded = expandedRows.value.has(block.did);
+          const hasInteractions = (expandedInteractions.value.get(block.did)?.length ?? 0) > 0;
 
           return (
             <Fragment key={block.did}>
@@ -114,6 +116,7 @@ export function BlocksTable({
                   onFindContext={onFindContext}
                   onViewPost={onViewPost}
                   onToggleExpand={() => toggleExpanded(block.did)}
+                  showExpandButton={hasInteractions}
                 />
                 <td>
                   <span class={`badge ${isTemp ? 'badge-temp' : 'badge-permanent'}`}>
