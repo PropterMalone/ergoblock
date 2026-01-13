@@ -56,7 +56,7 @@ async function build() {
       entryPoints,
       bundle: true,
       format: 'esm',
-      target: 'es2020',
+      target: 'es2022', // Needed for top-level await in @atcute dependencies
       outdir: 'dist',
       outExtension: { '.js': '.js' },
       sourcemap: process.env.NODE_ENV === 'development',

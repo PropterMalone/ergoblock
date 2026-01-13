@@ -34,7 +34,6 @@ import {
   FeedPost,
   DidDocument,
   RawPostRecord,
-  ListPostRecordsResponse,
   SearchPostView,
   GetFollowsResponse,
   GetFollowersResponse,
@@ -48,6 +47,7 @@ import {
   BlocklistConflict,
   Interaction,
 } from './types.js';
+import { fetchAndParseRepo, ParsedPost } from './carRepo.js';
 
 const ALARM_NAME = 'checkExpirations';
 const SYNC_ALARM_NAME = 'syncWithBluesky';
@@ -671,6 +671,24 @@ function rawRecordToFeedPost(record: RawPostRecord, targetDid: string): FeedPost
 }
 
 /**
+ * Convert a ParsedPost from CAR file to RawPostRecord format
+ * for compatibility with existing isInteractionWithUser logic
+ */
+function parsedPostToRawRecord(post: ParsedPost, _authorDid: string): RawPostRecord {
+  return {
+    uri: post.uri,
+    cid: post.cid,
+    value: {
+      $type: 'app.bsky.feed.post',
+      text: post.text,
+      createdAt: post.createdAt,
+      reply: post.reply,
+      embed: post.embed,
+    },
+  };
+}
+
+/**
  * Result of searching for interaction with a user
  */
 interface InteractionResult {
@@ -869,85 +887,34 @@ async function findBlockContextPost(
   targetHandle: string | undefined,
   loggedInDid: string,
   loggedInHandle: string | undefined,
-  exhaustive = false
+  _exhaustive = false // No longer needed - CAR downloads entire repo
 ): Promise<InteractionResult> {
-  // For exhaustive search, we paginate through all posts looking for an interaction
-  // For normal search, we limit to 500 posts (5 pages) for performance
-  // 500 posts covers more history for blocks made on mobile and synced later
-  const maxPages = exhaustive ? 1000 : 5; // 5 pages = 500 posts
-  const pageSize = 100;
-
-  // Search their posts
+  // Search their posts using CAR file download
   const searchTheirPosts = async (): Promise<FeedPost | null> => {
     const pdsUrl = await resolvePdsUrl(targetDid);
-    if (!pdsUrl) {
-      console.log(`[ErgoBlock BG] Could not resolve PDS URL for ${targetDid}`);
-      return null;
-    }
-
-    let cursor: string | undefined;
-    let pageCount = 0;
-    let totalPostsSearched = 0;
 
     try {
-      while (pageCount < maxPages) {
-        let endpoint = `${pdsUrl}/xrpc/com.atproto.repo.listRecords?repo=${encodeURIComponent(targetDid)}&collection=app.bsky.feed.post&limit=${pageSize}`;
-        if (cursor) {
-          endpoint += `&cursor=${encodeURIComponent(cursor)}`;
+      console.log(`[ErgoBlock BG] Fetching CAR for ${targetDid}...`);
+      const repoData = await fetchAndParseRepo(targetDid, pdsUrl);
+      console.log(`[ErgoBlock BG] Searching ${repoData.posts.length} posts for ${targetDid}`);
+
+      for (const post of repoData.posts) {
+        const record = parsedPostToRawRecord(post, targetDid);
+        if (isInteractionWithUser(record, loggedInDid, loggedInHandle)) {
+          console.log(`[ErgoBlock BG] Found context (their post) for ${targetDid}: ${post.uri}`);
+          return rawRecordToFeedPost(record, targetDid);
         }
-
-        if (pageCount === 0 || (exhaustive && pageCount % 10 === 0)) {
-          console.log(
-            `[ErgoBlock BG] Searching their posts for ${targetDid}` +
-              (exhaustive ? ` (exhaustive, page ${pageCount + 1})` : '')
-          );
-        }
-
-        const response = await fetch(endpoint);
-        if (!response.ok) {
-          const errorText = await response.text();
-          console.error(`[ErgoBlock BG] PDS fetch failed: ${response.status} ${errorText}`);
-          break;
-        }
-
-        const data = (await response.json()) as ListPostRecordsResponse;
-        const records = data.records || [];
-        pageCount++;
-        totalPostsSearched += records.length;
-
-        if (records.length === 0) {
-          break;
-        }
-
-        // Check each post for interaction
-        for (const record of records) {
-          if (isInteractionWithUser(record, loggedInDid, loggedInHandle)) {
-            console.log(
-              `[ErgoBlock BG] Found context (their post) for ${targetDid}: ${record.uri}` +
-                ` (searched ${totalPostsSearched} posts)`
-            );
-            return rawRecordToFeedPost(record, targetDid);
-          }
-        }
-
-        cursor = data.cursor;
-        if (!cursor) break;
-
-        await new Promise((resolve) => setTimeout(resolve, exhaustive ? 100 : 200));
       }
 
-      console.log(
-        `[ErgoBlock BG] No interactions in their posts for ${targetDid}` +
-          ` (searched ${totalPostsSearched} posts)`
-      );
+      console.log(`[ErgoBlock BG] No interactions in their posts for ${targetDid}`);
       return null;
     } catch (error) {
-      console.error(`[ErgoBlock BG] Error searching their posts for ${targetDid}:`, error);
+      console.error(`[ErgoBlock BG] CAR fetch failed for ${targetDid}:`, error);
       return null;
     }
   };
 
-  // Search my posts (using cache)
+  // Search my posts (using cached CAR data)
   const searchMyPosts = async (): Promise<FeedPost | null> => {
     try {
       const myPosts = await getMyPosts(loggedInDid);
@@ -988,8 +955,8 @@ async function findBlockContextPost(
  * Find context for a blocked user.
  *
  * Strategy (in order):
- * 1. Unauthenticated getAuthorFeed - fast, bypasses block filtering
- * 2. PDS direct fetch - slower but comprehensive, also bypasses blocks
+ * 1. CAR file download - comprehensive, searches entire post history
+ * 2. Unauthenticated getAuthorFeed - fallback for very recent posts (CAR may lag)
  *
  * Note: Public search API is NOT used because it respects block filtering
  * and won't return posts from users you've blocked.
@@ -999,9 +966,22 @@ async function findContextWithFallback(
   targetHandle: string,
   loggedInDid: string,
   loggedInHandle: string | undefined,
-  exhaustive = false
+  _exhaustive = false // No longer needed - CAR is always comprehensive
 ): Promise<InteractionResult> {
-  // Try unauthenticated getAuthorFeed first - fast and bypasses block filtering
+  // Try CAR-based search first - comprehensive, searches entire repo
+  const carResult = await findBlockContextPost(
+    targetDid,
+    targetHandle,
+    loggedInDid,
+    loggedInHandle
+  );
+  if (carResult.post) {
+    return carResult;
+  }
+
+  // Fall back to unauthenticated feed API for very recent posts
+  // (CAR files may have slight propagation delay)
+  console.log(`[ErgoBlock BG] CAR didn't find context, trying feed API for ${targetHandle}`);
   const feedResult = await findContextViaAuthorFeed(
     targetDid,
     targetHandle,
@@ -1012,10 +992,7 @@ async function findContextWithFallback(
     return { post: feedResult, blockedBy: false };
   }
 
-  // Fall back to PDS direct fetch if getAuthorFeed didn't find anything
-  // This searches raw records which definitely bypasses all filtering
-  console.log(`[ErgoBlock BG] getAuthorFeed didn't find context, trying PDS for ${targetHandle}`);
-  return findBlockContextPost(targetDid, targetHandle, loggedInDid, loggedInHandle, exhaustive);
+  return { post: null, blockedBy: false };
 }
 
 /**
@@ -1939,7 +1916,8 @@ let myPostsCache: { did: string; posts: RawPostRecord[]; fetchedAt: number } | n
 const MY_POSTS_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
 /**
- * Fetch and cache the logged-in user's recent posts
+ * Fetch and cache the logged-in user's posts using CAR file download.
+ * Downloads entire repository in a single request for comprehensive search.
  */
 async function getMyPosts(loggedInDid: string): Promise<RawPostRecord[]> {
   // Return cached if valid
@@ -1954,51 +1932,25 @@ async function getMyPosts(loggedInDid: string): Promise<RawPostRecord[]> {
     return myPostsCache.posts;
   }
 
-  console.log('[ErgoBlock BG] Fetching logged-in user posts...');
+  console.log('[ErgoBlock BG] Fetching logged-in user posts via CAR...');
   const pdsUrl = await resolvePdsUrl(loggedInDid);
-  if (!pdsUrl) {
-    console.log('[ErgoBlock BG] Could not resolve PDS for logged-in user');
+
+  try {
+    const repoData = await fetchAndParseRepo(loggedInDid, pdsUrl);
+    const posts = repoData.posts.map((post) => parsedPostToRawRecord(post, loggedInDid));
+
+    console.log(`[ErgoBlock BG] Cached ${posts.length} posts for logged-in user (via CAR)`);
+    myPostsCache = { did: loggedInDid, posts, fetchedAt: repoData.fetchedAt };
+    return posts;
+  } catch (error) {
+    console.error('[ErgoBlock BG] CAR fetch failed for logged-in user:', error);
     return [];
   }
-
-  const posts: RawPostRecord[] = [];
-  const maxPages = 5;
-  const pageSize = 100;
-  let cursor: string | undefined;
-  let pageCount = 0;
-
-  while (pageCount < maxPages) {
-    let endpoint = `${pdsUrl}/xrpc/com.atproto.repo.listRecords?repo=${encodeURIComponent(loggedInDid)}&collection=app.bsky.feed.post&limit=${pageSize}`;
-    if (cursor) {
-      endpoint += `&cursor=${encodeURIComponent(cursor)}`;
-    }
-
-    try {
-      const response = await fetch(endpoint);
-      if (!response.ok) break;
-
-      const data = (await response.json()) as ListPostRecordsResponse;
-      const records = data.records || [];
-      posts.push(...records);
-      pageCount++;
-
-      cursor = data.cursor;
-      if (!cursor || records.length === 0) break;
-
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    } catch {
-      break;
-    }
-  }
-
-  console.log(`[ErgoBlock BG] Cached ${posts.length} posts for logged-in user`);
-  myPostsCache = { did: loggedInDid, posts, fetchedAt: Date.now() };
-  return posts;
 }
 
 /**
  * Find all interactions between logged-in user and target user.
- * Uses PDS pagination to fetch posts directly (bypasses search API).
+ * Uses CAR file download to fetch entire post history efficiently.
  * Caches logged-in user's posts for efficiency across multiple lookups.
  */
 async function findAllInteractions(
@@ -2008,78 +1960,47 @@ async function findAllInteractions(
   loggedInHandle: string | undefined
 ): Promise<Interaction[]> {
   console.log(
-    `[ErgoBlock BG] Finding all interactions via PDS: ${targetHandle} <-> ${loggedInHandle || loggedInDid}`
+    `[ErgoBlock BG] Finding all interactions via CAR: ${targetHandle} <-> ${loggedInHandle || loggedInDid}`
   );
 
   const interactions: Interaction[] = [];
   const seenUris = new Set<string>();
-  const maxPages = 5;
-  const pageSize = 100;
 
-  // Fetch target user's posts (always fresh)
+  // Fetch target user's posts using CAR file
   const fetchTargetPosts = async (): Promise<void> => {
     const pdsUrl = await resolvePdsUrl(targetDid);
-    if (!pdsUrl) {
-      console.log(`[ErgoBlock BG] Could not resolve PDS for ${targetHandle}`);
-      return;
-    }
 
-    let cursor: string | undefined;
-    let pageCount = 0;
-    let totalPosts = 0;
-    let foundCount = 0;
+    try {
+      console.log(`[ErgoBlock BG] Fetching CAR for ${targetHandle}...`);
+      const repoData = await fetchAndParseRepo(targetDid, pdsUrl);
+      let foundCount = 0;
 
-    while (pageCount < maxPages) {
-      let endpoint = `${pdsUrl}/xrpc/com.atproto.repo.listRecords?repo=${encodeURIComponent(targetDid)}&collection=app.bsky.feed.post&limit=${pageSize}`;
-      if (cursor) {
-        endpoint += `&cursor=${encodeURIComponent(cursor)}`;
+      for (const post of repoData.posts) {
+        if (seenUris.has(post.uri)) continue;
+        const record = parsedPostToRawRecord(post, targetDid);
+        if (isInteractionWithUser(record, loggedInDid, loggedInHandle)) {
+          seenUris.add(post.uri);
+          foundCount++;
+          interactions.push({
+            uri: post.uri,
+            text: post.text.slice(0, 300),
+            createdAt: new Date(post.createdAt).getTime(),
+            type: classifyRawInteractionType(record, loggedInDid),
+            author: 'them',
+            authorHandle: targetHandle,
+          });
+        }
       }
 
-      try {
-        const response = await fetch(endpoint);
-        if (!response.ok) {
-          console.log(`[ErgoBlock BG] PDS fetch for ${targetHandle}: HTTP ${response.status}`);
-          break;
-        }
-
-        const data = (await response.json()) as ListPostRecordsResponse;
-        const records = data.records || [];
-        pageCount++;
-        totalPosts += records.length;
-
-        if (records.length === 0) break;
-
-        for (const record of records) {
-          if (seenUris.has(record.uri)) continue;
-          if (isInteractionWithUser(record, loggedInDid, loggedInHandle)) {
-            seenUris.add(record.uri);
-            foundCount++;
-            interactions.push({
-              uri: record.uri,
-              text: record.value.text.slice(0, 300),
-              createdAt: new Date(record.value.createdAt).getTime(),
-              type: classifyRawInteractionType(record, loggedInDid),
-              author: 'them',
-              authorHandle: targetHandle,
-            });
-          }
-        }
-
-        cursor = data.cursor;
-        if (!cursor) break;
-        await new Promise((resolve) => setTimeout(resolve, 50));
-      } catch (err) {
-        console.log(`[ErgoBlock BG] PDS fetch error for ${targetHandle}: ${err}`);
-        break;
-      }
+      console.log(
+        `[ErgoBlock BG] ${targetHandle}: searched ${repoData.posts.length} posts, found ${foundCount} interactions`
+      );
+    } catch (error) {
+      console.error(`[ErgoBlock BG] CAR fetch failed for ${targetHandle}:`, error);
     }
-
-    console.log(
-      `[ErgoBlock BG] ${targetHandle}: searched ${totalPosts} posts, found ${foundCount} interactions`
-    );
   };
 
-  // Search cached logged-in user posts
+  // Search cached logged-in user posts (already using CAR via getMyPosts)
   const searchMyPosts = async (): Promise<void> => {
     const myPosts = await getMyPosts(loggedInDid);
     let foundCount = 0;

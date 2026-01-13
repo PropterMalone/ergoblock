@@ -49,6 +49,9 @@
     ]
   },
   "dependencies": {
+    "@atcute/car": "^5.0.0",
+    "@atcute/cbor": "^2.2.8",
+    "@atcute/repo": "^0.1.1",
     "@preact/signals": "^2.5.1",
     "lucide-preact": "^0.562.0",
     "open-props": "^1.7.17",
