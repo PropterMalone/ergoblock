@@ -9,30 +9,20 @@
       "strict_min_version": "109.0"
     }
   },
-  "permissions": [
-    "storage",
-    "alarms",
-    "notifications"
-  ],
+  "permissions": ["storage", "alarms", "notifications"],
   "host_permissions": [
     "https://*.bsky.app/*",
     "https://*.bsky.social/*",
     "https://*.bsky.network/*"
   ],
   "background": {
-    "scripts": [
-      "background.js"
-    ],
+    "scripts": ["background.js"],
     "type": "module"
   },
   "content_scripts": [
     {
-      "matches": [
-        "https://bsky.app/*"
-      ],
-      "js": [
-        "content.js"
-      ],
+      "matches": ["https://bsky.app/*"],
+      "js": ["content.js"],
       "run_at": "document_idle"
     }
   ],

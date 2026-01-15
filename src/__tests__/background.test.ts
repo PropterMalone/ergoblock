@@ -15,6 +15,13 @@ vi.mock('../storage.js', () => ({
     .mockResolvedValue({ showBadgeCount: true, notificationsEnabled: true, checkInterval: 1 }),
   addHistoryEntry: vi.fn().mockResolvedValue(undefined),
   cleanupExpiredPostContexts: vi.fn().mockResolvedValue(undefined),
+  getSyncState: vi
+    .fn()
+    .mockResolvedValue({ syncInProgress: false, lastBlockSync: 0, lastMuteSync: 0 }),
+  updateSyncState: vi.fn().mockResolvedValue(undefined),
+  getPostContexts: vi.fn().mockResolvedValue([]),
+  getBlocklistAuditState: vi.fn().mockResolvedValue({ syncInProgress: false, lastSyncAt: 0 }),
+  updateBlocklistAuditState: vi.fn().mockResolvedValue(undefined),
 }));
 
 describe('Background Service Worker', () => {
