@@ -21,6 +21,10 @@ let filteredHandles: Set<string> = new Set();
 let feedObserver: MutationObserver | null = null;
 let isObserving = false;
 
+// Retry tracking for startObserving
+let observerRetryCount = 0;
+const MAX_OBSERVER_RETRIES = 10; // Stop trying after 10 retries (10 seconds total)
+
 /**
  * Load filtered handles from storage into memory cache
  */
@@ -129,10 +133,23 @@ function startObserving(): void {
   // Find the feed container
   const feedContainer = document.querySelector(FEED_SELECTORS.FEED_CONTAINER);
   if (!feedContainer) {
-    // Retry after a delay if container not found
-    setTimeout(startObserving, 1000);
+    // Retry after a delay if container not found, with limit
+    observerRetryCount++;
+    if (observerRetryCount <= MAX_OBSERVER_RETRIES) {
+      console.debug(
+        `[ErgoBlock] Feed container not found, retry ${observerRetryCount}/${MAX_OBSERVER_RETRIES}`
+      );
+      setTimeout(startObserving, 1000);
+    } else {
+      console.warn(
+        `[ErgoBlock] Feed container not found after ${MAX_OBSERVER_RETRIES} retries, giving up`
+      );
+    }
     return;
   }
+
+  // Reset retry count on success
+  observerRetryCount = 0;
 
   // Initial scan
   const initialCount = filterAllFeedItems();
@@ -182,6 +199,8 @@ function stopObserving(): void {
     feedObserver = null;
   }
   isObserving = false;
+  // Reset retry count when explicitly stopping (e.g., page navigation)
+  observerRetryCount = 0;
 }
 
 /**

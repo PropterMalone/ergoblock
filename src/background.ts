@@ -25,17 +25,6 @@ import {
   getDismissedConflicts,
 } from './storage.js';
 import {
-  syncFollowBlockListsV2,
-  getBlockRelationshipsForProfileV2,
-  getBlockRelationshipSyncStatus,
-  clearBlockRelationshipCache,
-  getBlockRelationshipStatsV2,
-  migrateToV2Cache,
-  clearV2Caches,
-  deepSyncBlocklistMembers,
-  getBlocklistSubscriptionStats,
-} from './block-relationships/index.js';
-import {
   ListRecordsResponse,
   GetBlocksResponse,
   GetMutesResponse,
@@ -65,7 +54,6 @@ import { sleep, generateId } from './utils.js';
 
 const ALARM_NAME = 'checkExpirations';
 const SYNC_ALARM_NAME = 'syncWithBluesky';
-const BLOCK_REL_SYNC_ALARM_NAME = 'blockRelationshipSync';
 const FOLLOWS_SYNC_ALARM_NAME = 'followsSync';
 const SYNC_INTERVAL_MINUTES = 60; // Sync every 60 minutes (was 15)
 const FOLLOWS_SYNC_INTERVAL_MINUTES = 120; // Sync follows every 2 hours
@@ -86,6 +74,50 @@ async function getAuthToken(): Promise<AuthData | null> {
   const result = await browser.storage.local.get('authToken');
   return (result.authToken as AuthData) || null;
 }
+
+/**
+ * Request fresh auth from content scripts
+ * Sends a message to all tabs with bsky.app to trigger auth sync
+ * Returns fresh auth if available, or null
+ */
+async function requestFreshAuth(): Promise<AuthData | null> {
+  try {
+    // Query all tabs that might have Bluesky open
+    const tabs = await browser.tabs.query({ url: '*://*.bsky.app/*' });
+
+    if (tabs.length === 0) {
+      console.log('[ErgoBlock BG] No Bluesky tabs found for auth refresh');
+      return null;
+    }
+
+    // Request auth from the first available tab
+    for (const tab of tabs) {
+      if (tab.id) {
+        try {
+          const response = (await browser.tabs.sendMessage(tab.id, { type: 'REQUEST_AUTH' })) as
+            | { auth: AuthData | null }
+            | undefined;
+          if (response?.auth) {
+            // Store the fresh auth
+            await browser.storage.local.set({ authToken: response.auth, authStatus: 'valid' });
+            console.log('[ErgoBlock BG] Got fresh auth from tab', tab.id);
+            return response.auth;
+          }
+        } catch {
+          // Tab might not have content script loaded, try next
+          continue;
+        }
+      }
+    }
+
+    console.log('[ErgoBlock BG] Could not get fresh auth from any tab');
+    return null;
+  } catch (error) {
+    console.error('[ErgoBlock BG] Error requesting fresh auth:', error);
+    return null;
+  }
+}
+
 
 /**
  * Wrapper for API requests that handles auth status updates
@@ -1477,119 +1509,242 @@ async function handleUnsubscribeFromBlocklist(
 // Expiration checking
 // ============================================================================
 
+// Maximum concurrent expiration operations (prevents overwhelming the API)
+const MAX_CONCURRENT_EXPIRATIONS = 5;
+
+/**
+ * Process a single expired block
+ */
+async function processExpiredBlock(
+  did: string,
+  data: { handle: string; expiresAt: number; createdAt?: number; rkey?: string },
+  auth: AuthData
+): Promise<{ success: boolean; authError: boolean }> {
+  console.log('[ErgoBlock BG] Unblocking expired:', data.handle);
+  try {
+    await unblockUser(did, auth.accessJwt, auth.did, auth.pdsUrl, data.rkey);
+    await removeTempBlock(did);
+    await addHistoryEntry({
+      did,
+      handle: data.handle,
+      action: 'unblocked',
+      timestamp: Date.now(),
+      trigger: 'auto_expire',
+      success: true,
+      duration: data.createdAt ? Date.now() - data.createdAt : undefined,
+    });
+    console.log('[ErgoBlock BG] Successfully unblocked:', data.handle);
+    await sendNotification('expired_success', data.handle, 'block');
+    return { success: true, authError: false };
+  } catch (error) {
+    console.error('[ErgoBlock BG] Failed to unblock:', data.handle, error);
+
+    const isAuthError =
+      error instanceof Error &&
+      (error.message.includes('401') || error.message.includes('Auth error'));
+
+    if (!isAuthError) {
+      // Only log non-auth failures (auth failures will be retried on next check)
+      await addHistoryEntry({
+        did,
+        handle: data.handle,
+        action: 'unblocked',
+        timestamp: Date.now(),
+        trigger: 'auto_expire',
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+      await sendNotification(
+        'expired_failure',
+        data.handle,
+        'block',
+        error instanceof Error ? error.message : 'Unknown error'
+      );
+    }
+
+    return { success: false, authError: isAuthError };
+  }
+}
+
+/**
+ * Process a single expired mute
+ */
+async function processExpiredMute(
+  did: string,
+  data: { handle: string; expiresAt: number; createdAt?: number },
+  auth: AuthData
+): Promise<{ success: boolean; authError: boolean }> {
+  console.log('[ErgoBlock BG] Unmuting expired:', data.handle);
+  try {
+    await unmuteUser(did, auth.accessJwt, auth.pdsUrl);
+    await removeTempMute(did);
+    await addHistoryEntry({
+      did,
+      handle: data.handle,
+      action: 'unmuted',
+      timestamp: Date.now(),
+      trigger: 'auto_expire',
+      success: true,
+      duration: data.createdAt ? Date.now() - data.createdAt : undefined,
+    });
+    console.log('[ErgoBlock BG] Successfully unmuted:', data.handle);
+    await sendNotification('expired_success', data.handle, 'mute');
+    return { success: true, authError: false };
+  } catch (error) {
+    console.error('[ErgoBlock BG] Failed to unmute:', data.handle, error);
+
+    const isAuthError =
+      error instanceof Error &&
+      (error.message.includes('401') || error.message.includes('Auth error'));
+
+    if (!isAuthError) {
+      // Only log non-auth failures (auth failures will be retried on next check)
+      await addHistoryEntry({
+        did,
+        handle: data.handle,
+        action: 'unmuted',
+        timestamp: Date.now(),
+        trigger: 'auto_expire',
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+      await sendNotification(
+        'expired_failure',
+        data.handle,
+        'mute',
+        error instanceof Error ? error.message : 'Unknown error'
+      );
+    }
+
+    return { success: false, authError: isAuthError };
+  }
+}
+
+/**
+ * Process items in batches with concurrency limit
+ */
+async function processBatch<T, R>(
+  items: T[],
+  processor: (item: T) => Promise<R>,
+  maxConcurrent: number
+): Promise<R[]> {
+  const results: R[] = [];
+  for (let i = 0; i < items.length; i += maxConcurrent) {
+    const batch = items.slice(i, i + maxConcurrent);
+    const batchResults = await Promise.all(batch.map(processor));
+    results.push(...batchResults);
+  }
+  return results;
+}
+
 export async function checkExpirations(): Promise<void> {
   console.log('[ErgoBlock BG] Checking expirations...');
 
   // Clean up expired screenshots based on retention policy
   await cleanupExpiredPostContexts();
 
-  const auth = await getAuthToken();
+  let auth = await getAuthToken();
   if (!auth?.accessJwt || !auth?.did || !auth?.pdsUrl) {
-    console.log('[ErgoBlock BG] No auth token available, skipping check');
-    await browser.storage.local.set({ authStatus: 'invalid' });
-    return;
+    console.log('[ErgoBlock BG] No auth token available, trying to get fresh auth...');
+    auth = await requestFreshAuth();
+    if (!auth) {
+      console.log('[ErgoBlock BG] Could not get auth, skipping check');
+      await browser.storage.local.set({ authStatus: 'invalid' });
+      return;
+    }
   }
 
   console.log('[ErgoBlock BG] Using PDS:', auth.pdsUrl);
   const now = Date.now();
 
-  // Check expired blocks
+  // Collect expired blocks and mutes
   const blocks = await getTempBlocks();
+  const mutes = await getTempMutes();
 
-  for (const [did, data] of Object.entries(blocks)) {
-    if (data.expiresAt <= now) {
-      console.log('[ErgoBlock BG] Unblocking expired:', data.handle);
-      try {
-        await unblockUser(did, auth.accessJwt, auth.did, auth.pdsUrl, data.rkey);
-        await removeTempBlock(did);
-        await addHistoryEntry({
-          did,
-          handle: data.handle,
-          action: 'unblocked',
-          timestamp: Date.now(),
-          trigger: 'auto_expire',
-          success: true,
-          duration: data.createdAt ? Date.now() - data.createdAt : undefined,
-        });
-        console.log('[ErgoBlock BG] Successfully unblocked:', data.handle);
-        await sendNotification('expired_success', data.handle, 'block');
-      } catch (error) {
-        console.error('[ErgoBlock BG] Failed to unblock:', data.handle, error);
+  const expiredBlocks = Object.entries(blocks)
+    .filter(([, data]) => data.expiresAt <= now)
+    .map(([did, data]) => ({ did, data }));
 
-        // If it's an auth error, we stop processing further entries
-        if (
-          error instanceof Error &&
-          (error.message.includes('401') || error.message.includes('Auth error'))
-        ) {
-          return;
+  const expiredMutes = Object.entries(mutes)
+    .filter(([, data]) => data.expiresAt <= now)
+    .map(([did, data]) => ({ did, data }));
+
+  console.log(
+    `[ErgoBlock BG] Found ${expiredBlocks.length} expired blocks, ${expiredMutes.length} expired mutes`
+  );
+
+  // At this point auth is guaranteed non-null (we return early above if null)
+  let currentAuth: AuthData = auth;
+
+  // Process expired blocks in parallel batches
+  if (expiredBlocks.length > 0) {
+    let blockResults = await processBatch(
+      expiredBlocks,
+      ({ did, data }) => processExpiredBlock(did, data, currentAuth),
+      MAX_CONCURRENT_EXPIRATIONS
+    );
+
+    // If auth errors occurred, try to get fresh auth and retry failed blocks
+    if (blockResults.some((r) => r.authError)) {
+      console.log('[ErgoBlock BG] Auth error during block expiration, requesting fresh auth...');
+      const freshAuth = await requestFreshAuth();
+      if (freshAuth) {
+        currentAuth = freshAuth;
+        // Find blocks that failed due to auth and retry them
+        const failedBlocks = expiredBlocks.filter((_, i) => blockResults[i].authError);
+        if (failedBlocks.length > 0) {
+          console.log(`[ErgoBlock BG] Retrying ${failedBlocks.length} blocks with fresh auth`);
+          const retryResults = await processBatch(
+            failedBlocks,
+            ({ did, data }) => processExpiredBlock(did, data, currentAuth),
+            MAX_CONCURRENT_EXPIRATIONS
+          );
+          // Update results for logging
+          blockResults = retryResults;
         }
-
-        await addHistoryEntry({
-          did,
-          handle: data.handle,
-          action: 'unblocked',
-          timestamp: Date.now(),
-          trigger: 'auto_expire',
-          success: false,
-          error: error instanceof Error ? error.message : 'Unknown error',
-        });
-        await sendNotification(
-          'expired_failure',
-          data.handle,
-          'block',
-          error instanceof Error ? error.message : 'Unknown error'
-        );
       }
+    }
+
+    // Log final result
+    const stillFailed = blockResults.filter((r) => r.authError).length;
+    if (stillFailed > 0) {
+      console.log(`[ErgoBlock BG] ${stillFailed} blocks still failed after retry - will try again on next check`);
     }
   }
 
-  // Check expired mutes
-  const mutes = await getTempMutes();
+  // Process expired mutes in parallel batches
+  if (expiredMutes.length > 0) {
+    let muteResults = await processBatch(
+      expiredMutes,
+      ({ did, data }) => processExpiredMute(did, data, currentAuth),
+      MAX_CONCURRENT_EXPIRATIONS
+    );
 
-  for (const [did, data] of Object.entries(mutes)) {
-    if (data.expiresAt <= now) {
-      console.log('[ErgoBlock BG] Unmuting expired:', data.handle);
-      try {
-        await unmuteUser(did, auth.accessJwt, auth.pdsUrl);
-        await removeTempMute(did);
-        await addHistoryEntry({
-          did,
-          handle: data.handle,
-          action: 'unmuted',
-          timestamp: Date.now(),
-          trigger: 'auto_expire',
-          success: true,
-          duration: data.createdAt ? Date.now() - data.createdAt : undefined,
-        });
-        console.log('[ErgoBlock BG] Successfully unmuted:', data.handle);
-        await sendNotification('expired_success', data.handle, 'mute');
-      } catch (error) {
-        console.error('[ErgoBlock BG] Failed to unmute:', data.handle, error);
-
-        // If it's an auth error, we stop processing further entries
-        if (
-          error instanceof Error &&
-          (error.message.includes('401') || error.message.includes('Auth error'))
-        ) {
-          return;
+    // If auth errors occurred, try to get fresh auth and retry failed mutes
+    if (muteResults.some((r) => r.authError)) {
+      console.log('[ErgoBlock BG] Auth error during mute expiration, requesting fresh auth...');
+      const freshAuth = await requestFreshAuth();
+      if (freshAuth) {
+        currentAuth = freshAuth;
+        // Find mutes that failed due to auth and retry them
+        const failedMutes = expiredMutes.filter((_, i) => muteResults[i].authError);
+        if (failedMutes.length > 0) {
+          console.log(`[ErgoBlock BG] Retrying ${failedMutes.length} mutes with fresh auth`);
+          const retryResults = await processBatch(
+            failedMutes,
+            ({ did, data }) => processExpiredMute(did, data, currentAuth),
+            MAX_CONCURRENT_EXPIRATIONS
+          );
+          // Update results for logging
+          muteResults = retryResults;
         }
-
-        await addHistoryEntry({
-          did,
-          handle: data.handle,
-          action: 'unmuted',
-          timestamp: Date.now(),
-          trigger: 'auto_expire',
-          success: false,
-          error: error instanceof Error ? error.message : 'Unknown error',
-        });
-        await sendNotification(
-          'expired_failure',
-          data.handle,
-          'mute',
-          error instanceof Error ? error.message : 'Unknown error'
-        );
       }
+    }
+
+    // Log final result
+    const stillFailed = muteResults.filter((r) => r.authError).length;
+    if (stillFailed > 0) {
+      console.log(`[ErgoBlock BG] ${stillFailed} mutes still failed after retry - will try again on next check`);
     }
   }
 
@@ -1615,9 +1770,6 @@ browser.alarms.onAlarm.addListener((alarm) => {
   }
   if (alarm.name === SYNC_ALARM_NAME) {
     return performFullSync();
-  }
-  if (alarm.name === BLOCK_REL_SYNC_ALARM_NAME) {
-    return handleBlockRelationshipSync();
   }
   if (alarm.name === FOLLOWS_SYNC_ALARM_NAME) {
     return syncFollowsOnly();
@@ -1990,192 +2142,6 @@ async function handleFetchAllInteractions(
   }
 }
 
-// ============================================================================
-// Block Relationship Handlers (AskBeeves Integration)
-// ============================================================================
-
-/**
- * Handle request to sync block relationships (V2 - API only, no CAR downloads)
- */
-async function handleBlockRelationshipSync(): Promise<{
-  success: boolean;
-  error?: string;
-  alreadyRunning?: boolean;
-  stats?: { totalFollows: number; syncedFollows: number; totalBlocksTracked: number };
-}> {
-  try {
-    const auth = await getAuthToken();
-    if (!auth?.accessJwt || !auth?.did || !auth?.pdsUrl) {
-      return { success: false, error: 'Not authenticated' };
-    }
-
-    console.log('[ErgoBlock BG] Starting block relationship sync (V2 API-only)...');
-    const didRun = await syncFollowBlockListsV2({
-      accessJwt: auth.accessJwt,
-      did: auth.did,
-      handle: '', // Not needed for sync
-      pdsUrl: auth.pdsUrl,
-    });
-
-    if (!didRun) {
-      // Sync was already in progress
-      return { success: true, alreadyRunning: true };
-    }
-
-    const stats = await getBlockRelationshipStatsV2();
-    return {
-      success: true,
-      stats: {
-        totalFollows: stats.totalFollows,
-        syncedFollows: stats.syncedFollows,
-        totalBlocksTracked: stats.totalDirectBlocks + stats.totalListSubscriptions,
-      },
-    };
-  } catch (error) {
-    console.error('[ErgoBlock BG] Block relationship sync failed:', error);
-    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
-  }
-}
-
-/**
- * Handle request to get block relationships for a profile (V2 - includes list-based blocks)
- */
-async function handleGetBlockRelationships(profileDid: string): Promise<{
-  success: boolean;
-  error?: string;
-  blockedBy?: Array<{ did: string; handle: string; displayName?: string; avatar?: string }>;
-  blocking?: Array<{ did: string; handle: string; displayName?: string; avatar?: string }>;
-}> {
-  try {
-    console.log(`[ErgoBlock BG] Getting block relationships for ${profileDid}`);
-    const relationships = await getBlockRelationshipsForProfileV2(profileDid);
-    console.log(
-      `[ErgoBlock BG] Block relationships result: blockedBy=${relationships.blockedBy.length}, blocking=${relationships.blocking.length}`
-    );
-    return {
-      success: true,
-      blockedBy: relationships.blockedBy.map((u) => ({
-        did: u.did,
-        handle: u.handle,
-        displayName: u.displayName,
-        avatar: u.avatar,
-      })),
-      blocking: relationships.blocking.map((u) => ({
-        did: u.did,
-        handle: u.handle,
-        displayName: u.displayName,
-        avatar: u.avatar,
-      })),
-    };
-  } catch (error) {
-    console.error('[ErgoBlock BG] Get block relationships failed:', error);
-    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
-  }
-}
-
-/**
- * Handle request to get block relationship sync status
- */
-async function handleGetBlockRelationshipStatus(): Promise<{
-  success: boolean;
-  status?: {
-    lastSync: number;
-    isRunning: boolean;
-    totalFollows: number;
-    syncedFollows: number;
-    errors: string[];
-    totalBlocksTracked?: number;
-  };
-}> {
-  const status = await getBlockRelationshipSyncStatus();
-  // Also get stats to include totalBlocksTracked
-  const stats = await getBlockRelationshipStatsV2();
-  return {
-    success: true,
-    status: {
-      ...status,
-      totalBlocksTracked: stats.totalDirectBlocks + stats.totalListSubscriptions,
-    },
-  };
-}
-
-/**
- * Handle request to clear block relationship cache (clears both V1 and V2 caches)
- */
-async function handleClearBlockRelationshipCache(): Promise<{ success: boolean }> {
-  await clearBlockRelationshipCache();
-  await clearV2Caches();
-  return { success: true };
-}
-
-/**
- * Handle request to deep sync blocklist members (CAR-based)
- */
-async function handleDeepSyncBlocklists(): Promise<{
-  success: boolean;
-  error?: string;
-  stats?: {
-    creatorsProcessed: number;
-    listsResolved: number;
-    totalMembers: number;
-    errors: string[];
-  };
-}> {
-  try {
-    console.log('[ErgoBlock BG] Starting deep sync of blocklist members...');
-    const result = await deepSyncBlocklistMembers();
-    return {
-      success: true,
-      stats: result,
-    };
-  } catch (error) {
-    console.error('[ErgoBlock BG] Deep sync failed:', error);
-    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
-  }
-}
-
-/**
- * Handle request to get blocklist subscription statistics
- */
-async function handleGetBlocklistStats(): Promise<{
-  success: boolean;
-  stats?: {
-    uniqueLists: number;
-    uniqueCreators: number;
-    resolvedLists: number;
-    unresolvedLists: number;
-  };
-}> {
-  const stats = await getBlocklistSubscriptionStats();
-  return { success: true, stats };
-}
-
-/**
- * Set up block relationship sync alarm
- */
-export async function setupBlockRelationshipSyncAlarm(): Promise<void> {
-  const options = await getOptions();
-  const blockRelSettings = options.blockRelationships;
-
-  // Check if feature is enabled (default to true if settings not present)
-  if (!blockRelSettings?.enabled) {
-    await browser.alarms.clear(BLOCK_REL_SYNC_ALARM_NAME);
-    console.log('[ErgoBlock BG] Block relationship sync disabled');
-    return;
-  }
-
-  await browser.alarms.clear(BLOCK_REL_SYNC_ALARM_NAME);
-  await browser.alarms.create(BLOCK_REL_SYNC_ALARM_NAME, {
-    periodInMinutes: blockRelSettings.autoSyncInterval || 60,
-    delayInMinutes: 2, // First sync 2 minutes after startup
-  });
-  console.log(
-    '[ErgoBlock BG] Block relationship sync alarm set with interval:',
-    blockRelSettings.autoSyncInterval || 60,
-    'minutes'
-  );
-}
-
 // Async message handler for communication with content scripts and popup
 // Using the async pattern which returns Promise<unknown> per webextension-polyfill types
 const messageHandler = async (rawMessage: unknown): Promise<MessageResponse | undefined> => {
@@ -2233,45 +2199,47 @@ const messageHandler = async (rawMessage: unknown): Promise<MessageResponse | un
     return await handleUnsubscribeFromBlocklist(message.listUri as string);
   }
 
-  // Block relationship handlers (AskBeeves integration)
-  if (message.type === 'SYNC_BLOCK_RELATIONSHIPS') {
-    return await handleBlockRelationshipSync();
-  }
-
-  if (message.type === 'GET_BLOCK_RELATIONSHIPS' && message.did) {
-    return await handleGetBlockRelationships(message.did);
-  }
-
-  if (message.type === 'GET_BLOCK_RELATIONSHIP_STATUS') {
-    return await handleGetBlockRelationshipStatus();
-  }
-
-  if (message.type === 'CLEAR_BLOCK_RELATIONSHIP_CACHE') {
-    return await handleClearBlockRelationshipCache();
-  }
-
-  if (message.type === 'DEEP_SYNC_BLOCKLISTS') {
-    return await handleDeepSyncBlocklists();
-  }
-
-  if (message.type === 'GET_BLOCKLIST_STATS') {
-    return await handleGetBlocklistStats();
-  }
-
   return undefined;
 };
 
 browser.runtime.onMessage.addListener(messageHandler);
 
+// Maximum time a sync should take (10 minutes) - if older, it's considered stale
+const MAX_SYNC_DURATION_MS = 10 * 60 * 1000;
+
 /**
  * Clear any stale sync state on startup
  * This handles the case where the extension was closed mid-sync
+ * or the service worker was terminated during a sync operation
  */
 async function clearStaleSyncState(): Promise<void> {
+  // Clear in-memory locks (lost on worker restart)
+  syncLockActive = false;
+  blocklistAuditLockActive = false;
+  followsSyncLockActive = false;
+
+  // Clear main sync state
   const state = await getSyncState();
   if (state.syncInProgress) {
-    console.log('[ErgoBlock BG] Clearing stale syncInProgress flag from previous session');
-    await updateSyncState({ syncInProgress: false });
+    // Check if the sync has been running too long (stale)
+    const now = Date.now();
+    const syncStartTime = state.lastBlockSync || state.lastMuteSync || 0;
+    const syncAge = now - syncStartTime;
+
+    if (syncAge > MAX_SYNC_DURATION_MS || syncStartTime === 0) {
+      console.log(
+        `[ErgoBlock BG] Clearing stale syncInProgress flag (age: ${Math.round(syncAge / 1000)}s)`
+      );
+      await updateSyncState({
+        syncInProgress: false,
+        lastError: 'Sync was interrupted (service worker restart)',
+      });
+    } else {
+      // Sync might still be running from another context - just log it
+      console.log(
+        `[ErgoBlock BG] Sync in progress flag set (age: ${Math.round(syncAge / 1000)}s) - may be ongoing`
+      );
+    }
   }
 }
 
@@ -2302,15 +2270,8 @@ browser.runtime.onInstalled.addListener(async () => {
   clearStaleSyncState();
   await clearBloatedStorageData();
 
-  // Migrate block relationship cache to V2 format if needed
-  const migrated = await migrateToV2Cache();
-  if (migrated) {
-    console.log('[ErgoBlock BG] Migrated block relationship cache to V2 format');
-  }
-
   setupAlarm();
   setupSyncAlarm();
-  setupBlockRelationshipSyncAlarm();
   setupFollowsSyncAlarm();
   browser.action.setBadgeText({ text: '' });
 
@@ -2323,15 +2284,8 @@ browser.runtime.onStartup.addListener(async () => {
   clearStaleSyncState();
   await clearBloatedStorageData();
 
-  // Migrate block relationship cache to V2 format if needed
-  const migrated = await migrateToV2Cache();
-  if (migrated) {
-    console.log('[ErgoBlock BG] Migrated block relationship cache to V2 format');
-  }
-
   setupAlarm();
   setupSyncAlarm();
-  setupBlockRelationshipSyncAlarm();
   setupFollowsSyncAlarm();
   browser.action.setBadgeText({ text: '' });
 
@@ -2343,16 +2297,8 @@ browser.runtime.onStartup.addListener(async () => {
 clearStaleSyncState();
 clearBloatedStorageData();
 
-// Migrate block relationship cache to V2 format if needed (async, fire-and-forget)
-migrateToV2Cache().then((migrated) => {
-  if (migrated) {
-    console.log('[ErgoBlock BG] Migrated block relationship cache to V2 format (on script load)');
-  }
-});
-
 setupAlarm();
 setupSyncAlarm();
-setupBlockRelationshipSyncAlarm();
 setupFollowsSyncAlarm();
 
 // Sync follows on script load after a short delay (for repost filter feature)

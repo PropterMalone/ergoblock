@@ -19,7 +19,7 @@ import {
   type BlocklistAuditState,
   type RepostFilteredUser,
 } from './types.js';
-import { generateId } from './utils.js';
+import { generateId, isValidDid, isValidDuration } from './utils.js';
 
 // Storage quota constants (Chrome sync storage limits)
 const SYNC_STORAGE_QUOTA_BYTES = 102400; // 100KB total for sync storage
@@ -64,6 +64,47 @@ export async function checkStorageQuota(): Promise<StorageQuotaInfo> {
 }
 
 /**
+ * Custom error class for storage quota issues
+ */
+export class StorageQuotaError extends Error {
+  constructor(
+    message: string,
+    public readonly quotaInfo: StorageQuotaInfo
+  ) {
+    super(message);
+    this.name = 'StorageQuotaError';
+  }
+}
+
+/**
+ * Pre-check if storage has capacity for a new temp block/mute
+ * Call this BEFORE making API calls to avoid desync
+ * @param estimatedBytes - Estimated size of the new entry (default ~200 bytes per entry)
+ * @throws StorageQuotaError if quota would be exceeded
+ */
+export async function preCheckStorageQuota(estimatedBytes: number = 200): Promise<void> {
+  const quota = await checkStorageQuota();
+
+  // Check if adding the estimated bytes would exceed quota
+  const projectedUsage = (quota.bytesUsed + estimatedBytes) / quota.bytesTotal;
+
+  if (projectedUsage >= 0.95) {
+    throw new StorageQuotaError(
+      `Storage quota would be exceeded: ${Math.round(quota.percentUsed * 100)}% used. ` +
+        `Please remove some temp blocks/mutes before adding more.`,
+      quota
+    );
+  }
+
+  if (quota.isNearLimit) {
+    console.warn(
+      `[ErgoBlock] Storage quota warning: ${Math.round(quota.percentUsed * 100)}% used. ` +
+        `Consider removing old temp blocks/mutes.`
+    );
+  }
+}
+
+/**
  * Safely write to sync storage with quota checking
  * Throws on quota exceeded for caller to handle
  */
@@ -72,17 +113,19 @@ async function safeSyncStorageWrite(key: string, value: unknown): Promise<void> 
 
   // Check per-item limit for sync storage
   if (dataSize > SYNC_STORAGE_ITEM_QUOTA_BYTES) {
-    throw new Error(
-      `Storage item too large: ${dataSize} bytes exceeds ${SYNC_STORAGE_ITEM_QUOTA_BYTES} byte limit`
+    throw new StorageQuotaError(
+      `Storage item too large: ${dataSize} bytes exceeds ${SYNC_STORAGE_ITEM_QUOTA_BYTES} byte limit`,
+      await checkStorageQuota()
     );
   }
 
   // Check total quota
   const quota = await checkStorageQuota();
   if (quota.isAtLimit) {
-    throw new Error(
+    throw new StorageQuotaError(
       `Storage quota exceeded: ${Math.round(quota.percentUsed * 100)}% used. ` +
-        `Please remove some temp blocks/mutes.`
+        `Please remove some temp blocks/mutes.`,
+      quota
     );
   }
 
@@ -158,6 +201,7 @@ export async function getTempMutes(): Promise<TempBlocksMap> {
  * @param handle - User's handle
  * @param durationMs - Duration in milliseconds (default 24h)
  * @param rkey - Optional record key (rkey) for direct unblocking
+ * @throws Error if DID or duration is invalid
  */
 export async function addTempBlock(
   did: string,
@@ -165,6 +209,17 @@ export async function addTempBlock(
   durationMs: number = DEFAULT_DURATION_MS,
   rkey?: string
 ): Promise<void> {
+  // Validate inputs
+  if (!isValidDid(did)) {
+    throw new Error(`Invalid DID format: ${did}`);
+  }
+  if (!isValidDuration(durationMs)) {
+    throw new Error(`Invalid duration: ${durationMs}ms (must be positive and less than 1 year)`);
+  }
+  if (!handle || typeof handle !== 'string' || handle.length === 0) {
+    throw new Error('Handle is required');
+  }
+
   const blocks = await getTempBlocks();
   blocks[did] = {
     handle,
@@ -181,8 +236,9 @@ export async function addTempBlock(
       did,
       expiresAt: blocks[did].expiresAt,
     })
-    .catch(() => {
+    .catch((err) => {
       // Background may be inactive in MV3 - alarm will be set on next wake
+      console.debug('[ErgoBlock] Background not ready for temp block notification:', err?.message || err);
     });
 }
 
@@ -201,12 +257,24 @@ export async function removeTempBlock(did: string): Promise<void> {
  * @param did - User's DID
  * @param handle - User's handle
  * @param durationMs - Duration in milliseconds (default 24h)
+ * @throws Error if DID or duration is invalid
  */
 export async function addTempMute(
   did: string,
   handle: string,
   durationMs: number = DEFAULT_DURATION_MS
 ): Promise<void> {
+  // Validate inputs
+  if (!isValidDid(did)) {
+    throw new Error(`Invalid DID format: ${did}`);
+  }
+  if (!isValidDuration(durationMs)) {
+    throw new Error(`Invalid duration: ${durationMs}ms (must be positive and less than 1 year)`);
+  }
+  if (!handle || typeof handle !== 'string' || handle.length === 0) {
+    throw new Error('Handle is required');
+  }
+
   const mutes = await getTempMutes();
   mutes[did] = {
     handle,
@@ -222,8 +290,9 @@ export async function addTempMute(
       did,
       expiresAt: mutes[did].expiresAt,
     })
-    .catch(() => {
+    .catch((err) => {
       // Background may be inactive in MV3 - alarm will be set on next wake
+      console.debug('[ErgoBlock] Background not ready for temp mute notification:', err?.message || err);
     });
 }
 

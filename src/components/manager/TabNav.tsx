@@ -12,7 +12,6 @@ const TABS: Tab[] = [
   { id: 'history', label: 'History' },
   { id: 'amnesty', label: 'Amnesty' },
   { id: 'blocklist-audit', label: 'Blocklist Audit' },
-  { id: 'relationships', label: 'Block Relationships' },
   { id: 'repost-filters', label: 'Repost Filters' },
 ];
 

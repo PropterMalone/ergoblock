@@ -4,7 +4,7 @@
 
 import { render } from 'preact';
 import browser from './browser.js';
-import { getSession, getProfile, blockUser, muteUser } from './api.js';
+import { getSession, getProfile, blockUser, muteUser, unblockUser, unmuteUser } from './api.js';
 import {
   addTempBlock,
   addTempMute,
@@ -12,6 +12,8 @@ import {
   addRepostFilteredUser,
   removeRepostFilteredUser,
   isHandleFollowed,
+  preCheckStorageQuota,
+  StorageQuotaError,
 } from './storage.js';
 import type { RepostFilteredUser } from './types.js';
 import {
@@ -66,9 +68,16 @@ const DURATION_OPTIONS: DurationOption[] = [
 ];
 
 let currentObserver: MutationObserver | null = null;
+
+// DOM element references - these are cleared periodically to prevent memory leaks
+// since they may hold references to removed DOM nodes
 let lastClickedElement: HTMLElement | null = null;
 let capturedPostContainer: HTMLElement | null = null;
 let lastClickedPostContainer: HTMLElement | null = null;
+
+// Timestamp when DOM references were last captured (for staleness checking)
+let lastDomRefTimestamp = 0;
+const DOM_REF_MAX_AGE_MS = 30000; // Clear DOM refs after 30 seconds of inactivity
 
 // Shadow DOM containers for isolated UI
 let pickerHost: HTMLElement | null = null;
@@ -82,6 +91,46 @@ let capturedNotificationInfo: {
   notificationType: NotificationReason | null;
   subjectUri: string | null;
 } | null = null;
+
+/**
+ * Clear stale DOM references to prevent memory leaks
+ * Called periodically and after operations complete
+ */
+function clearStaleDomRefs(): void {
+  const now = Date.now();
+  if (lastDomRefTimestamp > 0 && now - lastDomRefTimestamp > DOM_REF_MAX_AGE_MS) {
+    // Clear old references that may point to removed DOM nodes
+    if (lastClickedElement && !document.body.contains(lastClickedElement)) {
+      lastClickedElement = null;
+    }
+    if (capturedPostContainer && !document.body.contains(capturedPostContainer)) {
+      capturedPostContainer = null;
+    }
+    if (lastClickedPostContainer && !document.body.contains(lastClickedPostContainer)) {
+      lastClickedPostContainer = null;
+    }
+    console.debug('[ErgoBlock] Cleared stale DOM references');
+  }
+}
+
+/**
+ * Force clear all DOM references immediately
+ * Called after actions complete to prevent memory leaks
+ */
+function clearAllDomRefs(): void {
+  lastClickedElement = null;
+  capturedPostContainer = null;
+  lastClickedPostContainer = null;
+  capturedNotificationInfo = null;
+  lastDomRefTimestamp = 0;
+}
+
+/**
+ * Update DOM reference timestamp (call when capturing new refs)
+ */
+function touchDomRefs(): void {
+  lastDomRefTimestamp = Date.now();
+}
 
 /**
  * Extract engagement context from URL (liked-by or reposted-by pages)
@@ -270,7 +319,12 @@ function removeShadowContainer(host: HTMLElement | null): void {
 document.addEventListener(
   'click',
   (e) => {
+    // Clear any stale DOM refs before capturing new ones
+    clearStaleDomRefs();
+
     lastClickedElement = e.target as HTMLElement;
+    touchDomRefs(); // Mark timestamp for staleness tracking
+
     const target = e.target as HTMLElement;
 
     // Don't update post container if clicking on menu items or our own UI
@@ -294,6 +348,7 @@ document.addEventListener(
 
       if (isRealPost) {
         lastClickedPostContainer = container;
+        touchDomRefs();
       }
     }
   },
@@ -447,8 +502,9 @@ function showDurationPicker(actionType: 'block' | 'mute', handle: string): void 
         renderPicker(profile.did);
       }
     })
-    .catch(() => {
+    .catch((err) => {
       // Profile resolution failed, stats will show as unavailable
+      console.debug('[ErgoBlock] Profile resolution failed for stats:', err?.message || err);
     });
 }
 
@@ -500,6 +556,20 @@ async function handleTempBlock(
       throw new Error('Could not get user profile');
     }
 
+    // Pre-check storage quota BEFORE making API call to avoid desync
+    // where block succeeds on Bluesky but fails to save locally
+    try {
+      await preCheckStorageQuota();
+    } catch (quotaError) {
+      if (quotaError instanceof StorageQuotaError) {
+        throw new Error(
+          `Storage full (${Math.round(quotaError.quotaInfo.percentUsed * 100)}% used). ` +
+            `Please remove some temp blocks/mutes first.`
+        );
+      }
+      throw quotaError;
+    }
+
     const blockResult = await blockUser(profile.did);
 
     let rkey: string | undefined;
@@ -511,7 +581,26 @@ async function handleTempBlock(
       }
     }
 
-    await addTempBlock(profile.did, profile.handle || handle, durationMs, rkey);
+    // Try to save to storage - if this fails, we need to rollback the API call
+    try {
+      await addTempBlock(profile.did, profile.handle || handle, durationMs, rkey);
+    } catch (storageError) {
+      // Storage failed after API succeeded - rollback by unblocking
+      console.error('[ErgoBlock] Storage failed after block, rolling back:', storageError);
+      try {
+        await unblockUser(profile.did, rkey);
+        console.log('[ErgoBlock] Rollback successful - user unblocked');
+      } catch (rollbackError) {
+        // Rollback failed - user is blocked on Bluesky but not tracked
+        console.error('[ErgoBlock] Rollback failed - desync occurred:', rollbackError);
+        throw new Error(
+          `Block saved to Bluesky but local storage failed. ` +
+            `The user is blocked but not tracked by ErgoBlock. ` +
+            `Original error: ${(storageError as Error).message}`
+        );
+      }
+      throw storageError;
+    }
 
     // Build notification context if we have notification info
     const notifContext: NotificationContext | null = capturedNotificationInfo?.notificationType
@@ -534,12 +623,17 @@ async function handleTempBlock(
 
     // Clear captured notification info after use
     capturedNotificationInfo = null;
+    // Clear captured post container to prevent memory leak
+    capturedPostContainer = null;
 
     closeMenus();
     showToast(`Temporarily blocked @${profile.handle || handle} for ${durationLabel}`);
   } catch (error) {
     console.error('[ErgoBlock] Failed to temp block:', error);
     showToast(`Failed to block: ${(error as Error).message}`, true);
+  } finally {
+    // Always clear DOM refs after action completes to prevent memory leaks
+    clearAllDomRefs();
   }
 }
 
@@ -559,8 +653,42 @@ async function handleTempMute(
       throw new Error('Could not get user profile');
     }
 
+    // Pre-check storage quota BEFORE making API call to avoid desync
+    // where mute succeeds on Bluesky but fails to save locally
+    try {
+      await preCheckStorageQuota();
+    } catch (quotaError) {
+      if (quotaError instanceof StorageQuotaError) {
+        throw new Error(
+          `Storage full (${Math.round(quotaError.quotaInfo.percentUsed * 100)}% used). ` +
+            `Please remove some temp blocks/mutes first.`
+        );
+      }
+      throw quotaError;
+    }
+
     await muteUser(profile.did);
-    await addTempMute(profile.did, profile.handle || handle, durationMs);
+
+    // Try to save to storage - if this fails, we need to rollback the API call
+    try {
+      await addTempMute(profile.did, profile.handle || handle, durationMs);
+    } catch (storageError) {
+      // Storage failed after API succeeded - rollback by unmuting
+      console.error('[ErgoBlock] Storage failed after mute, rolling back:', storageError);
+      try {
+        await unmuteUser(profile.did);
+        console.log('[ErgoBlock] Rollback successful - user unmuted');
+      } catch (rollbackError) {
+        // Rollback failed - user is muted on Bluesky but not tracked
+        console.error('[ErgoBlock] Rollback failed - desync occurred:', rollbackError);
+        throw new Error(
+          `Mute saved to Bluesky but local storage failed. ` +
+            `The user is muted but not tracked by ErgoBlock. ` +
+            `Original error: ${(storageError as Error).message}`
+        );
+      }
+      throw storageError;
+    }
 
     // Build notification context if we have notification info
     const notifContext: NotificationContext | null = capturedNotificationInfo?.notificationType
@@ -583,12 +711,17 @@ async function handleTempMute(
 
     // Clear captured notification info after use
     capturedNotificationInfo = null;
+    // Clear captured post container to prevent memory leak
+    capturedPostContainer = null;
 
     closeMenus();
     showToast(`Temporarily muted @${profile.handle || handle} for ${durationLabel}`);
   } catch (error) {
     console.error('[ErgoBlock] Failed to temp mute:', error);
     showToast(`Failed to mute: ${(error as Error).message}`, true);
+  } finally {
+    // Always clear DOM refs after action completes to prevent memory leaks
+    clearAllDomRefs();
   }
 }
 
@@ -639,6 +772,9 @@ async function handlePermanentAction(actionType: 'block' | 'mute', handle: strin
   } catch (error) {
     console.error('[ErgoBlock] Failed to permanent', actionType, ':', error);
     showToast(`Failed to ${actionType}: ${(error as Error).message}`, true);
+  } finally {
+    // Always clear DOM refs after action completes to prevent memory leaks
+    clearAllDomRefs();
   }
 }
 
@@ -1080,6 +1216,7 @@ function observeNotifications(): void {
 
 /**
  * Observe for dropdown menus appearing
+ * Uses immediate injection with capture-phase click interception to prevent race conditions
  */
 function observeMenus(): void {
   if (currentObserver) {
@@ -1115,7 +1252,15 @@ function observeMenus(): void {
             });
 
             if (hasBlockOption) {
-              setTimeout(() => injectMenuItems(menu), 50);
+              // Inject immediately - no delay needed since we:
+              // 1. Already have the menu element reference
+              // 2. Replace native items with clones that intercept clicks
+              // 3. Use capture phase in click handlers to prevent native behavior
+              //
+              // Also verify menu is still in DOM (could have been removed during mutation batch)
+              if (document.body.contains(menu)) {
+                injectMenuItems(menu);
+              }
             }
           }
         }
@@ -1156,36 +1301,41 @@ function syncAuthToBackground(): void {
         await browser.storage.local.set({ authStatus: 'valid' });
         console.log('[TempBlock] Auth synced to background (PDS:', session.pdsUrl, ')');
       })
-      .catch(() => {
+      .catch((err) => {
         // Background service worker may be inactive - this is normal in MV3
-        console.log('[TempBlock] Background not ready, skipping auth sync');
+        console.debug('[ErgoBlock] Background not ready, skipping auth sync:', err?.message || err);
       });
   }
 }
 
 /**
- * Initialize block relationship profile injection if enabled
+ * Get current auth data for on-demand requests from background
  */
-async function initBlockRelationshipInjection(): Promise<void> {
-  try {
-    const result = await browser.storage.local.get('options');
-    const options = result.options as
-      | {
-          blockRelationships?: { enabled: boolean; showOnProfiles: boolean };
-        }
-      | undefined;
-
-    if (options?.blockRelationships?.enabled && options?.blockRelationships?.showOnProfiles) {
-      // Dynamically import to avoid loading if not needed
-      const { observeProfileNavigation } =
-        await import('./block-relationships/profile-injection.js');
-      observeProfileNavigation();
-      console.log('[ErgoBlock] Block relationship profile injection enabled');
-    }
-  } catch (error) {
-    console.error('[ErgoBlock] Failed to init block relationship injection:', error);
+function getCurrentAuth(): { accessJwt: string; did: string; pdsUrl: string } | null {
+  const session = getSession();
+  if (session?.accessJwt && session?.did && session?.pdsUrl) {
+    return {
+      accessJwt: session.accessJwt,
+      did: session.did,
+      pdsUrl: session.pdsUrl,
+    };
   }
+  return null;
 }
+
+// Listen for messages from background (e.g., auth refresh requests)
+browser.runtime.onMessage.addListener((message: unknown) => {
+  const msg = message as { type?: string };
+  if (msg.type === 'REQUEST_AUTH') {
+    const auth = getCurrentAuth();
+    if (auth) {
+      // Also sync to storage for background's immediate use
+      browser.storage.local.set({ authToken: auth, authStatus: 'valid' }).catch(() => {});
+    }
+    return Promise.resolve({ auth });
+  }
+  return undefined;
+});
 
 // Initialize
 function init(): void {
@@ -1194,7 +1344,6 @@ function init(): void {
       observeMenus();
       observeNotifications();
       setTimeout(syncAuthToBackground, 2000);
-      setTimeout(initBlockRelationshipInjection, 3000);
       // Initialize feed filtering for repost control
       setTimeout(() => initFeedFilter().catch(console.error), 1000);
     });
@@ -1202,7 +1351,6 @@ function init(): void {
     observeMenus();
     observeNotifications();
     setTimeout(syncAuthToBackground, 2000);
-    setTimeout(initBlockRelationshipInjection, 3000);
     // Initialize feed filtering for repost control
     setTimeout(() => initFeedFilter().catch(console.error), 1000);
   }

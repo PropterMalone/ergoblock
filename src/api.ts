@@ -22,10 +22,13 @@ import {
   ListNotificationsResponse,
   GetActorLikesResponse,
 } from './types.js';
-import { sleep } from './utils.js';
+import { sleep, withRetry, isRetryableError } from './utils.js';
 
 // AT Protocol API helpers for Bluesky
 // Handles block/mute/unblock/unmute operations
+
+// Default timeout for API requests (30 seconds)
+const DEFAULT_TIMEOUT_MS = 30000;
 
 // Public Bluesky API endpoint (AppView) - use this for most operations
 const BSKY_PUBLIC_API = 'https://public.api.bsky.app';
@@ -118,16 +121,37 @@ export function getSession(): BskySession | null {
 }
 
 /**
+ * Options for API requests
+ */
+export interface ApiRequestOptions {
+  /** Timeout in milliseconds (default: 30000) */
+  timeoutMs?: number;
+  /** Whether to retry on failure (default: true for GET, false for mutations) */
+  retry?: boolean;
+  /** Maximum retry attempts (default: 3) */
+  maxRetries?: number;
+}
+
+/**
  * Execute an authenticated API request
  * Shared logic for both content script (localStorage) and background (chrome.storage)
+ * Includes timeout and optional retry with exponential backoff
  */
 export async function executeApiRequest<T>(
   endpoint: string,
   method: string,
   body: unknown,
   auth: { accessJwt: string; pdsUrl: string },
-  targetBaseUrl?: string
+  targetBaseUrl?: string,
+  options: ApiRequestOptions = {}
 ): Promise<T | null> {
+  const {
+    timeoutMs = DEFAULT_TIMEOUT_MS,
+    // Default: retry GET requests, don't retry mutations (POST/DELETE) to avoid duplicates
+    retry = method === 'GET',
+    maxRetries = 3,
+  } = options;
+
   // Determine correct base URL:
   // - com.atproto.repo.* endpoints go to user's PDS
   // - app.bsky.* endpoints go to public API (AppView) unless overridden
@@ -149,48 +173,79 @@ export async function executeApiRequest<T>(
   base = base.replace(/\/+$/, '');
 
   const url = `${base}/xrpc/${endpoint}`;
-  console.log('[TempBlock] API request:', method, url);
 
-  const options: RequestInit = {
-    method,
-    headers: {
-      Authorization: `Bearer ${auth.accessJwt}`,
-      'Content-Type': 'application/json',
-    },
+  const doRequest = async (): Promise<T | null> => {
+    console.log('[TempBlock] API request:', method, url);
+
+    // Create AbortController for timeout
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const fetchOptions: RequestInit = {
+        method,
+        headers: {
+          Authorization: `Bearer ${auth.accessJwt}`,
+          'Content-Type': 'application/json',
+        },
+        signal: controller.signal,
+      };
+
+      if (body) {
+        fetchOptions.body = JSON.stringify(body);
+      }
+
+      const response = await fetch(url, fetchOptions);
+
+      if (!response.ok) {
+        const error = (await response.json().catch(() => ({}))) as { message?: string; error?: string };
+        const errorCode = error.error || '';
+        const errorMessage = error.message || error.error || `API error: ${response.status}`;
+
+        // Block-related errors are expected during context detection, don't log as errors
+        const isBlockError =
+          errorCode === 'BlockedActor' ||
+          errorCode === 'BlockedByActor' ||
+          errorMessage.includes('blocked');
+
+        if (!isBlockError) {
+          console.error('[TempBlock] API error:', response.status, JSON.stringify(error));
+        }
+
+        // Throw specific error for 401 to help background worker detect auth failure
+        if (response.status === 401) {
+          throw new Error(`Auth error: ${response.status} ${errorMessage}`);
+        }
+
+        // Include status code in error for retry logic
+        throw new Error(`${response.status}: ${errorMessage}`);
+      }
+
+      // Some endpoints return empty responses
+      const text = await response.text();
+      return text ? (JSON.parse(text) as T) : null;
+    } catch (error) {
+      // Convert abort to timeout error
+      if (error instanceof Error && error.name === 'AbortError') {
+        throw new Error(`Request timeout after ${timeoutMs}ms: ${url}`);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeoutId);
+    }
   };
 
-  if (body) {
-    options.body = JSON.stringify(body);
+  // Execute with or without retry
+  if (retry) {
+    return withRetry(doRequest, {
+      maxRetries,
+      initialDelayMs: 1000,
+      maxDelayMs: 10000,
+      isRetryable: isRetryableError,
+    });
   }
 
-  const response = await fetch(url, options);
-
-  if (!response.ok) {
-    const error = (await response.json().catch(() => ({}))) as { message?: string; error?: string };
-    const errorCode = error.error || '';
-    const errorMessage = error.message || error.error || `API error: ${response.status}`;
-
-    // Block-related errors are expected during context detection, don't log as errors
-    const isBlockError =
-      errorCode === 'BlockedActor' ||
-      errorCode === 'BlockedByActor' ||
-      errorMessage.includes('blocked');
-
-    if (!isBlockError) {
-      console.error('[TempBlock] API error:', response.status, JSON.stringify(error));
-    }
-
-    // Throw specific error for 401 to help background worker detect auth failure
-    if (response.status === 401) {
-      throw new Error(`Auth error: ${response.status} ${errorMessage}`);
-    }
-
-    throw new Error(errorMessage);
-  }
-
-  // Some endpoints return empty responses
-  const text = await response.text();
-  return text ? (JSON.parse(text) as T) : null;
+  return doRequest();
 }
 
 /**

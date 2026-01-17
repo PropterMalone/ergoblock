@@ -46,49 +46,49 @@ describe('Storage', () => {
 
   describe('Temp Blocks', () => {
     it('should add and get a temp block', async () => {
-      await addTempBlock('did:test:123', 'test.bsky.social', 3600000);
+      await addTempBlock('did:plc:test123', 'test.bsky.social', 3600000);
 
       const blocks = await getTempBlocks();
-      expect(blocks['did:test:123']).toBeDefined();
-      expect(blocks['did:test:123'].handle).toBe('test.bsky.social');
+      expect(blocks['did:plc:test123']).toBeDefined();
+      expect(blocks['did:plc:test123'].handle).toBe('test.bsky.social');
       expect(mockedBrowser.runtime.sendMessage).toHaveBeenCalledWith(
         expect.objectContaining({
           type: 'TEMP_BLOCK_ADDED',
-          did: 'did:test:123',
+          did: 'did:plc:test123',
         })
       );
     });
 
     it('should remove a temp block', async () => {
-      await addTempBlock('did:test:123', 'test.bsky.social');
-      await removeTempBlock('did:test:123');
+      await addTempBlock('did:plc:test123', 'test.bsky.social');
+      await removeTempBlock('did:plc:test123');
 
       const blocks = await getTempBlocks();
-      expect(blocks['did:test:123']).toBeUndefined();
+      expect(blocks['did:plc:test123']).toBeUndefined();
     });
   });
 
   describe('Temp Mutes', () => {
     it('should add and get a temp mute', async () => {
-      await addTempMute('did:test:456', 'mute.bsky.social', 3600000);
+      await addTempMute('did:plc:test456', 'mute.bsky.social', 3600000);
 
       const mutes = await getTempMutes();
-      expect(mutes['did:test:456']).toBeDefined();
-      expect(mutes['did:test:456'].handle).toBe('mute.bsky.social');
+      expect(mutes['did:plc:test456']).toBeDefined();
+      expect(mutes['did:plc:test456'].handle).toBe('mute.bsky.social');
       expect(mockedBrowser.runtime.sendMessage).toHaveBeenCalledWith(
         expect.objectContaining({
           type: 'TEMP_MUTE_ADDED',
-          did: 'did:test:456',
+          did: 'did:plc:test456',
         })
       );
     });
 
     it('should remove a temp mute', async () => {
-      await addTempMute('did:test:456', 'mute.bsky.social');
-      await removeTempMute('did:test:456');
+      await addTempMute('did:plc:test456', 'mute.bsky.social');
+      await removeTempMute('did:plc:test456');
 
       const mutes = await getTempMutes();
-      expect(mutes['did:test:456']).toBeUndefined();
+      expect(mutes['did:plc:test456']).toBeUndefined();
     });
   });
 
@@ -265,12 +265,12 @@ describe('Storage', () => {
       const now = Date.now();
 
       // Set up temp blocks
-      await addTempBlock('did:temp:1', 'temp.bsky.social', 3600000);
+      await addTempBlock('did:plc:temp1', 'temp.bsky.social', 3600000);
 
       // Set up permanent blocks
       await setPermanentBlocks({
-        'did:perm:1': {
-          did: 'did:perm:1',
+        'did:plc:perm1': {
+          did: 'did:plc:perm1',
           handle: 'perm.bsky.social',
           syncedAt: now,
         },
@@ -279,11 +279,11 @@ describe('Storage', () => {
       const managed = await getAllManagedBlocks();
       expect(managed.length).toBe(2);
 
-      const temp = managed.find((m) => m.did === 'did:temp:1');
+      const temp = managed.find((m) => m.did === 'did:plc:temp1');
       expect(temp?.source).toBe('ergoblock_temp');
       expect(temp?.type).toBe('block');
 
-      const perm = managed.find((m) => m.did === 'did:perm:1');
+      const perm = managed.find((m) => m.did === 'did:plc:perm1');
       expect(perm?.source).toBe('bluesky');
     });
 
@@ -291,10 +291,10 @@ describe('Storage', () => {
       const now = Date.now();
 
       // Same DID in both temp and permanent
-      await addTempBlock('did:both:1', 'both.bsky.social', 3600000);
+      await addTempBlock('did:plc:both1', 'both.bsky.social', 3600000);
       await setPermanentBlocks({
-        'did:both:1': {
-          did: 'did:both:1',
+        'did:plc:both1': {
+          did: 'did:plc:both1',
           handle: 'both.bsky.social',
           syncedAt: now,
         },
@@ -302,7 +302,7 @@ describe('Storage', () => {
 
       const managed = await getAllManagedBlocks();
       // Should only appear once (as temp, since temp takes precedence)
-      const matching = managed.filter((m) => m.did === 'did:both:1');
+      const matching = managed.filter((m) => m.did === 'did:plc:both1');
       expect(matching.length).toBe(1);
       expect(matching[0].source).toBe('ergoblock_temp');
     });
@@ -310,10 +310,10 @@ describe('Storage', () => {
     it('should get all managed mutes combining temp and permanent', async () => {
       const now = Date.now();
 
-      await addTempMute('did:temp:m1', 'tempmute.bsky.social', 3600000);
+      await addTempMute('did:plc:tempm1', 'tempmute.bsky.social', 3600000);
       await setPermanentMutes({
-        'did:perm:m1': {
-          did: 'did:perm:m1',
+        'did:plc:permm1': {
+          did: 'did:plc:permm1',
           handle: 'permmute.bsky.social',
           syncedAt: now,
         },
@@ -322,7 +322,7 @@ describe('Storage', () => {
       const managed = await getAllManagedMutes();
       expect(managed.length).toBe(2);
 
-      const temp = managed.find((m) => m.did === 'did:temp:m1');
+      const temp = managed.find((m) => m.did === 'did:plc:tempm1');
       expect(temp?.source).toBe('ergoblock_temp');
       expect(temp?.type).toBe('mute');
     });
@@ -330,18 +330,18 @@ describe('Storage', () => {
     it('should sort managed entries by date (newest first)', async () => {
       const now = Date.now();
 
-      await addTempBlock('did:newer', 'newer.bsky.social', 3600000);
+      await addTempBlock('did:plc:newer', 'newer.bsky.social', 3600000);
       await setPermanentBlocks({
-        'did:older': {
-          did: 'did:older',
+        'did:plc:older': {
+          did: 'did:plc:older',
           handle: 'older.bsky.social',
           syncedAt: now - 10000,
         },
       });
 
       const managed = await getAllManagedBlocks();
-      expect(managed[0].did).toBe('did:newer');
-      expect(managed[1].did).toBe('did:older');
+      expect(managed[0].did).toBe('did:plc:newer');
+      expect(managed[1].did).toBe('did:plc:older');
     });
   });
 

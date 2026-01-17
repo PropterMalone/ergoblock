@@ -775,6 +775,6 @@ describe('API Module', () => {
       const result = await findRecentInteraction('did:blocker:456', 'did:test:123');
 
       expect(result).toBeNull();
-    });
+    }, 15000); // Extended timeout to account for retry delays
   });
 });

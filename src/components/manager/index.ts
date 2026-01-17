@@ -10,7 +10,6 @@ export * from './MutesTable.js';
 export * from './HistoryTable.js';
 export * from './AmnestyTab.js';
 export * from './BlocklistAuditTab.js';
-export * from './BlockRelationshipsTab.js';
 export * from './RepostFiltersTab.js';
 export * from './ExportSection.js';
 export * from './utils.js';

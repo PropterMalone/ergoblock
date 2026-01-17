@@ -54,7 +54,6 @@ export type TabType =
   | 'history'
   | 'amnesty'
   | 'blocklist-audit'
-  | 'relationships'
   | 'repost-filters';
 export type SortColumn = 'user' | 'source' | 'status' | 'amnesty' | 'expires' | 'date';
 export type SortDirection = 'asc' | 'desc';

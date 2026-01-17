@@ -49,7 +49,6 @@ import {
   HistoryTable,
   AmnestyTab,
   BlocklistAuditTab,
-  BlockRelationshipsTab,
   RepostFiltersTab,
   ExportSection,
   formatTimeAgo,
@@ -405,8 +404,6 @@ function ManagerApp(): JSX.Element {
         );
       case 'blocklist-audit':
         return <BlocklistAuditTab onReload={loadData} />;
-      case 'relationships':
-        return <BlockRelationshipsTab onReload={loadData} />;
       case 'repost-filters':
         return <RepostFiltersTab onReload={loadData} />;
       default:

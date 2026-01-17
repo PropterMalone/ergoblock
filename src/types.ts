@@ -14,17 +14,7 @@ export interface ExtensionOptions {
   postContextRetentionDays: number; // 0 = never delete
   // Amnesty settings
   forgivenessPeriodDays: number; // How old a block must be to be eligible for amnesty
-  // Block relationships settings (AskBeeves integration)
-  blockRelationships: BlockRelationshipSettings;
 }
-
-export const DEFAULT_BLOCK_RELATIONSHIP_SETTINGS: BlockRelationshipSettings = {
-  enabled: true,
-  displayMode: 'compact',
-  autoSyncInterval: 60, // minutes
-  maxCacheSize: 5 * 1024 * 1024, // 5MB - Chrome local.storage has 10MB limit
-  showOnProfiles: true,
-};
 
 export const DEFAULT_OPTIONS: ExtensionOptions = {
   defaultDuration: 86400000, // 24 hours
@@ -38,8 +28,6 @@ export const DEFAULT_OPTIONS: ExtensionOptions = {
   postContextRetentionDays: 90,
   // Amnesty defaults
   forgivenessPeriodDays: 90, // 3 months
-  // Block relationships defaults
-  blockRelationships: DEFAULT_BLOCK_RELATIONSHIP_SETTINGS,
 };
 
 export interface HistoryEntry {
@@ -614,150 +602,6 @@ export interface GetActorLikesResponse {
     };
   }>;
   cursor?: string;
-}
-
-// ============================================================================
-// Block Relationship Types (AskBeeves Integration)
-// ============================================================================
-
-/**
- * Display mode for block relationship UI
- */
-export type BlockRelationshipDisplayMode = 'compact' | 'detailed';
-
-/**
- * Settings for block relationships feature
- */
-export interface BlockRelationshipSettings {
-  enabled: boolean;
-  displayMode: BlockRelationshipDisplayMode;
-  autoSyncInterval: number; // minutes between auto-syncs (default: 60)
-  maxCacheSize: number; // max cache size in bytes (default: 8MB)
-  showOnProfiles: boolean; // inject UI into Bluesky profile pages
-}
-
-/**
- * A user that the logged-in user follows (for block relationship tracking)
- */
-export interface FollowedUser {
-  did: string;
-  handle: string;
-  displayName?: string;
-  avatar?: string;
-  pdsUrl?: string; // cached PDS URL for faster block list fetching
-  lastBlockSync?: number; // timestamp of last block list sync
-}
-
-/**
- * Cache entry for a followed user's block list
- */
-export interface FollowBlockCache {
-  did: string;
-  handle: string;
-  displayName?: string;
-  avatar?: string;
-  pdsUrl?: string;
-  blocks: string[]; // DIDs this user has blocked
-  lastSync: number; // timestamp of last sync
-  repoRev?: string; // AT Protocol repo revision for incremental sync
-}
-
-/**
- * Overall block relationship cache structure
- * Stored in chrome.storage.local due to size
- */
-export interface BlockRelationshipCache {
-  follows: FollowedUser[];
-  followBlockLists: Record<string, FollowBlockCache>; // keyed by DID
-  lastFullSync: number;
-  syncInProgress: boolean;
-  syncErrors: string[];
-  totalFollows: number;
-  syncedFollows: number;
-}
-
-/**
- * Block relationship info for a specific profile
- */
-export interface ProfileBlockRelationships {
-  blockedBy: FollowedUser[]; // users you follow who block this profile
-  blocking: FollowedUser[]; // users you follow that this profile blocks
-  lastChecked: number;
-}
-
-/**
- * Sync status for block relationships (for UI display)
- */
-export interface BlockRelationshipSyncStatus {
-  lastSync: number;
-  isRunning: boolean;
-  totalFollows: number;
-  syncedFollows: number;
-  errors: string[];
-  currentUser?: string; // handle of user currently being synced
-  phase?: 'fetching-follows' | 'syncing-blocks' | 'syncing-blocklists'; // current sync phase
-  fetchingPage?: number; // current page being fetched (during fetching-follows phase)
-  fetchedFollows?: number; // follows fetched so far (during fetching-follows phase)
-  totalBlocksTracked?: number; // total blocks tracked (direct + list subscriptions)
-}
-
-// ============================================================================
-// Block Relationship Cache V2 Types (with blocklist deduplication)
-// ============================================================================
-
-/**
- * V2 cache entry for a followed user's blocks
- * Separates direct blocks from blocklist subscriptions for efficiency
- */
-export interface FollowBlockCacheV2 {
-  did: string;
-  handle: string;
-  displayName?: string;
-  avatar?: string;
-  pdsUrl?: string;
-  directBlocks: string[]; // DIDs explicitly blocked by this user
-  subscribedLists: string[]; // List URIs this user subscribes to (blocklists)
-  lastSync: number;
-  repoRev?: string; // AT Protocol repo revision for incremental sync
-}
-
-/**
- * Cached blocklist data (shared across all subscribers)
- * Stored in global cache to avoid duplication
- */
-export interface CachedBlocklist {
-  uri: string; // at://did/app.bsky.graph.list/rkey
-  name: string;
-  description?: string;
-  creatorDid: string;
-  creatorHandle: string;
-  members: string[]; // DIDs of users on this blocklist
-  memberCount: number;
-  lastSync: number;
-}
-
-/**
- * Global blocklist cache structure
- * Shared across all followed users to deduplicate storage
- */
-export interface GlobalBlocklistCache {
-  lists: Record<string, CachedBlocklist>; // keyed by list URI
-  lastPruned: number;
-}
-
-/**
- * V2 overall block relationship cache structure
- * Separates direct blocks from list subscriptions with global blocklist deduplication
- */
-export interface BlockRelationshipCacheV2 {
-  version: 2;
-  follows: FollowedUser[];
-  followBlockLists: Record<string, FollowBlockCacheV2>; // keyed by DID
-  lastFullSync: number;
-  syncInProgress: boolean;
-  syncErrors: string[];
-  totalFollows: number;
-  syncedFollows: number;
 }
 
 // ============================================================================

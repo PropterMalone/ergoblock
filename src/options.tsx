@@ -175,73 +175,6 @@ function OptionsApp() {
         </SettingRow>
       </SettingsSection>
 
-      <SettingsSection title="Block Relationships">
-        <SettingRow
-          label="Enable feature"
-          description="Track which of your follows block other profiles"
-        >
-          <Checkbox
-            id="blockRelEnabled"
-            label="Enable"
-            checked={options.blockRelationships?.enabled ?? true}
-            onChange={(checked) =>
-              updateOption('blockRelationships', {
-                ...options.blockRelationships,
-                enabled: checked,
-              })
-            }
-          />
-        </SettingRow>
-
-        <SettingRow
-          label="Show on profiles"
-          description="Display block info when viewing Bluesky profiles"
-        >
-          <Checkbox
-            id="blockRelShowOnProfiles"
-            label="Show on profiles"
-            checked={options.blockRelationships?.showOnProfiles ?? true}
-            onChange={(checked) =>
-              updateOption('blockRelationships', {
-                ...options.blockRelationships,
-                showOnProfiles: checked,
-              })
-            }
-          />
-        </SettingRow>
-
-        <SettingRow label="Display mode" description="How to show block relationship info">
-          <DisplayModeSelector
-            value={options.blockRelationships?.displayMode ?? 'compact'}
-            onChange={(mode) =>
-              updateOption('blockRelationships', {
-                ...options.blockRelationships,
-                displayMode: mode,
-              })
-            }
-          />
-        </SettingRow>
-
-        <SettingRow
-          label="Auto-sync interval"
-          description="How often to refresh block lists in background"
-        >
-          <RangeSlider
-            id="blockRelSyncInterval"
-            min={30}
-            max={180}
-            value={options.blockRelationships?.autoSyncInterval ?? 60}
-            unit="min"
-            onChange={(value) =>
-              updateOption('blockRelationships', {
-                ...options.blockRelationships,
-                autoSyncInterval: value,
-              })
-            }
-          />
-        </SettingRow>
-      </SettingsSection>
-
       <div class="button-group">
         <button class="btn-primary" onClick={handleSave} disabled={saving}>
           {saving ? 'Saving...' : 'Save Settings'}
@@ -380,37 +313,6 @@ function ThemeSelector({ value, onChange }: ThemeSelectorProps) {
             onChange={() => onChange(theme.value)}
           />
           <span>{theme.label}</span>
-        </label>
-      ))}
-    </div>
-  );
-}
-
-type DisplayMode = 'compact' | 'detailed';
-
-interface DisplayModeSelectorProps {
-  value: DisplayMode;
-  onChange: (mode: DisplayMode) => void;
-}
-
-function DisplayModeSelector({ value, onChange }: DisplayModeSelectorProps) {
-  const modes: { value: DisplayMode; label: string }[] = [
-    { value: 'compact', label: 'Compact' },
-    { value: 'detailed', label: 'Detailed' },
-  ];
-
-  return (
-    <div class="radio-group">
-      {modes.map((mode) => (
-        <label key={mode.value} class="radio-option">
-          <input
-            type="radio"
-            name="displayMode"
-            value={mode.value}
-            checked={value === mode.value}
-            onChange={() => onChange(mode.value)}
-          />
-          <span>{mode.label}</span>
         </label>
       ))}
     </div>

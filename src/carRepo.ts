@@ -3,6 +3,9 @@ import { decode } from '@atcute/cbor';
 
 const BSKY_RELAY = 'https://bsky.network';
 
+// Timeout for CAR file downloads (2 minutes - large repos can be 100MB+)
+const CAR_DOWNLOAD_TIMEOUT_MS = 120000;
+
 /**
  * Response from com.atproto.sync.getLatestCommit
  */
@@ -79,46 +82,75 @@ function formatBytes(bytes: number): string {
 
 /**
  * Download a CAR file from the user's PDS or fallback relay
+ * Includes timeout to prevent hanging on large repos
  */
 async function downloadCarFile(
   did: string,
   pdsUrl: string | null,
-  onProgress?: CarProgressCallback
+  onProgress?: CarProgressCallback,
+  timeoutMs: number = CAR_DOWNLOAD_TIMEOUT_MS
 ): Promise<Uint8Array> {
   onProgress?.('Downloading repository...');
 
-  // Try user's PDS first
-  if (pdsUrl) {
-    try {
-      const response = await fetch(
-        `${pdsUrl}/xrpc/com.atproto.sync.getRepo?did=${encodeURIComponent(did)}`
-      );
-      if (response.ok) {
-        return await streamResponseToUint8Array(response, onProgress);
+  // Create AbortController for timeout
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => {
+    controller.abort();
+    onProgress?.('Download timed out');
+  }, timeoutMs);
+
+  try {
+    // Try user's PDS first
+    if (pdsUrl) {
+      try {
+        const response = await fetch(
+          `${pdsUrl}/xrpc/com.atproto.sync.getRepo?did=${encodeURIComponent(did)}`,
+          { signal: controller.signal }
+        );
+        if (response.ok) {
+          return await streamResponseToUint8Array(response, onProgress, controller.signal);
+        }
+        console.warn(`[ErgoBlock CAR] PDS fetch failed: ${response.status}, trying relay`);
+      } catch (error) {
+        // Check if this was an abort (timeout)
+        // Note: DOMException may not extend Error in all environments
+        if (error && typeof error === 'object' && (error as { name?: string }).name === 'AbortError') {
+          throw new Error(`CAR download timed out after ${timeoutMs}ms`);
+        }
+        console.warn(`[ErgoBlock CAR] PDS fetch error, trying relay:`, error);
       }
-      console.warn(`[ErgoBlock CAR] PDS fetch failed: ${response.status}, trying relay`);
-    } catch (error) {
-      console.warn(`[ErgoBlock CAR] PDS fetch error, trying relay:`, error);
     }
-  }
 
-  // Fallback to public relay
-  const relayResponse = await fetch(
-    `${BSKY_RELAY}/xrpc/com.atproto.sync.getRepo?did=${encodeURIComponent(did)}`
-  );
-  if (!relayResponse.ok) {
-    throw new Error(`Failed to download repo: ${relayResponse.status}`);
-  }
+    // Fallback to public relay
+    const relayResponse = await fetch(
+      `${BSKY_RELAY}/xrpc/com.atproto.sync.getRepo?did=${encodeURIComponent(did)}`,
+      { signal: controller.signal }
+    );
+    if (!relayResponse.ok) {
+      throw new Error(`Failed to download repo: ${relayResponse.status}`);
+    }
 
-  return await streamResponseToUint8Array(relayResponse, onProgress);
+    return await streamResponseToUint8Array(relayResponse, onProgress, controller.signal);
+  } catch (error) {
+    // Convert abort to timeout error
+    // Note: DOMException may not extend Error in all environments
+    if (error && typeof error === 'object' && (error as { name?: string }).name === 'AbortError') {
+      throw new Error(`CAR download timed out after ${timeoutMs}ms`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 /**
  * Stream response body to Uint8Array with progress reporting
+ * Supports abort signal for timeout handling
  */
 async function streamResponseToUint8Array(
   response: Response,
-  onProgress?: CarProgressCallback
+  onProgress?: CarProgressCallback,
+  abortSignal?: AbortSignal
 ): Promise<Uint8Array> {
   const contentLength = response.headers.get('content-length');
   const totalBytes = contentLength ? parseInt(contentLength, 10) : null;
@@ -131,21 +163,32 @@ async function streamResponseToUint8Array(
   const chunks: Uint8Array[] = [];
   let receivedBytes = 0;
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
+  try {
+    while (true) {
+      // Check if aborted before each read
+      if (abortSignal?.aborted) {
+        reader.cancel();
+        throw new Error('Download aborted');
+      }
 
-    chunks.push(value);
-    receivedBytes += value.length;
+      const { done, value } = await reader.read();
+      if (done) break;
 
-    if (totalBytes) {
-      const percent = Math.round((receivedBytes / totalBytes) * 100);
-      onProgress?.(
-        `Downloading... ${formatBytes(receivedBytes)} / ${formatBytes(totalBytes)} (${percent}%)`
-      );
-    } else {
-      onProgress?.(`Downloading... ${formatBytes(receivedBytes)}`);
+      chunks.push(value);
+      receivedBytes += value.length;
+
+      if (totalBytes) {
+        const percent = Math.round((receivedBytes / totalBytes) * 100);
+        onProgress?.(
+          `Downloading... ${formatBytes(receivedBytes)} / ${formatBytes(totalBytes)} (${percent}%)`
+        );
+      } else {
+        onProgress?.(`Downloading... ${formatBytes(receivedBytes)}`);
+      }
     }
+  } catch (error) {
+    reader.cancel();
+    throw error;
   }
 
   // Combine chunks into single Uint8Array
@@ -389,52 +432,77 @@ export async function getLatestCommit(
 
 /**
  * Download a CAR file with optional `since` parameter for incremental sync
+ * Includes timeout to prevent hanging on large repos
  */
 async function downloadCarFileIncremental(
   did: string,
   pdsUrl: string | null,
   since?: string,
-  onProgress?: CarProgressCallback
+  onProgress?: CarProgressCallback,
+  timeoutMs: number = CAR_DOWNLOAD_TIMEOUT_MS
 ): Promise<Uint8Array> {
   const sinceParam = since ? `&since=${encodeURIComponent(since)}` : '';
   onProgress?.(since ? 'Downloading changes...' : 'Downloading repository...');
 
-  // Try user's PDS first
-  if (pdsUrl) {
-    try {
-      const response = await fetch(
-        `${pdsUrl}/xrpc/com.atproto.sync.getRepo?did=${encodeURIComponent(did)}${sinceParam}`
-      );
-      if (response.ok) {
-        return await streamResponseToUint8Array(response, onProgress);
+  // Create AbortController for timeout
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => {
+    controller.abort();
+    onProgress?.('Download timed out');
+  }, timeoutMs);
+
+  try {
+    // Try user's PDS first
+    if (pdsUrl) {
+      try {
+        const response = await fetch(
+          `${pdsUrl}/xrpc/com.atproto.sync.getRepo?did=${encodeURIComponent(did)}${sinceParam}`,
+          { signal: controller.signal }
+        );
+        if (response.ok) {
+          return await streamResponseToUint8Array(response, onProgress, controller.signal);
+        }
+        // If incremental fails with 400, PDS might not support `since` - fall through to full download
+        if (response.status === 400 && since) {
+          console.warn(`[ErgoBlock CAR] PDS doesn't support incremental sync, will do full download`);
+          throw new Error('Incremental not supported');
+        }
+        console.warn(`[ErgoBlock CAR] PDS fetch failed: ${response.status}, trying relay`);
+      } catch (error) {
+        if (error instanceof Error && error.message === 'Incremental not supported') {
+          throw error;
+        }
+        // Note: DOMException may not extend Error in all environments
+        if (error && typeof error === 'object' && (error as { name?: string }).name === 'AbortError') {
+          throw new Error(`CAR download timed out after ${timeoutMs}ms`);
+        }
+        console.warn(`[ErgoBlock CAR] PDS fetch error, trying relay:`, error);
       }
-      // If incremental fails with 400, PDS might not support `since` - fall through to full download
-      if (response.status === 400 && since) {
-        console.warn(`[ErgoBlock CAR] PDS doesn't support incremental sync, will do full download`);
+    }
+
+    // Fallback to public relay
+    const relayResponse = await fetch(
+      `${BSKY_RELAY}/xrpc/com.atproto.sync.getRepo?did=${encodeURIComponent(did)}${sinceParam}`,
+      { signal: controller.signal }
+    );
+
+    if (!relayResponse.ok) {
+      if (relayResponse.status === 400 && since) {
         throw new Error('Incremental not supported');
       }
-      console.warn(`[ErgoBlock CAR] PDS fetch failed: ${response.status}, trying relay`);
-    } catch (error) {
-      if (error instanceof Error && error.message === 'Incremental not supported') {
-        throw error;
-      }
-      console.warn(`[ErgoBlock CAR] PDS fetch error, trying relay:`, error);
+      throw new Error(`Failed to download repo: ${relayResponse.status}`);
     }
-  }
 
-  // Fallback to public relay
-  const relayResponse = await fetch(
-    `${BSKY_RELAY}/xrpc/com.atproto.sync.getRepo?did=${encodeURIComponent(did)}${sinceParam}`
-  );
-
-  if (!relayResponse.ok) {
-    if (relayResponse.status === 400 && since) {
-      throw new Error('Incremental not supported');
+    return await streamResponseToUint8Array(relayResponse, onProgress, controller.signal);
+  } catch (error) {
+    // Note: DOMException may not extend Error in all environments
+    if (error && typeof error === 'object' && (error as { name?: string }).name === 'AbortError') {
+      throw new Error(`CAR download timed out after ${timeoutMs}ms`);
     }
-    throw new Error(`Failed to download repo: ${relayResponse.status}`);
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
   }
-
-  return await streamResponseToUint8Array(relayResponse, onProgress);
 }
 
 /**
