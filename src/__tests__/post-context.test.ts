@@ -1,5 +1,10 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { findPostContainer, capturePostContext, EngagementContext } from '../post-context.js';
+import {
+  findPostContainer,
+  capturePostContext,
+  EngagementContext,
+  NotificationContext,
+} from '../post-context.js';
 
 // Mock storage module
 vi.mock('../storage.js', () => ({
@@ -194,6 +199,103 @@ describe('Post Context Module', () => {
       );
 
       expect(result?.postText?.length).toBe(500);
+    });
+
+    it('should capture notification context when provided', async () => {
+      const notificationContext: NotificationContext = {
+        notificationType: 'like',
+        subjectUri: 'at://did:mypost/app.bsky.feed.post/liked123',
+        sourceUrl: 'https://bsky.app/notifications',
+      };
+
+      const result = await capturePostContext(
+        null,
+        'liker.bsky.social',
+        'did:liker:789',
+        'block',
+        false,
+        null,
+        notificationContext
+      );
+
+      expect(result).not.toBeNull();
+      expect(result?.notificationType).toBe('like');
+      expect(result?.notificationSubjectUri).toBe('at://did:mypost/app.bsky.feed.post/liked123');
+    });
+
+    it('should capture notification context with reply type', async () => {
+      const notificationContext: NotificationContext = {
+        notificationType: 'reply',
+        subjectUri: 'at://did:mypost/app.bsky.feed.post/replied123',
+        sourceUrl: 'https://bsky.app/notifications',
+      };
+
+      const result = await capturePostContext(
+        null,
+        'replier.bsky.social',
+        'did:replier:111',
+        'mute',
+        false,
+        null,
+        notificationContext
+      );
+
+      expect(result).not.toBeNull();
+      expect(result?.notificationType).toBe('reply');
+      expect(result?.actionType).toBe('mute');
+    });
+
+    it('should handle follow notification without subject URI', async () => {
+      const notificationContext: NotificationContext = {
+        notificationType: 'follow',
+        sourceUrl: 'https://bsky.app/notifications',
+      };
+
+      const result = await capturePostContext(
+        null,
+        'follower.bsky.social',
+        'did:follower:222',
+        'block',
+        true,
+        null,
+        notificationContext
+      );
+
+      expect(result).not.toBeNull();
+      expect(result?.notificationType).toBe('follow');
+      expect(result?.notificationSubjectUri).toBeUndefined();
+      expect(result?.permanent).toBe(true);
+    });
+
+    it('should capture both engagement and notification context', async () => {
+      const engagementContext: EngagementContext = {
+        type: 'repost',
+        postUri: 'at://did:post/app.bsky.feed.post/eng123',
+        sourceUrl: 'https://bsky.app/profile/author/post/eng123/reposted-by',
+      };
+
+      const notificationContext: NotificationContext = {
+        notificationType: 'repost',
+        subjectUri: 'at://did:post/app.bsky.feed.post/notif123',
+        sourceUrl: 'https://bsky.app/notifications',
+      };
+
+      const result = await capturePostContext(
+        null,
+        'reposter.bsky.social',
+        'did:reposter:333',
+        'block',
+        false,
+        engagementContext,
+        notificationContext
+      );
+
+      expect(result).not.toBeNull();
+      // Both contexts should be captured
+      expect(result?.engagementType).toBe('repost');
+      expect(result?.engagedPostUri).toBe('at://did:post/app.bsky.feed.post/eng123');
+      expect(result?.notificationType).toBe('repost');
+      expect(result?.notificationSubjectUri).toBe('at://did:post/app.bsky.feed.post/notif123');
     });
   });
 });

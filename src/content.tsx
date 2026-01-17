@@ -5,10 +5,26 @@
 import { render } from 'preact';
 import browser from './browser.js';
 import { getSession, getProfile, blockUser, muteUser } from './api.js';
-import { addTempBlock, addTempMute } from './storage.js';
-import { capturePostContext, findPostContainer, type EngagementContext } from './post-context.js';
+import {
+  addTempBlock,
+  addTempMute,
+  isRepostFiltered,
+  addRepostFilteredUser,
+  removeRepostFilteredUser,
+  isHandleFollowed,
+} from './storage.js';
+import type { RepostFilteredUser } from './types.js';
+import {
+  capturePostContext,
+  findPostContainer,
+  type EngagementContext,
+  type NotificationContext,
+} from './post-context.js';
+import type { NotificationReason } from './types.js';
 import { DurationPicker, type DurationOption } from './components/content/DurationPicker.js';
 import { ContentToast } from './components/content/ContentToast.js';
+import { NotificationMenu } from './components/content/NotificationMenu.js';
+import { initFeedFilter } from './feed-filter.js';
 
 // Configuration for DOM selectors and magic strings
 const CONFIG = {
@@ -20,12 +36,18 @@ const CONFIG = {
       '[data-testid*="feedItem"], [data-testid*="postThreadItem"], article, [data-testid*="post"]',
     MENU_CONTAINER: '[data-testid]',
     RADIX_MENU: '[data-radix-menu-content]',
+    // Notification-specific selectors
+    NOTIFICATION_CONTAINER: '[data-testid*="notification"]',
   },
   REGEX: {
     PROFILE_PATH: /\/profile\/([^/]+)/,
     // Match /profile/{handle}/post/{rkey}/liked-by or /reposted-by
     LIKED_BY: /\/profile\/([^/]+)\/post\/([^/]+)\/liked-by/,
     REPOSTED_BY: /\/profile\/([^/]+)\/post\/([^/]+)\/reposted-by/,
+    // Notifications page
+    NOTIFICATIONS_PAGE: /\/notifications\/?$/,
+    // Post URL pattern for extracting subject URIs
+    POST_URL: /\/profile\/([^/]+)\/post\/([^/?#]+)/,
   },
   ATTRIBUTES: {
     INJECTED: 'data-temp-block-injected',
@@ -54,6 +76,12 @@ let toastHost: HTMLElement | null = null;
 
 // Engagement context tracking (liked-by/reposted-by pages)
 let currentEngagementContext: EngagementContext | null = null;
+
+// Captured notification info when clicking block/mute in a notification menu
+let capturedNotificationInfo: {
+  notificationType: NotificationReason | null;
+  subjectUri: string | null;
+} | null = null;
 
 /**
  * Extract engagement context from URL (liked-by or reposted-by pages)
@@ -141,6 +169,83 @@ function updateEngagementContext(): void {
 }
 
 /**
+ * Check if we're on the notifications page
+ */
+function isNotificationsPage(): boolean {
+  return CONFIG.REGEX.NOTIFICATIONS_PAGE.test(window.location.pathname);
+}
+
+/**
+ * Detect notification type from a notification item's text content
+ */
+function detectNotificationType(notificationItem: Element): NotificationReason | null {
+  const text = notificationItem.textContent?.toLowerCase() || '';
+
+  // Check for keywords that indicate notification type
+  if (text.includes('liked your') || text.includes('liked this')) return 'like';
+  if (text.includes('reposted your') || text.includes('reposted this')) return 'repost';
+  if (text.includes('followed you') || text.includes('started following')) return 'follow';
+  if (text.includes('mentioned you')) return 'mention';
+  if (text.includes('replied to') || text.includes('replied:')) return 'reply';
+  if (text.includes('quoted your') || text.includes('quoted this')) return 'quote';
+
+  return null;
+}
+
+/**
+ * Extract the subject URI (post that was liked/reposted/replied to) from a notification item
+ */
+function extractNotificationSubjectUri(notificationItem: Element): string | null {
+  // Look for post links within the notification
+  const postLinks = notificationItem.querySelectorAll('a[href*="/post/"]');
+
+  for (const link of postLinks) {
+    const href = (link as HTMLAnchorElement).href;
+    const match = href.match(CONFIG.REGEX.POST_URL);
+    if (match) {
+      const [, handle, rkey] = match;
+      return `at://${handle}/app.bsky.feed.post/${rkey}`;
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Extract user info specifically from notification context
+ */
+function extractUserFromNotification(
+  menuElement: Element,
+  triggerElement: HTMLElement | null
+): {
+  handle: string;
+  notificationType: NotificationReason | null;
+  subjectUri: string | null;
+} | null {
+  // Find notification container
+  const notificationItem =
+    menuElement.closest(CONFIG.SELECTORS.NOTIFICATION_CONTAINER) ||
+    triggerElement?.closest(CONFIG.SELECTORS.NOTIFICATION_CONTAINER);
+
+  if (!notificationItem) return null;
+
+  // Find the first profile link - this is typically the notification actor
+  const profileLink = notificationItem.querySelector(
+    CONFIG.SELECTORS.PROFILE_LINK
+  ) as HTMLAnchorElement;
+  if (!profileLink) return null;
+
+  const handleMatch = profileLink.href.match(CONFIG.REGEX.PROFILE_PATH);
+  if (!handleMatch) return null;
+
+  return {
+    handle: handleMatch[1],
+    notificationType: detectNotificationType(notificationItem),
+    subjectUri: extractNotificationSubjectUri(notificationItem),
+  };
+}
+
+/**
  * Create a Shadow DOM container for isolated rendering
  */
 function createShadowContainer(id: string): { host: HTMLElement; shadow: ShadowRoot } {
@@ -198,7 +303,10 @@ document.addEventListener(
 /**
  * Extract user info from the current page context
  */
-function extractUserFromPage(): { handle: string } | null {
+function extractUserFromPage(): {
+  handle: string;
+  notificationInfo?: { notificationType: NotificationReason | null; subjectUri: string | null };
+} | null {
   const profileMatch = window.location.pathname.match(CONFIG.REGEX.PROFILE_PATH);
   if (profileMatch) {
     return { handle: profileMatch[1] };
@@ -208,8 +316,31 @@ function extractUserFromPage(): { handle: string } | null {
 
 /**
  * Extract user info from a dropdown menu context
+ * Returns handle and optionally notification context if on notifications page
  */
-function extractUserFromMenu(menuElement: Element): { handle: string } | null {
+function extractUserFromMenu(menuElement: Element): {
+  handle: string;
+  notificationInfo?: { notificationType: NotificationReason | null; subjectUri: string | null };
+} | null {
+  // Try notification-specific extraction first if on notifications page
+  if (isNotificationsPage()) {
+    const notificationInfo = extractUserFromNotification(menuElement, lastClickedElement);
+    if (notificationInfo) {
+      console.log(
+        '[ErgoBlock] Found user from notification context:',
+        notificationInfo.handle,
+        notificationInfo.notificationType
+      );
+      return {
+        handle: notificationInfo.handle,
+        notificationInfo: {
+          notificationType: notificationInfo.notificationType,
+          subjectUri: notificationInfo.subjectUri,
+        },
+      };
+    }
+  }
+
   const profileLink = menuElement.querySelector(CONFIG.SELECTORS.PROFILE_LINK) as HTMLAnchorElement;
   if (profileLink) {
     const match = profileLink.href.match(CONFIG.REGEX.PROFILE_PATH);
@@ -292,16 +423,33 @@ function showDurationPicker(actionType: 'block' | 'mute', handle: string): void 
     pickerHost = null;
   };
 
-  render(
-    <DurationPicker
-      actionType={actionType}
-      handle={handle}
-      options={DURATION_OPTIONS}
-      onSelect={handleSelect}
-      onCancel={handleCancel}
-    />,
-    container
-  );
+  // Render immediately without DID (stats will show loading state)
+  const renderPicker = (did?: string) => {
+    render(
+      <DurationPicker
+        actionType={actionType}
+        handle={handle}
+        did={did}
+        options={DURATION_OPTIONS}
+        onSelect={handleSelect}
+        onCancel={handleCancel}
+      />,
+      container
+    );
+  };
+
+  renderPicker();
+
+  // Resolve DID in background and re-render with stats
+  getProfile(handle)
+    .then((profile) => {
+      if (profile?.did && pickerHost) {
+        renderPicker(profile.did);
+      }
+    })
+    .catch(() => {
+      // Profile resolution failed, stats will show as unavailable
+    });
 }
 
 /**
@@ -365,9 +513,27 @@ async function handleTempBlock(
 
     await addTempBlock(profile.did, profile.handle || handle, durationMs, rkey);
 
-    capturePostContext(postContainer, handle, profile.did, 'block', false, currentEngagementContext).catch((e) =>
-      console.warn('[ErgoBlock] Post context capture failed:', e)
-    );
+    // Build notification context if we have notification info
+    const notifContext: NotificationContext | null = capturedNotificationInfo?.notificationType
+      ? {
+          notificationType: capturedNotificationInfo.notificationType,
+          subjectUri: capturedNotificationInfo.subjectUri || undefined,
+          sourceUrl: window.location.href,
+        }
+      : null;
+
+    capturePostContext(
+      postContainer,
+      handle,
+      profile.did,
+      'block',
+      false,
+      currentEngagementContext,
+      notifContext
+    ).catch((e) => console.warn('[ErgoBlock] Post context capture failed:', e));
+
+    // Clear captured notification info after use
+    capturedNotificationInfo = null;
 
     closeMenus();
     showToast(`Temporarily blocked @${profile.handle || handle} for ${durationLabel}`);
@@ -396,9 +562,27 @@ async function handleTempMute(
     await muteUser(profile.did);
     await addTempMute(profile.did, profile.handle || handle, durationMs);
 
-    capturePostContext(postContainer, handle, profile.did, 'mute', false, currentEngagementContext).catch((e) =>
-      console.warn('[ErgoBlock] Post context capture failed:', e)
-    );
+    // Build notification context if we have notification info
+    const notifContext: NotificationContext | null = capturedNotificationInfo?.notificationType
+      ? {
+          notificationType: capturedNotificationInfo.notificationType,
+          subjectUri: capturedNotificationInfo.subjectUri || undefined,
+          sourceUrl: window.location.href,
+        }
+      : null;
+
+    capturePostContext(
+      postContainer,
+      handle,
+      profile.did,
+      'mute',
+      false,
+      currentEngagementContext,
+      notifContext
+    ).catch((e) => console.warn('[ErgoBlock] Post context capture failed:', e));
+
+    // Clear captured notification info after use
+    capturedNotificationInfo = null;
 
     closeMenus();
     showToast(`Temporarily muted @${profile.handle || handle} for ${durationLabel}`);
@@ -426,9 +610,27 @@ async function handlePermanentAction(actionType: 'block' | 'mute', handle: strin
       await muteUser(profile.did);
     }
 
-    capturePostContext(postContainer, handle, profile.did, actionType, true, currentEngagementContext).catch((e) =>
-      console.warn('[ErgoBlock] Post context capture failed:', e)
-    );
+    // Build notification context if we have notification info
+    const notifContext: NotificationContext | null = capturedNotificationInfo?.notificationType
+      ? {
+          notificationType: capturedNotificationInfo.notificationType,
+          subjectUri: capturedNotificationInfo.subjectUri || undefined,
+          sourceUrl: window.location.href,
+        }
+      : null;
+
+    capturePostContext(
+      postContainer,
+      handle,
+      profile.did,
+      actionType,
+      true,
+      currentEngagementContext,
+      notifContext
+    ).catch((e) => console.warn('[ErgoBlock] Post context capture failed:', e));
+
+    // Clear captured notification info after use
+    capturedNotificationInfo = null;
 
     closeMenus();
     showToast(
@@ -443,7 +645,12 @@ async function handlePermanentAction(actionType: 'block' | 'mute', handle: strin
 /**
  * Intercept a native menu item to show duration picker instead
  */
-function interceptMenuItem(item: HTMLElement, actionType: 'block' | 'mute', handle: string): void {
+function interceptMenuItem(
+  item: HTMLElement,
+  actionType: 'block' | 'mute',
+  handle: string,
+  notificationInfo?: { notificationType: NotificationReason | null; subjectUri: string | null }
+): void {
   const clone = item.cloneNode(true) as HTMLElement;
 
   clone.addEventListener(
@@ -454,6 +661,8 @@ function interceptMenuItem(item: HTMLElement, actionType: 'block' | 'mute', hand
       e.stopImmediatePropagation();
 
       capturedPostContainer = lastClickedPostContainer;
+      // Capture notification info for later use in the action handlers
+      capturedNotificationInfo = notificationInfo || null;
 
       closeMenus();
       showDurationPicker(actionType, handle);
@@ -485,13 +694,15 @@ function injectMenuItems(menu: Element): void {
   }
 
   const handle = userInfo.handle;
+  // Extract notification info if available (from notification context)
+  const notificationInfo = userInfo.notificationInfo;
   const menuItemsList = menuItems.querySelectorAll(CONFIG.SELECTORS.MENU_ITEM);
 
   for (const item of menuItemsList) {
     const text = item.textContent?.toLowerCase() || '';
 
     if (text.includes('block') && !text.includes('unblock')) {
-      interceptMenuItem(item as HTMLElement, 'block', handle);
+      interceptMenuItem(item as HTMLElement, 'block', handle, notificationInfo);
     }
 
     if (
@@ -500,9 +711,371 @@ function injectMenuItems(menu: Element): void {
       !text.includes('thread') &&
       !text.includes('word')
     ) {
-      interceptMenuItem(item as HTMLElement, 'mute', handle);
+      interceptMenuItem(item as HTMLElement, 'mute', handle, notificationInfo);
     }
   }
+
+  // Try to inject repost filter option (only on profile menus for followed users)
+  injectRepostFilterOption(menu, handle);
+}
+
+/**
+ * Check if we're on a profile page
+ */
+function isProfilePage(): boolean {
+  return /\/profile\/[^/]+\/?$/.test(window.location.pathname);
+}
+
+/**
+ * Check if a user is in our follows list
+ */
+async function isFollowedUser(handle: string): Promise<boolean> {
+  try {
+    return await isHandleFollowed(handle);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Inject "Disable/Enable Reposts" option into profile menus for followed users
+ */
+async function injectRepostFilterOption(menu: Element, handle: string): Promise<void> {
+  // Only inject on profile pages for followed users
+  if (!isProfilePage()) return;
+
+  // Check if we already injected
+  if (menu.querySelector('[data-ergoblock-repost-filter]')) return;
+
+  // Check if user is followed
+  const isFollowed = await isFollowedUser(handle);
+  if (!isFollowed) return;
+
+  // Get profile info (API returns full profile with displayName/avatar)
+  const profile = (await getProfile(handle)) as {
+    did: string;
+    handle: string;
+    displayName?: string;
+    avatar?: string;
+  } | null;
+  if (!profile?.did) return;
+
+  // Check if already filtered
+  const isFiltered = await isRepostFiltered(profile.did);
+
+  // Find a menu item to clone the style from (prefer mute item for similar styling)
+  const muteMenuItem = Array.from(menu.querySelectorAll(CONFIG.SELECTORS.MENU_ITEM)).find(
+    (item) => {
+      const text = item.textContent?.toLowerCase() || '';
+      return text.includes('mute') && !text.includes('unmute') && !text.includes('thread');
+    }
+  );
+  const existingMenuItem = muteMenuItem || menu.querySelector(CONFIG.SELECTORS.MENU_ITEM);
+  if (!existingMenuItem) return;
+
+  // Deep clone to preserve inner structure and styling
+  const repostMenuItem = existingMenuItem.cloneNode(true) as HTMLElement;
+  repostMenuItem.setAttribute('role', 'menuitem');
+  repostMenuItem.setAttribute('data-ergoblock-repost-filter', 'true');
+  repostMenuItem.setAttribute('tabindex', '0');
+
+  // Find and update the text content (may be in nested elements)
+  const textLabel = isFiltered ? 'Enable Reposts' : 'Disable Reposts';
+
+  // Try to find a text node or the innermost div with text
+  const updateText = (el: Element): boolean => {
+    // Check direct text nodes
+    for (const child of el.childNodes) {
+      if (child.nodeType === Node.TEXT_NODE && child.textContent?.trim()) {
+        child.textContent = textLabel;
+        return true;
+      }
+    }
+    // Recurse into child elements
+    for (const child of el.children) {
+      if (updateText(child)) return true;
+    }
+    return false;
+  };
+
+  if (!updateText(repostMenuItem)) {
+    // Fallback: just set textContent if no text node found
+    repostMenuItem.textContent = textLabel;
+  }
+
+  // Remove any SVG icons (we don't have a matching icon)
+  const svg = repostMenuItem.querySelector('svg');
+  if (svg) {
+    svg.remove();
+  }
+
+  // Handle click
+  repostMenuItem.addEventListener('click', async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    try {
+      if (isFiltered) {
+        // Remove from filter list
+        await removeRepostFilteredUser(profile.did);
+        showToast(`Enabled reposts from @${handle}`);
+      } else {
+        // Add to filter list
+        const user: RepostFilteredUser = {
+          did: profile.did,
+          handle: profile.handle || handle,
+          displayName: profile.displayName,
+          avatar: profile.avatar,
+          addedAt: Date.now(),
+        };
+        await addRepostFilteredUser(user);
+        showToast(`Disabled reposts from @${handle}`);
+      }
+      closeMenus();
+    } catch (error) {
+      console.error('[ErgoBlock] Repost filter toggle failed:', error);
+      showToast('Failed to update repost filter', true);
+    }
+  });
+
+  // Insert after mute option or at the end
+  if (muteMenuItem && muteMenuItem.parentNode) {
+    muteMenuItem.parentNode.insertBefore(repostMenuItem, muteMenuItem.nextSibling);
+  } else {
+    // Append to menu
+    const menuContainer = menu.querySelector(CONFIG.SELECTORS.MENU) || menu;
+    menuContainer.appendChild(repostMenuItem);
+  }
+}
+
+// Track notification menu hosts for cleanup
+const notificationMenuHosts = new WeakMap<Element, HTMLElement>();
+
+/**
+ * Inject notification action menu into a notification item
+ */
+function injectNotificationMenu(notificationItem: Element): void {
+  // Skip if already injected
+  if (notificationItem.querySelector('[data-ergoblock-notif-menu]')) {
+    return;
+  }
+
+  // Skip if notification already has a native Bluesky menu button (e.g., reply notifications)
+  // These have their own "..." button that we intercept via the normal menu observer
+  const hasNativeMenu =
+    notificationItem.querySelector('button[aria-label*="Open"]') ||
+    notificationItem.querySelector('[data-testid*="menu"]') ||
+    notificationItem.querySelector('button svg circle'); // Native dots icon
+  if (hasNativeMenu) {
+    console.log('[ErgoBlock] Skipping notification with native menu');
+    return;
+  }
+
+  // Get all profile links in this notification
+  const profileLinks = notificationItem.querySelectorAll(
+    CONFIG.SELECTORS.PROFILE_LINK
+  ) as NodeListOf<HTMLAnchorElement>;
+  if (profileLinks.length === 0) return;
+
+  // Check for multi-user notifications (grouped likes/reposts)
+  // These have multiple unique profile links - we skip them since there's no single user to block
+  const uniqueHandles = new Set<string>();
+  for (const link of profileLinks) {
+    const match = link.href.match(CONFIG.REGEX.PROFILE_PATH);
+    if (match) {
+      uniqueHandles.add(match[1]);
+    }
+  }
+
+  // Skip multi-user notifications (more than one unique user)
+  if (uniqueHandles.size > 1) {
+    console.log('[ErgoBlock] Skipping multi-user notification with', uniqueHandles.size, 'users');
+    return;
+  }
+
+  // Extract user info from notification (use first profile link)
+  const profileLink = profileLinks[0];
+  const handleMatch = profileLink.href.match(CONFIG.REGEX.PROFILE_PATH);
+  if (!handleMatch) return;
+
+  const handle = handleMatch[1];
+  const notificationType = detectNotificationType(notificationItem);
+  const subjectUri = extractNotificationSubjectUri(notificationItem);
+
+  // Find a suitable container to place the menu button
+  // Bluesky places the ⋯ menu in the bottom right, after the action bar
+  let menuContainer = notificationItem.querySelector('[data-ergoblock-notif-menu-container]');
+
+  if (!menuContainer) {
+    // Create a container for the menu button
+    menuContainer = document.createElement('div');
+    menuContainer.setAttribute('data-ergoblock-notif-menu-container', 'true');
+    (menuContainer as HTMLElement).style.cssText =
+      'position: absolute; top: 10px; right: 10px; z-index: 1;';
+
+    // Make the notification item position: relative if it isn't already
+    const notifStyle = window.getComputedStyle(notificationItem);
+    if (notifStyle.position === 'static') {
+      (notificationItem as HTMLElement).style.position = 'relative';
+    }
+
+    notificationItem.appendChild(menuContainer);
+  }
+
+  // Create Shadow DOM host for isolated styling
+  const host = document.createElement('div');
+  host.setAttribute('data-ergoblock-notif-menu', 'true');
+  host.style.cssText = 'display: inline-flex; align-items: center;';
+  const shadow = host.attachShadow({ mode: 'closed' });
+
+  menuContainer.appendChild(host);
+  notificationMenuHosts.set(notificationItem, host);
+
+  // Create render container
+  const container = document.createElement('div');
+  shadow.appendChild(container);
+
+  // Handle block action
+  const handleBlock = () => {
+    capturedPostContainer = notificationItem as HTMLElement;
+    capturedNotificationInfo = { notificationType, subjectUri };
+    showDurationPicker('block', handle);
+  };
+
+  // Handle mute action
+  const handleMute = () => {
+    capturedPostContainer = notificationItem as HTMLElement;
+    capturedNotificationInfo = { notificationType, subjectUri };
+    showDurationPicker('mute', handle);
+  };
+
+  // Render the menu component
+  render(<NotificationMenu handle={handle} onBlock={handleBlock} onMute={handleMute} />, container);
+}
+
+/**
+ * Observe notifications page for new notification items
+ */
+let notificationObserver: MutationObserver | null = null;
+
+function observeNotifications(): void {
+  if (!isNotificationsPage()) {
+    // Clean up observer if we're not on notifications page
+    if (notificationObserver) {
+      notificationObserver.disconnect();
+      notificationObserver = null;
+    }
+    return;
+  }
+
+  // Always try to inject into existing notifications (even if observer exists)
+  // This handles the case where notifications loaded before observer was set up
+
+  // Find the notifications feed container first
+  const notifFeed = document.querySelector(CONFIG.SELECTORS.NOTIFICATION_CONTAINER);
+
+  // Debug: log structure to find the right elements
+  if (notifFeed) {
+    console.log('[ErgoBlock] Found notification feed container');
+
+    // Look for notification items - they typically contain profile links and are clickable rows
+    // Try multiple strategies to find individual notification items
+    const notificationItems: Element[] = [];
+
+    // Strategy 1: Look for elements with profile links that are direct children of feed items
+    const feedItems = notifFeed.querySelectorAll(
+      '[data-testid^="feedItem"], [role="link"], [role="button"]'
+    );
+    feedItems.forEach((item) => {
+      if (item.querySelector(CONFIG.SELECTORS.PROFILE_LINK) && !notificationItems.includes(item)) {
+        notificationItems.push(item);
+      }
+    });
+
+    // Strategy 2: Find clickable notification rows by looking for elements with profile links
+    // that have a specific structure (usually divs with padding that act as list items)
+    if (notificationItems.length === 0) {
+      const allProfileLinks = notifFeed.querySelectorAll(CONFIG.SELECTORS.PROFILE_LINK);
+      allProfileLinks.forEach((link) => {
+        // Walk up to find the notification item container (usually 2-4 levels up)
+        let parent = link.parentElement;
+        for (let i = 0; i < 5 && parent; i++) {
+          // Check if this looks like a notification item (has padding, is a direct child of a list)
+          const style = window.getComputedStyle(parent);
+          const isListItem =
+            parent.getAttribute('role') === 'link' ||
+            parent.getAttribute('role') === 'button' ||
+            (style.paddingTop &&
+              parseFloat(style.paddingTop) > 0 &&
+              style.paddingBottom &&
+              parseFloat(style.paddingBottom) > 0);
+
+          if (isListItem && !notificationItems.includes(parent)) {
+            // Verify this container has a profile link (is a real notification item)
+            if (parent.querySelector(CONFIG.SELECTORS.PROFILE_LINK)) {
+              notificationItems.push(parent);
+              break;
+            }
+          }
+          parent = parent.parentElement;
+        }
+      });
+    }
+
+    // Deduplicate - some items might be nested
+    const uniqueItems = notificationItems.filter((item, index) => {
+      // Remove items that are ancestors of other items
+      return !notificationItems.some(
+        (other, otherIndex) => otherIndex !== index && item.contains(other)
+      );
+    });
+
+    console.log('[ErgoBlock] Found', uniqueItems.length, 'notification items to inject menu into');
+    uniqueItems.forEach((notif) => injectNotificationMenu(notif));
+  } else {
+    console.log('[ErgoBlock] No notification feed container found');
+  }
+
+  // If already observing, skip setting up new observer
+  if (notificationObserver) return;
+
+  // Set up observer for new notifications
+  notificationObserver = new MutationObserver((mutations) => {
+    for (const mutation of mutations) {
+      for (const node of mutation.addedNodes) {
+        if (node.nodeType !== Node.ELEMENT_NODE) continue;
+
+        const element = node as Element;
+
+        // Check if the added element contains profile links (potential notification items)
+        const profileLinks = element.querySelectorAll?.(CONFIG.SELECTORS.PROFILE_LINK) || [];
+        if (element.querySelector?.(CONFIG.SELECTORS.PROFILE_LINK) || profileLinks.length > 0) {
+          // Check if element itself is a notification item
+          if (
+            element.querySelector(CONFIG.SELECTORS.PROFILE_LINK) &&
+            (element.getAttribute('role') === 'link' || element.getAttribute('role') === 'button')
+          ) {
+            injectNotificationMenu(element);
+          }
+
+          // Check children for notification items
+          const items = element.querySelectorAll('[role="link"], [role="button"]');
+          items.forEach((item) => {
+            if (item.querySelector(CONFIG.SELECTORS.PROFILE_LINK)) {
+              injectNotificationMenu(item);
+            }
+          });
+        }
+      }
+    }
+  });
+
+  notificationObserver.observe(document.body, {
+    childList: true,
+    subtree: true,
+  });
+
+  console.log('[ErgoBlock] Notification menu observer started');
 }
 
 /**
@@ -590,16 +1163,48 @@ function syncAuthToBackground(): void {
   }
 }
 
+/**
+ * Initialize block relationship profile injection if enabled
+ */
+async function initBlockRelationshipInjection(): Promise<void> {
+  try {
+    const result = await browser.storage.local.get('options');
+    const options = result.options as
+      | {
+          blockRelationships?: { enabled: boolean; showOnProfiles: boolean };
+        }
+      | undefined;
+
+    if (options?.blockRelationships?.enabled && options?.blockRelationships?.showOnProfiles) {
+      // Dynamically import to avoid loading if not needed
+      const { observeProfileNavigation } =
+        await import('./block-relationships/profile-injection.js');
+      observeProfileNavigation();
+      console.log('[ErgoBlock] Block relationship profile injection enabled');
+    }
+  } catch (error) {
+    console.error('[ErgoBlock] Failed to init block relationship injection:', error);
+  }
+}
+
 // Initialize
 function init(): void {
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', () => {
       observeMenus();
+      observeNotifications();
       setTimeout(syncAuthToBackground, 2000);
+      setTimeout(initBlockRelationshipInjection, 3000);
+      // Initialize feed filtering for repost control
+      setTimeout(() => initFeedFilter().catch(console.error), 1000);
     });
   } else {
     observeMenus();
+    observeNotifications();
     setTimeout(syncAuthToBackground, 2000);
+    setTimeout(initBlockRelationshipInjection, 3000);
+    // Initialize feed filtering for repost control
+    setTimeout(() => initFeedFilter().catch(console.error), 1000);
   }
 
   // Sync auth frequently to keep background tokens fresh
@@ -613,6 +1218,7 @@ function init(): void {
   // Listen for SPA navigation (popstate for back/forward)
   window.addEventListener('popstate', () => {
     updateEngagementContext();
+    observeNotifications();
   });
 
   // Observe URL changes via History API (pushState/replaceState)
@@ -622,6 +1228,7 @@ function init(): void {
     if (window.location.href !== lastUrl) {
       lastUrl = window.location.href;
       updateEngagementContext();
+      observeNotifications();
     }
   });
   urlObserver.observe(document.body, { childList: true, subtree: true });

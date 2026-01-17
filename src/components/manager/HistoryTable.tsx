@@ -58,9 +58,7 @@ export function HistoryTable(): JSX.Element {
               <span class={`history-action ${entry.action}`}>{entry.action}</span>
             </td>
             <td>
-              <span class="history-trigger">
-                {TRIGGER_LABELS[entry.trigger] || entry.trigger}
-              </span>
+              <span class="history-trigger">{TRIGGER_LABELS[entry.trigger] || entry.trigger}</span>
             </td>
             <td>{entry.success ? '✓' : `✗ ${entry.error || ''}`}</td>
             <td>{formatDate(entry.timestamp)}</td>

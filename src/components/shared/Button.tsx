@@ -31,12 +31,7 @@ export function Button({
     .join(' ');
 
   return (
-    <button
-      type={type}
-      class={classes}
-      disabled={disabled || loading}
-      onClick={onClick}
-    >
+    <button type={type} class={classes} disabled={disabled || loading} onClick={onClick}>
       {loading ? <span class="spinner" /> : null}
       {children}
     </button>

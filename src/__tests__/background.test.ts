@@ -10,9 +10,7 @@ vi.mock('../storage.js', () => ({
   getTempMutes: vi.fn().mockResolvedValue({}),
   removeTempBlock: vi.fn().mockResolvedValue(undefined),
   removeTempMute: vi.fn().mockResolvedValue(undefined),
-  getOptions: vi
-    .fn()
-    .mockResolvedValue({ showBadgeCount: true, notificationsEnabled: true, checkInterval: 1 }),
+  getOptions: vi.fn().mockResolvedValue({ notificationsEnabled: true, checkInterval: 1 }),
   addHistoryEntry: vi.fn().mockResolvedValue(undefined),
   cleanupExpiredPostContexts: vi.fn().mockResolvedValue(undefined),
   getSyncState: vi
@@ -58,13 +56,6 @@ describe('Background Service Worker', () => {
 
     expect(chrome.alarms.clear).toHaveBeenCalledWith('checkExpirations');
     expect(chrome.alarms.create).toHaveBeenCalledWith('checkExpirations', expect.any(Object));
-  });
-
-  it('should update badge correctly', async () => {
-    const { updateBadge } = await import('../background.js');
-    await updateBadge();
-
-    expect(chrome.action.setBadgeText).toHaveBeenCalled();
   });
 
   it('should check expirations and unblock/unmute expired users', async () => {

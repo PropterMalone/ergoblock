@@ -1,11 +1,5 @@
 import type { JSX } from 'preact';
-import {
-  searchQuery,
-  filterSource,
-  selectedItems,
-  currentTab,
-  clearSelection,
-} from '../../signals/manager.js';
+import { searchQuery, filterSource, selectedItems, currentTab } from '../../signals/manager.js';
 
 interface ToolbarProps {
   onBulkRemove: () => void;

@@ -125,7 +125,9 @@ export function BlocksTable({
                 </td>
                 <StatusIndicators viewer={block.viewer} isBlocksTab={true} />
                 <td>
-                  <span class={`badge ${amnestyStatus === 'denied' ? 'badge-denied' : 'badge-unreviewed'}`}>
+                  <span
+                    class={`badge ${amnestyStatus === 'denied' ? 'badge-denied' : 'badge-unreviewed'}`}
+                  >
                     {amnestyStatus === 'denied' ? 'Denied' : 'Unreviewed'}
                   </span>
                 </td>

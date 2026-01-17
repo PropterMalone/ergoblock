@@ -22,6 +22,7 @@ import {
   ListNotificationsResponse,
   GetActorLikesResponse,
 } from './types.js';
+import { sleep } from './utils.js';
 
 // AT Protocol API helpers for Bluesky
 // Handles block/mute/unblock/unmute operations
@@ -385,13 +386,6 @@ export async function getProfilesBatched(
 
 // Rate limiting delay for paginated requests (ms)
 const PAGINATION_DELAY = 500;
-
-/**
- * Sleep for a given number of milliseconds
- */
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 /**
  * Get a page of blocked users

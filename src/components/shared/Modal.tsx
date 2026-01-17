@@ -49,7 +49,12 @@ export function Modal({
 
   return (
     <div class="modal-overlay" onClick={handleOverlayClick}>
-      <div class={classes} role="dialog" aria-modal="true" aria-labelledby={title ? 'modal-title' : undefined}>
+      <div
+        class={classes}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={title ? 'modal-title' : undefined}
+      >
         {title && (
           <div class="modal-header">
             <h2 id="modal-title" class="modal-title">

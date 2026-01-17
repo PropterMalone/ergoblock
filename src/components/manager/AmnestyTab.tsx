@@ -1,6 +1,16 @@
 import type { JSX } from 'preact';
 import { useState, useEffect } from 'preact/hooks';
-import { ThumbsUp, ThumbsDown, Play, ExternalLink, Loader2, ChevronDown, ChevronRight } from 'lucide-preact';
+import {
+  ThumbsUp,
+  ThumbsDown,
+  Play,
+  ExternalLink,
+  Loader2,
+  ChevronDown,
+  ChevronRight,
+  Shield,
+  Users,
+} from 'lucide-preact';
 import type { ManagedEntry, AmnestyReview } from '../../types.js';
 import {
   blocks,
@@ -24,6 +34,12 @@ import {
 import { setOptions, getPostContexts, addAmnestyReview, getAmnestyStats } from '../../storage.js';
 import browser from '../../browser.js';
 import { InteractionsList } from './InteractionsList.js';
+
+interface BlockRelationshipsResponse {
+  success: boolean;
+  blockedBy?: Array<{ did: string; handle: string; displayName?: string; avatar?: string }>;
+  blocking?: Array<{ did: string; handle: string; displayName?: string; avatar?: string }>;
+}
 
 interface AmnestyTabProps {
   onUnblock: (did: string) => Promise<void>;
@@ -124,7 +140,9 @@ export function AmnestyTab({
     }
   };
 
-  const handleDecision = async (decision: 'unblocked' | 'unmuted' | 'kept_blocked' | 'kept_muted') => {
+  const handleDecision = async (
+    decision: 'unblocked' | 'unmuted' | 'kept_blocked' | 'kept_muted'
+  ) => {
     const candidate = amnestyCandidate.value;
     if (!candidate) return;
 
@@ -282,6 +300,91 @@ function AmnestyCard({
 
   const postUrl = ctx?.postUri ? postUriToUrl(ctx.postUri) : '';
 
+  // Block relationship state
+  const [blockRelations, setBlockRelations] = useState<{
+    blockedBy: Array<{ handle: string; displayName?: string }>;
+    blocking: Array<{ handle: string; displayName?: string }>;
+    loading: boolean;
+  }>({ blockedBy: [], blocking: [], loading: true });
+  const [blockedByExpanded, setBlockedByExpanded] = useState(false);
+  const [blockingExpanded, setBlockingExpanded] = useState(false);
+
+  // Profile stats state
+  const [profileStats, setProfileStats] = useState<{
+    followersCount: number;
+    followsCount: number;
+    postsCount: number;
+    loading: boolean;
+  }>({ followersCount: 0, followsCount: 0, postsCount: 0, loading: true });
+
+  // Fetch block relationships for this candidate
+  useEffect(() => {
+    let cancelled = false;
+    const fetchRelations = async () => {
+      try {
+        const response = (await browser.runtime.sendMessage({
+          type: 'GET_BLOCK_RELATIONSHIPS',
+          did: candidate.did,
+        })) as BlockRelationshipsResponse;
+
+        if (!cancelled && response.success) {
+          setBlockRelations({
+            blockedBy: response.blockedBy || [],
+            blocking: response.blocking || [],
+            loading: false,
+          });
+        } else if (!cancelled) {
+          setBlockRelations((prev) => ({ ...prev, loading: false }));
+        }
+      } catch {
+        if (!cancelled) {
+          setBlockRelations((prev) => ({ ...prev, loading: false }));
+        }
+      }
+    };
+    fetchRelations();
+    return () => {
+      cancelled = true;
+    };
+  }, [candidate.did]);
+
+  // Fetch profile stats (using public API since user may be blocked)
+  useEffect(() => {
+    let cancelled = false;
+    const fetchStats = async () => {
+      try {
+        const response = await fetch(
+          `https://public.api.bsky.app/xrpc/app.bsky.actor.getProfile?actor=${encodeURIComponent(candidate.did)}`
+        );
+        if (response.ok) {
+          const profile = (await response.json()) as {
+            followersCount?: number;
+            followsCount?: number;
+            postsCount?: number;
+          };
+          if (!cancelled) {
+            setProfileStats({
+              followersCount: profile.followersCount || 0,
+              followsCount: profile.followsCount || 0,
+              postsCount: profile.postsCount || 0,
+              loading: false,
+            });
+          }
+        } else if (!cancelled) {
+          setProfileStats((prev) => ({ ...prev, loading: false }));
+        }
+      } catch {
+        if (!cancelled) {
+          setProfileStats((prev) => ({ ...prev, loading: false }));
+        }
+      }
+    };
+    fetchStats();
+    return () => {
+      cancelled = true;
+    };
+  }, [candidate.did]);
+
   return (
     <div class="amnesty-container">
       <div class="amnesty-stats">
@@ -302,7 +405,7 @@ function AmnestyCard({
       <div class={`amnesty-card ${isBlock ? 'amnesty-card-block' : 'amnesty-card-mute'}`}>
         <div class="amnesty-card-header">
           {candidate.avatar ? (
-            <img src={candidate.avatar} class="amnesty-avatar" alt="" />
+            <img src={candidate.avatar} class="amnesty-avatar" alt="" loading="lazy" />
           ) : (
             <div class="amnesty-avatar" />
           )}
@@ -319,6 +422,96 @@ function AmnestyCard({
             </div>
           </div>
         </div>
+
+        {/* Profile Stats */}
+        {!profileStats.loading && (
+          <div class="amnesty-profile-stats">
+            <span class="amnesty-profile-stat">
+              <strong>{profileStats.followersCount.toLocaleString()}</strong> followers
+            </span>
+            <span class="amnesty-profile-stat">
+              <strong>{profileStats.followsCount.toLocaleString()}</strong> following
+            </span>
+            <span class="amnesty-profile-stat">
+              <strong>{profileStats.postsCount.toLocaleString()}</strong> posts
+            </span>
+          </div>
+        )}
+
+        {/* Block Relationships Section */}
+        {!blockRelations.loading &&
+          (blockRelations.blockedBy.length > 0 || blockRelations.blocking.length > 0) && (
+            <div class="amnesty-block-relations">
+              {blockRelations.blockedBy.length > 0 && (
+                <div class="amnesty-block-rel-section">
+                  <button
+                    type="button"
+                    class="amnesty-block-rel-header amnesty-blocked-by"
+                    onClick={() => setBlockedByExpanded(!blockedByExpanded)}
+                  >
+                    <Shield size={14} />
+                    <span>
+                      Blocked by {blockRelations.blockedBy.length}{' '}
+                      {blockRelations.blockedBy.length === 1 ? 'person' : 'people'} you follow
+                    </span>
+                    {blockedByExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                  </button>
+                  {blockedByExpanded && (
+                    <div class="amnesty-block-rel-list">
+                      {blockRelations.blockedBy.map((u) => (
+                        <a
+                          key={u.handle}
+                          href={`https://bsky.app/profile/${u.handle}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          class="amnesty-block-rel-user"
+                        >
+                          @{u.handle}
+                          {u.displayName && (
+                            <span class="amnesty-block-rel-name"> ({u.displayName})</span>
+                          )}
+                        </a>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+              {blockRelations.blocking.length > 0 && (
+                <div class="amnesty-block-rel-section">
+                  <button
+                    type="button"
+                    class="amnesty-block-rel-header amnesty-blocking"
+                    onClick={() => setBlockingExpanded(!blockingExpanded)}
+                  >
+                    <Users size={14} />
+                    <span>
+                      Blocks {blockRelations.blocking.length}{' '}
+                      {blockRelations.blocking.length === 1 ? 'person' : 'people'} you follow
+                    </span>
+                    {blockingExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                  </button>
+                  {blockingExpanded && (
+                    <div class="amnesty-block-rel-list">
+                      {blockRelations.blocking.map((u) => (
+                        <a
+                          key={u.handle}
+                          href={`https://bsky.app/profile/${u.handle}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          class="amnesty-block-rel-user"
+                        >
+                          @{u.handle}
+                          {u.displayName && (
+                            <span class="amnesty-block-rel-name"> ({u.displayName})</span>
+                          )}
+                        </a>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
 
         <div class="amnesty-card-context">
           <div class="amnesty-context-header">

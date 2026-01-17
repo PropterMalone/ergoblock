@@ -1,11 +1,7 @@
 import type { JSX } from 'preact';
 import { useEffect } from 'preact/hooks';
 import type { Interaction } from '../../types.js';
-import {
-  expandedInteractions,
-  expandedLoading,
-  tempUnblockTimers,
-} from '../../signals/manager.js';
+import { expandedInteractions, expandedLoading, tempUnblockTimers } from '../../signals/manager.js';
 import { postUriToUrl, formatTimeAgo } from './utils.js';
 
 interface InteractionsListProps {
@@ -47,10 +43,7 @@ export function InteractionsList({
     return (
       <div class="interactions-list empty">
         <span class="no-interactions">No interactions found</span>
-        <button
-          class="context-btn"
-          onClick={() => onFetchInteractions(did, handle)}
-        >
+        <button class="context-btn" onClick={() => onFetchInteractions(did, handle)}>
           Search again
         </button>
       </div>
@@ -60,7 +53,9 @@ export function InteractionsList({
   return (
     <div class="interactions-list">
       <div class="interactions-header">
-        <span class="interactions-count">{interactions.length} interaction{interactions.length !== 1 ? 's' : ''} found</span>
+        <span class="interactions-count">
+          {interactions.length} interaction{interactions.length !== 1 ? 's' : ''} found
+        </span>
       </div>
       <div class="interactions-items">
         {interactions.map((interaction) => (
@@ -103,9 +98,7 @@ function InteractionItem({
   return (
     <div class="interaction-item">
       <div class="interaction-meta">
-        <span class={`badge badge-${interaction.type}`}>
-          {typeLabels[interaction.type]}
-        </span>
+        <span class={`badge badge-${interaction.type}`}>{typeLabels[interaction.type]}</span>
         <span class="interaction-author">{authorLabel}</span>
         <span class="interaction-date" title={new Date(interaction.createdAt).toLocaleString()}>
           {formatTimeAgo(interaction.createdAt)}

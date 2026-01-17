@@ -3,8 +3,9 @@
  * Extracts AT Protocol post URIs from the DOM when blocking/muting
  */
 
-import type { PostContext } from './types.js';
+import type { PostContext, NotificationReason } from './types.js';
 import { addPostContext, getOptions } from './storage.js';
+import { generateId } from './utils.js';
 
 // Selectors for finding post containers and URIs
 const POST_SELECTORS = [
@@ -126,7 +127,7 @@ function extractPostAuthorHandle(postContainer: HTMLElement): string | undefined
  * Generate a unique context ID
  */
 function generateContextId(): string {
-  return `ctx_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  return generateId('ctx');
 }
 
 /**
@@ -139,6 +140,15 @@ export interface EngagementContext {
 }
 
 /**
+ * Notification context when blocking from notifications page
+ */
+export interface NotificationContext {
+  notificationType: NotificationReason;
+  subjectUri?: string; // The post/content that generated the notification
+  sourceUrl: string;
+}
+
+/**
  * Capture post context when blocking/muting from a post
  */
 export async function capturePostContext(
@@ -147,7 +157,8 @@ export async function capturePostContext(
   targetDid: string,
   actionType: 'block' | 'mute',
   permanent: boolean,
-  engagementContext?: EngagementContext | null
+  engagementContext?: EngagementContext | null,
+  notificationContext?: NotificationContext | null
 ): Promise<PostContext | null> {
   const options = await getOptions();
 
@@ -190,6 +201,9 @@ export async function capturePostContext(
       // Add engagement context if blocking from liked-by/reposted-by page
       engagementType: engagementContext?.type,
       engagedPostUri: engagementContext?.postUri,
+      // Add notification context if blocking from notifications page
+      notificationType: notificationContext?.notificationType,
+      notificationSubjectUri: notificationContext?.subjectUri,
     };
 
     await addPostContext(context);

@@ -899,6 +899,213 @@ input[type="checkbox"] {
   margin-top: var(--space-xxs);
 }
 
+/* Profile Stats in Amnesty Card */
+.amnesty-profile-stats {
+  padding: var(--space-sm) var(--space-xl);
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border-color);
+  display: flex;
+  gap: var(--space-lg);
+  font-size: var(--font-size-0);
+  color: var(--text-2);
+}
+
+.amnesty-profile-stat strong {
+  color: var(--text-1);
+}
+
+/* Block Relationships in Amnesty Card */
+.amnesty-block-relations {
+  padding: var(--space-sm) var(--space-xl);
+  background: rgba(239, 68, 68, 0.06);
+  border-bottom: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.amnesty-block-rel-section {
+  display: flex;
+  flex-direction: column;
+}
+
+.amnesty-block-rel-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  font-size: var(--font-size-0);
+  background: none;
+  border: none;
+  padding: var(--space-xs) 0;
+  cursor: pointer;
+  width: 100%;
+  text-align: left;
+}
+
+.amnesty-block-rel-header:hover {
+  opacity: 0.8;
+}
+
+.amnesty-block-rel-header span {
+  flex: 1;
+}
+
+.amnesty-blocked-by {
+  color: #dc2626;
+}
+
+.amnesty-blocking {
+  color: #f59e0b;
+}
+
+.amnesty-block-rel-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2xs);
+  padding: var(--space-xs) 0 var(--space-xs) var(--space-lg);
+  font-size: var(--font-size-0);
+}
+
+.amnesty-block-rel-user {
+  color: var(--text-1);
+  text-decoration: none;
+}
+
+.amnesty-block-rel-user:hover {
+  text-decoration: underline;
+}
+
+.amnesty-block-rel-name {
+  color: var(--text-2);
+}
+
+/* Block Relationships Tab Styles */
+.block-rel-search-section {
+  margin-top: var(--space-lg);
+  padding: var(--space-lg);
+  background: var(--surface-1);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-3);
+}
+
+.block-rel-search-section h4 {
+  margin: 0 0 var(--space-xs);
+  font-size: var(--font-size-2);
+  display: flex;
+  align-items: center;
+}
+
+.block-rel-search-desc {
+  margin: 0 0 var(--space-md);
+  font-size: var(--font-size-1);
+  color: var(--text-2);
+}
+
+.block-rel-search-input-row {
+  display: flex;
+  gap: var(--space-sm);
+}
+
+.block-rel-search-input {
+  flex: 1;
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-2);
+  font-size: var(--font-size-1);
+}
+
+.block-rel-results {
+  margin-top: var(--space-lg);
+  padding: var(--space-lg);
+  background: var(--surface-1);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-3);
+}
+
+.block-rel-results-header h4 {
+  margin: 0 0 var(--space-md);
+  font-size: var(--font-size-2);
+}
+
+.block-rel-results-header a {
+  color: var(--brand-primary);
+  text-decoration: none;
+}
+
+.block-rel-results-header a:hover {
+  text-decoration: underline;
+}
+
+.block-rel-no-results {
+  color: var(--text-2);
+  padding: var(--space-md);
+  text-align: center;
+}
+
+.block-rel-section {
+  margin-bottom: var(--space-md);
+}
+
+.block-rel-section:last-child {
+  margin-bottom: 0;
+}
+
+.block-rel-section h5 {
+  margin: 0 0 var(--space-sm);
+  font-size: var(--font-size-1);
+  font-weight: var(--font-weight-5);
+  display: flex;
+  align-items: center;
+}
+
+.block-rel-user-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.block-rel-user-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-xs) var(--space-sm);
+  background: var(--surface-2);
+  border-radius: var(--radius-2);
+}
+
+.block-rel-user-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+.block-rel-user-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.block-rel-user-handle {
+  font-size: var(--font-size-1);
+  font-weight: var(--font-weight-5);
+  color: var(--text-1);
+}
+
+.block-rel-user-name {
+  font-size: var(--font-size-0);
+  color: var(--text-2);
+}
+
+.block-rel-sync-progress {
+  margin-top: var(--space-md);
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  font-size: var(--font-size-0);
+  color: var(--text-2);
+}
+
 .amnesty-card-context {
   padding: var(--space-xl);
   background: var(--surface-2);

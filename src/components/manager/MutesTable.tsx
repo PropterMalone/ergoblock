@@ -134,7 +134,9 @@ export function MutesTable({
                 </td>
                 <StatusIndicators viewer={mute.viewer} isBlocksTab={false} />
                 <td>
-                  <span class={`badge ${amnestyStatus === 'denied' ? 'badge-denied' : 'badge-unreviewed'}`}>
+                  <span
+                    class={`badge ${amnestyStatus === 'denied' ? 'badge-denied' : 'badge-unreviewed'}`}
+                  >
                     {amnestyStatus === 'denied' ? 'Denied' : 'Unreviewed'}
                   </span>
                 </td>

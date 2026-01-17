@@ -9,12 +9,14 @@ export default [
     ignores: ['node_modules/', 'dist/', 'coverage/'],
   },
   {
-    files: ['src/**/*.ts'],
+    files: ['src/**/*.ts', 'src/**/*.tsx'],
     languageOptions: {
       parser: tsParser,
       parserOptions: {
         ecmaVersion: 'latest',
         sourceType: 'module',
+        jsxPragma: 'h',
+        jsxPragmaFrag: 'Fragment',
       },
       globals: {
         ...globals.browser,

@@ -17,7 +17,9 @@ import {
   type FollowRelation,
   type BlocklistConflictGroup,
   type BlocklistAuditState,
+  type RepostFilteredUser,
 } from './types.js';
+import { generateId } from './utils.js';
 
 // Storage quota constants (Chrome sync storage limits)
 const SYNC_STORAGE_QUOTA_BYTES = 102400; // 100KB total for sync storage
@@ -110,6 +112,10 @@ export const STORAGE_KEYS = {
   SOCIAL_GRAPH: 'socialGraph',
   BLOCKLIST_CONFLICTS: 'blocklistConflicts',
   DISMISSED_CONFLICTS: 'dismissedConflicts',
+  // Repost filtering feature
+  REPOST_FILTERED_USERS: 'repostFilteredUsers',
+  // Lightweight follows list (just handles, for repost filter feature)
+  FOLLOWS_HANDLES: 'followsHandles',
 };
 
 const HISTORY_MAX_ENTRIES = 100;
@@ -237,10 +243,24 @@ export async function removeTempMute(did: string): Promise<void> {
 
 /**
  * Get extension options from local storage
+ * Merges with defaults to handle new settings for existing users
  */
 export async function getOptions(): Promise<ExtensionOptions> {
   const result = await browser.storage.local.get(STORAGE_KEYS.OPTIONS);
-  return (result[STORAGE_KEYS.OPTIONS] as ExtensionOptions) || DEFAULT_OPTIONS;
+  const stored = result[STORAGE_KEYS.OPTIONS] as Partial<ExtensionOptions> | undefined;
+  if (!stored) {
+    return DEFAULT_OPTIONS;
+  }
+  // Merge stored options with defaults to ensure new fields have values
+  return {
+    ...DEFAULT_OPTIONS,
+    ...stored,
+    // Deep merge for nested objects
+    blockRelationships: {
+      ...DEFAULT_OPTIONS.blockRelationships,
+      ...(stored.blockRelationships || {}),
+    },
+  };
 }
 
 /**
@@ -272,7 +292,7 @@ export async function addHistoryEntry(entry: HistoryEntry): Promise<void> {
   // Generate ID if not provided
   const entryWithId = {
     ...entry,
-    id: entry.id || `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+    id: entry.id || generateId('hist'),
   };
 
   const history = await getActionHistory();
@@ -700,6 +720,46 @@ export async function setSocialGraph(data: SocialGraphData): Promise<void> {
 }
 
 /**
+ * Lightweight follows handles data (for repost filter feature)
+ */
+interface FollowsHandlesData {
+  handles: string[]; // lowercase handles
+  syncedAt: number;
+}
+
+/**
+ * Get follows handles (lightweight list for repost filter)
+ */
+export async function getFollowsHandles(): Promise<FollowsHandlesData> {
+  const result = await browser.storage.local.get(STORAGE_KEYS.FOLLOWS_HANDLES);
+  return (
+    (result[STORAGE_KEYS.FOLLOWS_HANDLES] as FollowsHandlesData) || {
+      handles: [],
+      syncedAt: 0,
+    }
+  );
+}
+
+/**
+ * Set follows handles (lightweight list for repost filter)
+ */
+export async function setFollowsHandles(handles: string[], syncedAt: number): Promise<void> {
+  const data: FollowsHandlesData = {
+    handles: handles.map((h) => h.toLowerCase()),
+    syncedAt,
+  };
+  await browser.storage.local.set({ [STORAGE_KEYS.FOLLOWS_HANDLES]: data });
+}
+
+/**
+ * Check if a handle is in the follows list
+ */
+export async function isHandleFollowed(handle: string): Promise<boolean> {
+  const data = await getFollowsHandles();
+  return data.handles.includes(handle.toLowerCase());
+}
+
+/**
  * Get blocklist conflicts grouped by list
  */
 export async function getBlocklistConflicts(): Promise<BlocklistConflictGroup[]> {
@@ -756,4 +816,63 @@ export async function clearBlocklistAuditData(): Promise<void> {
     STORAGE_KEYS.BLOCKLIST_CONFLICTS,
     STORAGE_KEYS.DISMISSED_CONFLICTS,
   ]);
+}
+
+// ============================================================================
+// Repost Filtering Storage
+// ============================================================================
+
+interface RepostFilteredUsersMap {
+  [did: string]: RepostFilteredUser;
+}
+
+/**
+ * Get all repost-filtered users from local storage
+ */
+export async function getRepostFilteredUsers(): Promise<RepostFilteredUsersMap> {
+  const result = await browser.storage.local.get(STORAGE_KEYS.REPOST_FILTERED_USERS);
+  return (result[STORAGE_KEYS.REPOST_FILTERED_USERS] as RepostFilteredUsersMap) || {};
+}
+
+/**
+ * Add a user to the repost filter list
+ */
+export async function addRepostFilteredUser(user: RepostFilteredUser): Promise<void> {
+  const users = await getRepostFilteredUsers();
+  users[user.did] = user;
+  await browser.storage.local.set({ [STORAGE_KEYS.REPOST_FILTERED_USERS]: users });
+}
+
+/**
+ * Remove a user from the repost filter list
+ */
+export async function removeRepostFilteredUser(did: string): Promise<void> {
+  const users = await getRepostFilteredUsers();
+  delete users[did];
+  await browser.storage.local.set({ [STORAGE_KEYS.REPOST_FILTERED_USERS]: users });
+}
+
+/**
+ * Check if a user is in the repost filter list
+ */
+export async function isRepostFiltered(did: string): Promise<boolean> {
+  const users = await getRepostFilteredUsers();
+  return did in users;
+}
+
+/**
+ * Check if a handle is in the repost filter list (for DOM matching)
+ */
+export async function isHandleRepostFiltered(handle: string): Promise<boolean> {
+  const users = await getRepostFilteredUsers();
+  const normalizedHandle = handle.toLowerCase();
+  return Object.values(users).some((user) => user.handle.toLowerCase() === normalizedHandle);
+}
+
+/**
+ * Get repost filtered users as an array (for UI display)
+ */
+export async function getRepostFilteredUsersArray(): Promise<RepostFilteredUser[]> {
+  const users = await getRepostFilteredUsers();
+  return Object.values(users).sort((a, b) => b.addedAt - a.addedAt);
 }

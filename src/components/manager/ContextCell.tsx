@@ -79,8 +79,8 @@ export function ContextCell({
               Auto
             </span>
           )}
-          {postUrl && (
-            isBlocked ? (
+          {postUrl &&
+            (isBlocked ? (
               <button
                 class={`context-btn context-view-btn ${tempTimer ? 'temp-unblocked' : ''}`}
                 onClick={() => onViewPost(did, handle, postUrl)}
@@ -92,8 +92,7 @@ export function ContextCell({
               <a href={postUrl} target="_blank" rel="noopener" class="context-btn context-link-btn">
                 View
               </a>
-            )
-          )}
+            ))}
           {showExpandButton && (
             <button
               class={`context-btn expand-btn ${isExpanded ? 'expanded' : ''}`}

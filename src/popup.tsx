@@ -1,6 +1,6 @@
 import { render } from 'preact';
-import { useState, useEffect, useCallback } from 'preact/hooks';
-import { signal, computed } from '@preact/signals';
+import { useEffect, useCallback } from 'preact/hooks';
+import { signal } from '@preact/signals';
 import browser from './browser.js';
 import {
   STORAGE_KEYS,
@@ -203,7 +203,9 @@ async function checkNow(): Promise<void> {
   showStatus('Checking expirations...');
 
   try {
-    const response = (await browser.runtime.sendMessage({ type: 'CHECK_NOW' })) as { success: boolean };
+    const response = (await browser.runtime.sendMessage({ type: 'CHECK_NOW' })) as {
+      success: boolean;
+    };
     if (response.success) {
       showStatus('Check complete!');
     }
@@ -283,9 +285,7 @@ function Header() {
 }
 
 function AuthWarning() {
-  return (
-    <div class="auth-warning">Session Expired: Please open Bluesky to re-sync</div>
-  );
+  return <div class="auth-warning">Session Expired: Please open Bluesky to re-sync</div>;
 }
 
 function SyncStatus() {

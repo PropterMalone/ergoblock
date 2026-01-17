@@ -95,7 +95,8 @@ export function BlocklistAuditTab({ onReload }: BlocklistAuditTabProps): JSX.Ele
               : 'Check if any of your follows or followers are on blocklists you subscribe to.'}
           </p>
           <button class="audit-sync-btn" onClick={handleSync} disabled={syncing}>
-            <RefreshCw size={16} class={syncing ? 'spinner' : ''} /> {syncing ? 'Syncing...' : 'Run Audit'}
+            <RefreshCw size={16} class={syncing ? 'spinner' : ''} />{' '}
+            {syncing ? 'Syncing...' : 'Run Audit'}
           </button>
           <div class="audit-last-sync">{lastSyncText}</div>
         </div>
@@ -131,7 +132,8 @@ export function BlocklistAuditTab({ onReload }: BlocklistAuditTabProps): JSX.Ele
         </div>
         <div class="blocklist-audit-actions">
           <button class="audit-sync-btn" onClick={handleSync} disabled={syncing}>
-            <RefreshCw size={16} class={syncing ? 'spinner' : ''} /> {syncing ? 'Syncing...' : 'Re-run Audit'}
+            <RefreshCw size={16} class={syncing ? 'spinner' : ''} />{' '}
+            {syncing ? 'Syncing...' : 'Re-run Audit'}
           </button>
         </div>
       </div>
@@ -189,7 +191,7 @@ function BlocklistGroup({
     <div class={`blocklist-group ${group.dismissed ? 'dismissed' : ''}`}>
       <div class="blocklist-group-header">
         <div class="blocklist-info">
-          <img class="blocklist-avatar" src={avatarUrl} alt="" />
+          <img class="blocklist-avatar" src={avatarUrl} alt="" loading="lazy" />
           <div class="blocklist-details">
             <span class="blocklist-name">{list.name}</span>
             <span class="blocklist-creator">by @{list.creator.handle}</span>
@@ -237,12 +239,10 @@ function BlocklistGroup({
 
           return (
             <div key={user.did} class="blocklist-conflict-row">
-              <img class="conflict-user-avatar" src={userAvatar} alt="" />
+              <img class="conflict-user-avatar" src={userAvatar} alt="" loading="lazy" />
               <div class="conflict-user-info">
                 <span class="conflict-user-handle">@{user.handle}</span>
-                {user.displayName && (
-                  <span class="conflict-user-name">{user.displayName}</span>
-                )}
+                {user.displayName && <span class="conflict-user-name">{user.displayName}</span>}
               </div>
               <span class={`conflict-relationship ${user.relationship}`}>{relationshipText}</span>
               <a

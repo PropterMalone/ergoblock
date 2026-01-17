@@ -1,6 +1,6 @@
 {
   "name": "ergoblock",
-  "version": "1.10.0",
+  "version": "1.11.0",
   "description": "Temporary block and mute for Bluesky",
   "type": "module",
   "engines": {
@@ -16,8 +16,8 @@
     "sync-version": "node scripts/sync-version.js",
     "type-check": "tsc --noEmit",
     "lint": "eslint src/ scripts/",
-    "format": "prettier --write \"src/**/*.{ts,js}\" \"scripts/**/*.js\" \"*.{json,js,html}\" \".github/**/*.yml\"",
-    "format:check": "prettier --check \"src/**/*.{ts,js}\" \"scripts/**/*.js\" \"*.{json,js,html}\" \".github/**/*.yml\"",
+    "format": "prettier --write \"src/**/*.{ts,tsx,js}\" \"scripts/**/*.js\" \"*.{json,js,html}\" \".github/**/*.yml\"",
+    "format:check": "prettier --check \"src/**/*.{ts,tsx,js}\" \"scripts/**/*.js\" \"*.{json,js,html}\" \".github/**/*.yml\"",
     "validate": "npm run lint && npm run type-check && npm run format:check && npm test",
     "prepare": "husky || true"
   },
@@ -41,10 +41,10 @@
     "vitest": "^4.0.16"
   },
   "lint-staged": {
-    "src/**/*.ts": [
+    "src/**/*.{ts,tsx}": [
       "eslint --fix"
     ],
-    "src/**/*.{ts,js},scripts/**/*.js,*.{json,js,html},.github/**/*.yml": [
+    "src/**/*.{ts,tsx,js},scripts/**/*.js,*.{json,js,html},.github/**/*.yml": [
       "prettier --write"
     ]
   },

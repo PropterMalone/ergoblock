@@ -18,10 +18,23 @@ import {
   addPostContext,
   updateBlocklistAuditState,
   setSubscribedBlocklists,
-  setSocialGraph,
+  getSocialGraph,
+  setFollowsHandles,
+  getFollowsHandles,
   setBlocklistConflicts,
   getDismissedConflicts,
 } from './storage.js';
+import {
+  syncFollowBlockListsV2,
+  getBlockRelationshipsForProfileV2,
+  getBlockRelationshipSyncStatus,
+  clearBlockRelationshipCache,
+  getBlockRelationshipStatsV2,
+  migrateToV2Cache,
+  clearV2Caches,
+  deepSyncBlocklistMembers,
+  getBlocklistSubscriptionStats,
+} from './block-relationships/index.js';
 import {
   ListRecordsResponse,
   GetBlocksResponse,
@@ -48,15 +61,20 @@ import {
   Interaction,
 } from './types.js';
 import { fetchAndParseRepo, ParsedPost } from './carRepo.js';
+import { sleep, generateId } from './utils.js';
 
 const ALARM_NAME = 'checkExpirations';
 const SYNC_ALARM_NAME = 'syncWithBluesky';
+const BLOCK_REL_SYNC_ALARM_NAME = 'blockRelationshipSync';
+const FOLLOWS_SYNC_ALARM_NAME = 'followsSync';
 const SYNC_INTERVAL_MINUTES = 60; // Sync every 60 minutes (was 15)
+const FOLLOWS_SYNC_INTERVAL_MINUTES = 120; // Sync follows every 2 hours
 const PAGINATION_DELAY = 100; // ms between paginated requests (was 500ms)
 
 // In-memory sync locks (atomic, no race window)
 let syncLockActive = false;
 let blocklistAuditLockActive = false;
+let followsSyncLockActive = false;
 
 interface AuthData {
   accessJwt: string;
@@ -198,21 +216,6 @@ export async function blockUser(
   );
 }
 
-export async function updateBadge(): Promise<void> {
-  const options = await getOptions();
-  if (!options.showBadgeCount) {
-    await browser.action.setBadgeText({ text: '' });
-    return;
-  }
-
-  const blocks = await getTempBlocks();
-  const mutes = await getTempMutes();
-  const count = Object.keys(blocks).length + Object.keys(mutes).length;
-
-  await browser.action.setBadgeText({ text: count > 0 ? count.toString() : '' });
-  await browser.action.setBadgeBackgroundColor({ color: '#1185fe' });
-}
-
 export async function sendNotification(
   type: 'expired_success' | 'expired_failure',
   handle: string,
@@ -248,10 +251,6 @@ export async function sendNotification(
 // ============================================================================
 // Sync Engine - Two-way sync with Bluesky
 // ============================================================================
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 /**
  * Fetch all blocks from Bluesky with pagination (profile data)
@@ -763,112 +762,6 @@ export function isSearchPostInteraction(
 }
 
 /**
- * Fetch a user's feed WITHOUT authentication.
- * This bypasses block filtering since there's no "viewer" context.
- * Faster than PDS direct fetch since it uses the AppView's indexed data.
- */
-async function getAuthorFeedUnauthenticated(
-  actorDid: string,
-  limit = 100,
-  cursor?: string
-): Promise<{ feed: Array<{ post: FeedPost }>; cursor?: string }> {
-  const PUBLIC_API = 'https://public.api.bsky.app';
-  let endpoint = `${PUBLIC_API}/xrpc/app.bsky.feed.getAuthorFeed?actor=${encodeURIComponent(actorDid)}&limit=${limit}`;
-  if (cursor) {
-    endpoint += `&cursor=${encodeURIComponent(cursor)}`;
-  }
-
-  const response = await fetch(endpoint); // No Authorization header!
-  if (!response.ok) {
-    const errorText = await response.text();
-    console.error(
-      `[ErgoBlock BG] Unauthenticated getAuthorFeed failed: ${response.status} ${errorText}`
-    );
-    return { feed: [] };
-  }
-
-  return (await response.json()) as { feed: Array<{ post: FeedPost }>; cursor?: string };
-}
-
-/**
- * Find context by fetching the target user's feed without authentication.
- * This bypasses block filtering and is faster than PDS direct fetch.
- *
- * Scans their posts for interactions with the logged-in user:
- * - Replies to logged-in user's posts
- * - Quotes of logged-in user's posts
- * - @mentions of logged-in user
- */
-async function findContextViaAuthorFeed(
-  targetDid: string,
-  targetHandle: string,
-  loggedInDid: string,
-  loggedInHandle: string | undefined
-): Promise<FeedPost | null> {
-  console.log(`[ErgoBlock BG] Searching via unauthenticated getAuthorFeed for: ${targetHandle}`);
-
-  try {
-    // Fetch up to 200 posts (2 pages) to find an interaction
-    let cursor: string | undefined;
-    let totalChecked = 0;
-    const maxPosts = 200;
-
-    while (totalChecked < maxPosts) {
-      const { feed, cursor: nextCursor } = await getAuthorFeedUnauthenticated(
-        targetDid,
-        100,
-        cursor
-      );
-
-      if (feed.length === 0) {
-        break;
-      }
-
-      for (const { post } of feed) {
-        totalChecked++;
-
-        // Check if this is a reply to the logged-in user
-        const replyParent = post.record?.reply?.parent;
-        if (replyParent?.uri?.includes(loggedInDid)) {
-          console.log(`[ErgoBlock BG] Found reply to you: ${post.uri}`);
-          return post;
-        }
-
-        // Check if this is a quote of the logged-in user's post
-        const embed = post.record?.embed;
-        if (embed?.$type === 'app.bsky.embed.record' && embed.record?.uri?.includes(loggedInDid)) {
-          console.log(`[ErgoBlock BG] Found quote of your post: ${post.uri}`);
-          return post;
-        }
-
-        // Check for @mention in post text
-        if (loggedInHandle && post.record?.text) {
-          const text = post.record.text.toLowerCase();
-          if (text.includes(`@${loggedInHandle.toLowerCase()}`)) {
-            console.log(`[ErgoBlock BG] Found @mention of you: ${post.uri}`);
-            return post;
-          }
-        }
-      }
-
-      cursor = nextCursor;
-      if (!cursor) break;
-
-      // Small delay between pages
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-
-    console.log(
-      `[ErgoBlock BG] No interaction found in ${totalChecked} posts from ${targetHandle}`
-    );
-    return null;
-  } catch (error) {
-    console.error(`[ErgoBlock BG] findContextViaAuthorFeed failed:`, error);
-    return null;
-  }
-}
-
-/**
  * Find post context for a block using direct PDS fetch.
  * This is the fallback method when search doesn't find anything.
  *
@@ -952,14 +845,8 @@ async function findBlockContextPost(
 }
 
 /**
- * Find context for a blocked user.
- *
- * Strategy (in order):
- * 1. CAR file download - comprehensive, searches entire post history
- * 2. Unauthenticated getAuthorFeed - fallback for very recent posts (CAR may lag)
- *
- * Note: Public search API is NOT used because it respects block filtering
- * and won't return posts from users you've blocked.
+ * Find context for a blocked user using CAR file download.
+ * Searches entire post history for interactions.
  */
 async function findContextWithFallback(
   targetDid: string,
@@ -968,31 +855,7 @@ async function findContextWithFallback(
   loggedInHandle: string | undefined,
   _exhaustive = false // No longer needed - CAR is always comprehensive
 ): Promise<InteractionResult> {
-  // Try CAR-based search first - comprehensive, searches entire repo
-  const carResult = await findBlockContextPost(
-    targetDid,
-    targetHandle,
-    loggedInDid,
-    loggedInHandle
-  );
-  if (carResult.post) {
-    return carResult;
-  }
-
-  // Fall back to unauthenticated feed API for very recent posts
-  // (CAR files may have slight propagation delay)
-  console.log(`[ErgoBlock BG] CAR didn't find context, trying feed API for ${targetHandle}`);
-  const feedResult = await findContextViaAuthorFeed(
-    targetDid,
-    targetHandle,
-    loggedInDid,
-    loggedInHandle
-  );
-  if (feedResult) {
-    return { post: feedResult, blockedBy: false };
-  }
-
-  return { post: null, blockedBy: false };
+  return findBlockContextPost(targetDid, targetHandle, loggedInDid, loggedInHandle);
 }
 
 /**
@@ -1088,7 +951,6 @@ export async function performFullSync(): Promise<{
       mutes: muteResult,
     });
 
-    await updateBadge();
     syncLockActive = false;
     return {
       success: blockSettled.status === 'fulfilled' && muteSettled.status === 'fulfilled',
@@ -1195,6 +1057,68 @@ async function fetchAllFollowers(auth: AuthData): Promise<ProfileView[]> {
   } while (cursor);
 
   return allFollowers;
+}
+
+/**
+ * Sync follows only (lightweight sync for repost filter feature)
+ * This runs on startup and periodically to keep the follows list fresh
+ * Uses lightweight storage (just handles) to avoid quota issues
+ */
+async function syncFollowsOnly(): Promise<void> {
+  // Prevent concurrent syncs
+  if (followsSyncLockActive) {
+    console.log('[ErgoBlock BG] Follows sync already in progress');
+    return;
+  }
+  followsSyncLockActive = true;
+
+  try {
+    const auth = await getAuthToken();
+    if (!auth?.accessJwt || !auth?.did || !auth?.pdsUrl) {
+      console.log('[ErgoBlock BG] Not authenticated, skipping follows sync');
+      return;
+    }
+
+    // Check if we already have recent follows data (within last hour)
+    const existingData = await getFollowsHandles();
+    const oneHourAgo = Date.now() - 60 * 60 * 1000;
+    if (existingData.syncedAt > oneHourAgo && existingData.handles.length > 0) {
+      console.log('[ErgoBlock BG] Follows data is fresh, skipping sync');
+      return;
+    }
+
+    // Proactively clear old bloated socialGraph data to free up space
+    // The full socialGraph (with avatars) was used by blocklist audit but is too large
+    // We now use lightweight followsHandles instead
+    const existingGraph = await getSocialGraph();
+    if (existingGraph.follows.length > 0 || existingGraph.followers.length > 0) {
+      console.log('[ErgoBlock BG] Clearing old socialGraph to free storage space...');
+      await browser.storage.local.remove('socialGraph');
+    }
+
+    console.log('[ErgoBlock BG] Syncing follows for repost filter...');
+    const follows = await fetchAllFollows(auth);
+    console.log(`[ErgoBlock BG] Fetched ${follows.length} follows`);
+
+    // Store just the handles (lightweight - avoids quota issues)
+    const handles = follows.map((f) => f.handle);
+    await setFollowsHandles(handles, Date.now());
+    console.log('[ErgoBlock BG] Follows sync complete');
+  } catch (error) {
+    console.error('[ErgoBlock BG] Follows sync failed:', error);
+  } finally {
+    followsSyncLockActive = false;
+  }
+}
+
+/**
+ * Set up follows sync alarm
+ */
+function setupFollowsSyncAlarm(): void {
+  browser.alarms.create(FOLLOWS_SYNC_ALARM_NAME, {
+    delayInMinutes: 1, // First sync after 1 minute (give time for auth)
+    periodInMinutes: FOLLOWS_SYNC_INTERVAL_MINUTES,
+  });
 }
 
 /**
@@ -1333,11 +1257,12 @@ export async function performBlocklistAuditSync(): Promise<{
       `[ErgoBlock BG] Found ${follows.length} follows, ${followers.length} followers, ${blocklists.length} blocklists`
     );
 
-    // Build social graph
-    const followDids = new Set(follows.map((f) => f.did));
+    // Build social graph (in-memory only for conflict detection)
+    // We don't persist the full graph - it's too large with avatars
     const followerDids = new Set(followers.map((f) => f.did));
 
-    // Combine into FollowRelation[]
+    // Combine into FollowRelation[] (in-memory for conflict detection)
+    // Store without avatars to reduce memory usage
     const allRelations: Map<string, FollowRelation> = new Map();
 
     for (const f of follows) {
@@ -1345,7 +1270,7 @@ export async function performBlocklistAuditSync(): Promise<{
         did: f.did,
         handle: f.handle,
         displayName: f.displayName,
-        avatar: f.avatar,
+        // avatar intentionally omitted - fetched on-demand in UI
         relationship: followerDids.has(f.did) ? 'mutual' : 'following',
       });
     }
@@ -1356,37 +1281,27 @@ export async function performBlocklistAuditSync(): Promise<{
           did: f.did,
           handle: f.handle,
           displayName: f.displayName,
-          avatar: f.avatar,
+          // avatar intentionally omitted - fetched on-demand in UI
           relationship: 'follower',
         });
       }
     }
 
-    // Save social graph
-    await setSocialGraph({
-      follows: follows.map((f) => ({
-        did: f.did,
-        handle: f.handle,
-        displayName: f.displayName,
-        avatar: f.avatar,
-        relationship: followerDids.has(f.did) ? 'mutual' : 'following',
-      })),
-      followers: followers.map((f) => ({
-        did: f.did,
-        handle: f.handle,
-        displayName: f.displayName,
-        avatar: f.avatar,
-        relationship: followDids.has(f.did) ? 'mutual' : 'follower',
-      })),
-      syncedAt: Date.now(),
-    });
+    // Save lightweight follows handles (for repost filter feature)
+    // This replaces the bloated socialGraph storage
+    const followHandles = follows.map((f) => f.handle);
+    await setFollowsHandles(followHandles, Date.now());
+    console.log(`[ErgoBlock BG] Saved ${followHandles.length} follow handles`);
 
-    // Save blocklists
+    // Note: We no longer persist the full socialGraph - it was too large
+    // The UI can fetch profile details on-demand when needed
+
+    // Save blocklists (without avatars to reduce storage)
     const storedBlocklists: SubscribedBlocklist[] = blocklists.map((l) => ({
       uri: l.uri,
       name: l.name,
       description: l.description,
-      avatar: l.avatar,
+      // avatar intentionally omitted - fetched on-demand in UI
       creator: {
         did: l.creator.did,
         handle: l.creator.handle,
@@ -1425,7 +1340,7 @@ export async function performBlocklistAuditSync(): Promise<{
             uri: list.uri,
             name: list.name,
             description: list.description,
-            avatar: list.avatar,
+            // avatar intentionally omitted - fetched on-demand in UI
             creator: {
               did: list.creator.did,
               handle: list.creator.handle,
@@ -1678,7 +1593,6 @@ export async function checkExpirations(): Promise<void> {
     }
   }
 
-  await updateBadge();
   console.log('[ErgoBlock BG] Expiration check complete');
 }
 
@@ -1694,12 +1608,19 @@ export async function setupAlarm(): Promise<void> {
 }
 
 // Listen for alarm events
+// Note: Return promises to keep Service Worker alive during async operations
 browser.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === ALARM_NAME) {
-    checkExpirations();
+    return checkExpirations();
   }
   if (alarm.name === SYNC_ALARM_NAME) {
-    performFullSync();
+    return performFullSync();
+  }
+  if (alarm.name === BLOCK_REL_SYNC_ALARM_NAME) {
+    return handleBlockRelationshipSync();
+  }
+  if (alarm.name === FOLLOWS_SYNC_ALARM_NAME) {
+    return syncFollowsOnly();
   }
 });
 
@@ -1730,7 +1651,6 @@ async function handleUnblockRequest(did: string): Promise<{ success: boolean; er
     const rkey = blockData?.rkey;
 
     await unblockUser(did, auth.accessJwt, auth.did, auth.pdsUrl, rkey);
-    await updateBadge();
     return { success: true };
   } catch (error) {
     console.error('[ErgoBlock BG] Unblock failed:', error);
@@ -1749,7 +1669,6 @@ async function handleUnmuteRequest(did: string): Promise<{ success: boolean; err
     }
 
     await unmuteUser(did, auth.accessJwt, auth.pdsUrl);
-    await updateBadge();
     return { success: true };
   } catch (error) {
     console.error('[ErgoBlock BG] Unmute failed:', error);
@@ -1863,7 +1782,7 @@ async function handleFindContext(
 
     if (result.post) {
       await addPostContext({
-        id: `manual_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        id: generateId('manual'),
         postUri: result.post.uri,
         postAuthorDid: result.post.author.did,
         postAuthorHandle: result.post.author.handle || handle,
@@ -2071,6 +1990,192 @@ async function handleFetchAllInteractions(
   }
 }
 
+// ============================================================================
+// Block Relationship Handlers (AskBeeves Integration)
+// ============================================================================
+
+/**
+ * Handle request to sync block relationships (V2 - API only, no CAR downloads)
+ */
+async function handleBlockRelationshipSync(): Promise<{
+  success: boolean;
+  error?: string;
+  alreadyRunning?: boolean;
+  stats?: { totalFollows: number; syncedFollows: number; totalBlocksTracked: number };
+}> {
+  try {
+    const auth = await getAuthToken();
+    if (!auth?.accessJwt || !auth?.did || !auth?.pdsUrl) {
+      return { success: false, error: 'Not authenticated' };
+    }
+
+    console.log('[ErgoBlock BG] Starting block relationship sync (V2 API-only)...');
+    const didRun = await syncFollowBlockListsV2({
+      accessJwt: auth.accessJwt,
+      did: auth.did,
+      handle: '', // Not needed for sync
+      pdsUrl: auth.pdsUrl,
+    });
+
+    if (!didRun) {
+      // Sync was already in progress
+      return { success: true, alreadyRunning: true };
+    }
+
+    const stats = await getBlockRelationshipStatsV2();
+    return {
+      success: true,
+      stats: {
+        totalFollows: stats.totalFollows,
+        syncedFollows: stats.syncedFollows,
+        totalBlocksTracked: stats.totalDirectBlocks + stats.totalListSubscriptions,
+      },
+    };
+  } catch (error) {
+    console.error('[ErgoBlock BG] Block relationship sync failed:', error);
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+  }
+}
+
+/**
+ * Handle request to get block relationships for a profile (V2 - includes list-based blocks)
+ */
+async function handleGetBlockRelationships(profileDid: string): Promise<{
+  success: boolean;
+  error?: string;
+  blockedBy?: Array<{ did: string; handle: string; displayName?: string; avatar?: string }>;
+  blocking?: Array<{ did: string; handle: string; displayName?: string; avatar?: string }>;
+}> {
+  try {
+    console.log(`[ErgoBlock BG] Getting block relationships for ${profileDid}`);
+    const relationships = await getBlockRelationshipsForProfileV2(profileDid);
+    console.log(
+      `[ErgoBlock BG] Block relationships result: blockedBy=${relationships.blockedBy.length}, blocking=${relationships.blocking.length}`
+    );
+    return {
+      success: true,
+      blockedBy: relationships.blockedBy.map((u) => ({
+        did: u.did,
+        handle: u.handle,
+        displayName: u.displayName,
+        avatar: u.avatar,
+      })),
+      blocking: relationships.blocking.map((u) => ({
+        did: u.did,
+        handle: u.handle,
+        displayName: u.displayName,
+        avatar: u.avatar,
+      })),
+    };
+  } catch (error) {
+    console.error('[ErgoBlock BG] Get block relationships failed:', error);
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+  }
+}
+
+/**
+ * Handle request to get block relationship sync status
+ */
+async function handleGetBlockRelationshipStatus(): Promise<{
+  success: boolean;
+  status?: {
+    lastSync: number;
+    isRunning: boolean;
+    totalFollows: number;
+    syncedFollows: number;
+    errors: string[];
+    totalBlocksTracked?: number;
+  };
+}> {
+  const status = await getBlockRelationshipSyncStatus();
+  // Also get stats to include totalBlocksTracked
+  const stats = await getBlockRelationshipStatsV2();
+  return {
+    success: true,
+    status: {
+      ...status,
+      totalBlocksTracked: stats.totalDirectBlocks + stats.totalListSubscriptions,
+    },
+  };
+}
+
+/**
+ * Handle request to clear block relationship cache (clears both V1 and V2 caches)
+ */
+async function handleClearBlockRelationshipCache(): Promise<{ success: boolean }> {
+  await clearBlockRelationshipCache();
+  await clearV2Caches();
+  return { success: true };
+}
+
+/**
+ * Handle request to deep sync blocklist members (CAR-based)
+ */
+async function handleDeepSyncBlocklists(): Promise<{
+  success: boolean;
+  error?: string;
+  stats?: {
+    creatorsProcessed: number;
+    listsResolved: number;
+    totalMembers: number;
+    errors: string[];
+  };
+}> {
+  try {
+    console.log('[ErgoBlock BG] Starting deep sync of blocklist members...');
+    const result = await deepSyncBlocklistMembers();
+    return {
+      success: true,
+      stats: result,
+    };
+  } catch (error) {
+    console.error('[ErgoBlock BG] Deep sync failed:', error);
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+  }
+}
+
+/**
+ * Handle request to get blocklist subscription statistics
+ */
+async function handleGetBlocklistStats(): Promise<{
+  success: boolean;
+  stats?: {
+    uniqueLists: number;
+    uniqueCreators: number;
+    resolvedLists: number;
+    unresolvedLists: number;
+  };
+}> {
+  const stats = await getBlocklistSubscriptionStats();
+  return { success: true, stats };
+}
+
+/**
+ * Set up block relationship sync alarm
+ */
+export async function setupBlockRelationshipSyncAlarm(): Promise<void> {
+  const options = await getOptions();
+  const blockRelSettings = options.blockRelationships;
+
+  // Check if feature is enabled (default to true if settings not present)
+  if (!blockRelSettings?.enabled) {
+    await browser.alarms.clear(BLOCK_REL_SYNC_ALARM_NAME);
+    console.log('[ErgoBlock BG] Block relationship sync disabled');
+    return;
+  }
+
+  await browser.alarms.clear(BLOCK_REL_SYNC_ALARM_NAME);
+  await browser.alarms.create(BLOCK_REL_SYNC_ALARM_NAME, {
+    periodInMinutes: blockRelSettings.autoSyncInterval || 60,
+    delayInMinutes: 2, // First sync 2 minutes after startup
+  });
+  console.log(
+    '[ErgoBlock BG] Block relationship sync alarm set with interval:',
+    blockRelSettings.autoSyncInterval || 60,
+    'minutes'
+  );
+}
+
 // Async message handler for communication with content scripts and popup
 // Using the async pattern which returns Promise<unknown> per webextension-polyfill types
 const messageHandler = async (rawMessage: unknown): Promise<MessageResponse | undefined> => {
@@ -2079,7 +2184,6 @@ const messageHandler = async (rawMessage: unknown): Promise<MessageResponse | un
 
   if (message.type === 'TEMP_BLOCK_ADDED' || message.type === 'TEMP_MUTE_ADDED') {
     setupAlarm();
-    updateBadge();
     return undefined;
   }
 
@@ -2129,6 +2233,31 @@ const messageHandler = async (rawMessage: unknown): Promise<MessageResponse | un
     return await handleUnsubscribeFromBlocklist(message.listUri as string);
   }
 
+  // Block relationship handlers (AskBeeves integration)
+  if (message.type === 'SYNC_BLOCK_RELATIONSHIPS') {
+    return await handleBlockRelationshipSync();
+  }
+
+  if (message.type === 'GET_BLOCK_RELATIONSHIPS' && message.did) {
+    return await handleGetBlockRelationships(message.did);
+  }
+
+  if (message.type === 'GET_BLOCK_RELATIONSHIP_STATUS') {
+    return await handleGetBlockRelationshipStatus();
+  }
+
+  if (message.type === 'CLEAR_BLOCK_RELATIONSHIP_CACHE') {
+    return await handleClearBlockRelationshipCache();
+  }
+
+  if (message.type === 'DEEP_SYNC_BLOCKLISTS') {
+    return await handleDeepSyncBlocklists();
+  }
+
+  if (message.type === 'GET_BLOCKLIST_STATS') {
+    return await handleGetBlocklistStats();
+  }
+
   return undefined;
 };
 
@@ -2146,25 +2275,85 @@ async function clearStaleSyncState(): Promise<void> {
   }
 }
 
+/**
+ * Clear old bloated storage data that was causing quota issues
+ * This is a one-time migration to the lighter storage format
+ */
+async function clearBloatedStorageData(): Promise<void> {
+  try {
+    // Check if socialGraph exists and has data (it's the main culprit)
+    const existingGraph = await getSocialGraph();
+    if (existingGraph.follows.length > 0 || existingGraph.followers.length > 0) {
+      console.log('[ErgoBlock BG] Clearing old bloated socialGraph storage...');
+      await browser.storage.local.remove('socialGraph');
+      console.log('[ErgoBlock BG] Old socialGraph cleared');
+    }
+  } catch (error) {
+    console.error('[ErgoBlock BG] Error clearing bloated storage:', error);
+  }
+}
+
+// Clear any stale badge from previous versions
+browser.action.setBadgeText({ text: '' });
+
 // Initialize on install/startup
-browser.runtime.onInstalled.addListener(() => {
+browser.runtime.onInstalled.addListener(async () => {
   console.log('[ErgoBlock BG] Extension installed');
   clearStaleSyncState();
+  await clearBloatedStorageData();
+
+  // Migrate block relationship cache to V2 format if needed
+  const migrated = await migrateToV2Cache();
+  if (migrated) {
+    console.log('[ErgoBlock BG] Migrated block relationship cache to V2 format');
+  }
+
   setupAlarm();
   setupSyncAlarm();
-  updateBadge();
+  setupBlockRelationshipSyncAlarm();
+  setupFollowsSyncAlarm();
+  browser.action.setBadgeText({ text: '' });
+
+  // Sync follows immediately after a short delay (for repost filter feature)
+  setTimeout(() => syncFollowsOnly(), 5000);
 });
 
-browser.runtime.onStartup.addListener(() => {
+browser.runtime.onStartup.addListener(async () => {
   console.log('[ErgoBlock BG] Extension started');
   clearStaleSyncState();
+  await clearBloatedStorageData();
+
+  // Migrate block relationship cache to V2 format if needed
+  const migrated = await migrateToV2Cache();
+  if (migrated) {
+    console.log('[ErgoBlock BG] Migrated block relationship cache to V2 format');
+  }
+
   setupAlarm();
   setupSyncAlarm();
-  updateBadge();
+  setupBlockRelationshipSyncAlarm();
+  setupFollowsSyncAlarm();
+  browser.action.setBadgeText({ text: '' });
+
+  // Sync follows immediately after a short delay (for repost filter feature)
+  setTimeout(() => syncFollowsOnly(), 5000);
 });
 
 // Also set up on script load (for when background restarts)
 clearStaleSyncState();
+clearBloatedStorageData();
+
+// Migrate block relationship cache to V2 format if needed (async, fire-and-forget)
+migrateToV2Cache().then((migrated) => {
+  if (migrated) {
+    console.log('[ErgoBlock BG] Migrated block relationship cache to V2 format (on script load)');
+  }
+});
+
 setupAlarm();
 setupSyncAlarm();
-updateBadge();
+setupBlockRelationshipSyncAlarm();
+setupFollowsSyncAlarm();
+
+// Sync follows on script load after a short delay (for repost filter feature)
+setTimeout(() => syncFollowsOnly(), 5000);

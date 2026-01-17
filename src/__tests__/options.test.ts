@@ -86,7 +86,6 @@ describe('options module', () => {
       quickBlockDuration: createMockElement({ value: '3600000' }),
       notificationsEnabled: createMockElement({ checked: true }),
       notificationSound: createMockElement({ checked: false }),
-      showBadgeCount: createMockElement({ checked: true }),
       checkInterval: createMockElement({ value: '1' }),
       intervalValue: createMockElement({ textContent: '1' }),
       saveBtn: createMockElement(),
@@ -154,11 +153,11 @@ describe('options module', () => {
         notificationsEnabled: false,
         notificationSound: true,
         checkInterval: 5,
-        showBadgeCount: false,
         theme: 'dark',
         savePostContext: true,
         postContextRetentionDays: 90,
         forgivenessPeriodDays: 90,
+        blockRelationships: DEFAULT_OPTIONS.blockRelationships,
       };
       mockLocalStorage['extensionOptions'] = customOptions;
 
@@ -175,11 +174,11 @@ describe('options module', () => {
         notificationsEnabled: true,
         notificationSound: false,
         checkInterval: 2,
-        showBadgeCount: true,
         theme: 'light',
         savePostContext: false,
         postContextRetentionDays: 30,
         forgivenessPeriodDays: 90,
+        blockRelationships: DEFAULT_OPTIONS.blockRelationships,
       };
 
       await mockChrome.storage.local.set({ extensionOptions: options });
@@ -326,14 +325,6 @@ describe('options module', () => {
 
       mockElements.notificationSound.checked = false;
       expect(mockElements.notificationSound.checked).toBe(false);
-    });
-
-    it('should handle show badge count checkbox', () => {
-      mockElements.showBadgeCount.checked = false;
-      expect(mockElements.showBadgeCount.checked).toBe(false);
-
-      mockElements.showBadgeCount.checked = true;
-      expect(mockElements.showBadgeCount.checked).toBe(true);
     });
   });
 

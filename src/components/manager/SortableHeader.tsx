@@ -8,11 +8,7 @@ interface SortableHeaderProps {
 
 export function SortableHeader({ column, label }: SortableHeaderProps): JSX.Element {
   const isActive = sortColumn.value === column;
-  const arrow = isActive
-    ? sortDirection.value === 'asc'
-      ? '↑'
-      : '↓'
-    : '⇅';
+  const arrow = isActive ? (sortDirection.value === 'asc' ? '↑' : '↓') : '⇅';
 
   return (
     <th class="sortable" onClick={() => toggleSort(column)}>

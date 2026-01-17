@@ -32,10 +32,6 @@ describe('types module', () => {
       expect(DEFAULT_OPTIONS.checkInterval).toBe(1);
     });
 
-    it('should have badge count enabled by default', () => {
-      expect(DEFAULT_OPTIONS.showBadgeCount).toBe(true);
-    });
-
     it('should have auto theme by default', () => {
       expect(DEFAULT_OPTIONS.theme).toBe('auto');
     });
@@ -47,7 +43,6 @@ describe('types module', () => {
         'notificationsEnabled',
         'notificationSound',
         'checkInterval',
-        'showBadgeCount',
         'theme',
       ];
 
@@ -80,11 +75,17 @@ describe('types module', () => {
         notificationsEnabled: false,
         notificationSound: true,
         checkInterval: 5,
-        showBadgeCount: false,
         theme: 'dark',
         savePostContext: true,
         postContextRetentionDays: 60,
         forgivenessPeriodDays: 90,
+        blockRelationships: {
+          enabled: true,
+          displayMode: 'compact',
+          autoSyncInterval: 60,
+          maxCacheSize: 8 * 1024 * 1024,
+          showOnProfiles: true,
+        },
       };
 
       expect(options.defaultDuration).toBe(3600000);

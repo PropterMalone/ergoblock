@@ -11,7 +11,7 @@ export function UserCell({ handle, displayName, avatar }: UserCellProps): JSX.El
     <td class="user-col">
       <div class="user-cell">
         {avatar ? (
-          <img src={avatar} class="user-avatar" alt="" />
+          <img src={avatar} class="user-avatar" alt="" loading="lazy" />
         ) : (
           <div class="user-avatar" />
         )}

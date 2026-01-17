@@ -40,7 +40,16 @@ export function ExportSection(): JSX.Element {
   };
 
   const exportHistoryCSV = () => {
-    const headers = ['DID', 'Handle', 'Action', 'Timestamp', 'Trigger', 'Success', 'Error', 'Duration'];
+    const headers = [
+      'DID',
+      'Handle',
+      'Action',
+      'Timestamp',
+      'Trigger',
+      'Success',
+      'Error',
+      'Duration',
+    ];
     const rows = history.value.map((h) => [
       h.did,
       h.handle,

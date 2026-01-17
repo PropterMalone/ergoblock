@@ -4,7 +4,6 @@ import { getOptions, setOptions } from './storage.js';
 import { DEFAULT_OPTIONS, type ExtensionOptions } from './types.js';
 
 type Theme = 'light' | 'dark' | 'auto';
-type StatusType = 'success' | 'error' | null;
 
 interface StatusState {
   message: string;
@@ -53,9 +52,12 @@ function OptionsApp() {
     setStatus({ message, type });
   };
 
-  const updateOption = useCallback(<K extends keyof ExtensionOptions>(key: K, value: ExtensionOptions[K]) => {
-    setLocalOptions((prev) => ({ ...prev, [key]: value }));
-  }, []);
+  const updateOption = useCallback(
+    <K extends keyof ExtensionOptions>(key: K, value: ExtensionOptions[K]) => {
+      setLocalOptions((prev) => ({ ...prev, [key]: value }));
+    },
+    []
+  );
 
   const handleSave = async () => {
     setSaving(true);
@@ -104,9 +106,7 @@ function OptionsApp() {
         <p>Customize how temporary blocks and mutes work</p>
       </div>
 
-      {status && (
-        <div class={`status-message show ${status.type}`}>{status.message}</div>
-      )}
+      {status && <div class={`status-message show ${status.type}`}>{status.message}</div>}
 
       <SettingsSection title="Default Duration">
         <SettingRow
@@ -143,27 +143,12 @@ function OptionsApp() {
           />
         </SettingRow>
 
-        <SettingRow
-          label="Notification sound"
-          description="Play sound with notifications"
-        >
+        <SettingRow label="Notification sound" description="Play sound with notifications">
           <Checkbox
             id="notificationSound"
             label="Enable sound"
             checked={options.notificationSound}
             onChange={(checked) => updateOption('notificationSound', checked)}
-          />
-        </SettingRow>
-
-        <SettingRow
-          label="Show badge counter"
-          description="Display active block/mute count on icon"
-        >
-          <Checkbox
-            id="showBadgeCount"
-            label="Show count"
-            checked={options.showBadgeCount}
-            onChange={(checked) => updateOption('showBadgeCount', checked)}
           />
         </SettingRow>
       </SettingsSection>
@@ -186,9 +171,73 @@ function OptionsApp() {
 
       <SettingsSection title="Appearance">
         <SettingRow label="Theme" description="Choose your color scheme">
-          <ThemeSelector
-            value={options.theme}
-            onChange={(theme) => updateOption('theme', theme)}
+          <ThemeSelector value={options.theme} onChange={(theme) => updateOption('theme', theme)} />
+        </SettingRow>
+      </SettingsSection>
+
+      <SettingsSection title="Block Relationships">
+        <SettingRow
+          label="Enable feature"
+          description="Track which of your follows block other profiles"
+        >
+          <Checkbox
+            id="blockRelEnabled"
+            label="Enable"
+            checked={options.blockRelationships?.enabled ?? true}
+            onChange={(checked) =>
+              updateOption('blockRelationships', {
+                ...options.blockRelationships,
+                enabled: checked,
+              })
+            }
+          />
+        </SettingRow>
+
+        <SettingRow
+          label="Show on profiles"
+          description="Display block info when viewing Bluesky profiles"
+        >
+          <Checkbox
+            id="blockRelShowOnProfiles"
+            label="Show on profiles"
+            checked={options.blockRelationships?.showOnProfiles ?? true}
+            onChange={(checked) =>
+              updateOption('blockRelationships', {
+                ...options.blockRelationships,
+                showOnProfiles: checked,
+              })
+            }
+          />
+        </SettingRow>
+
+        <SettingRow label="Display mode" description="How to show block relationship info">
+          <DisplayModeSelector
+            value={options.blockRelationships?.displayMode ?? 'compact'}
+            onChange={(mode) =>
+              updateOption('blockRelationships', {
+                ...options.blockRelationships,
+                displayMode: mode,
+              })
+            }
+          />
+        </SettingRow>
+
+        <SettingRow
+          label="Auto-sync interval"
+          description="How often to refresh block lists in background"
+        >
+          <RangeSlider
+            id="blockRelSyncInterval"
+            min={30}
+            max={180}
+            value={options.blockRelationships?.autoSyncInterval ?? 60}
+            unit="min"
+            onChange={(value) =>
+              updateOption('blockRelationships', {
+                ...options.blockRelationships,
+                autoSyncInterval: value,
+              })
+            }
           />
         </SettingRow>
       </SettingsSection>
@@ -331,6 +380,37 @@ function ThemeSelector({ value, onChange }: ThemeSelectorProps) {
             onChange={() => onChange(theme.value)}
           />
           <span>{theme.label}</span>
+        </label>
+      ))}
+    </div>
+  );
+}
+
+type DisplayMode = 'compact' | 'detailed';
+
+interface DisplayModeSelectorProps {
+  value: DisplayMode;
+  onChange: (mode: DisplayMode) => void;
+}
+
+function DisplayModeSelector({ value, onChange }: DisplayModeSelectorProps) {
+  const modes: { value: DisplayMode; label: string }[] = [
+    { value: 'compact', label: 'Compact' },
+    { value: 'detailed', label: 'Detailed' },
+  ];
+
+  return (
+    <div class="radio-group">
+      {modes.map((mode) => (
+        <label key={mode.value} class="radio-option">
+          <input
+            type="radio"
+            name="displayMode"
+            value={mode.value}
+            checked={value === mode.value}
+            onChange={() => onChange(mode.value)}
+          />
+          <span>{mode.label}</span>
         </label>
       ))}
     </div>

@@ -25,9 +25,15 @@ import {
   addPostContext,
   deletePostContext,
   cleanupExpiredPostContexts,
+  getRepostFilteredUsers,
+  addRepostFilteredUser,
+  removeRepostFilteredUser,
+  isRepostFiltered,
+  isHandleRepostFiltered,
+  getRepostFilteredUsersArray,
   STORAGE_KEYS,
 } from '../storage.js';
-import { DEFAULT_OPTIONS, HistoryEntry, PostContext } from '../types.js';
+import { DEFAULT_OPTIONS, HistoryEntry, PostContext, RepostFilteredUser } from '../types.js';
 import browser from '../browser.js';
 
 // Get the mocked browser for assertions
@@ -480,6 +486,112 @@ describe('Storage', () => {
     });
   });
 
+  describe('Repost Filters', () => {
+    it('should get empty repost filters by default', async () => {
+      const users = await getRepostFilteredUsers();
+      expect(users).toEqual({});
+    });
+
+    it('should add a repost filtered user', async () => {
+      const user: RepostFilteredUser = {
+        did: 'did:plc:repost1',
+        handle: 'repost.bsky.social',
+        displayName: 'Repost User',
+        avatar: 'https://example.com/avatar.jpg',
+        addedAt: Date.now(),
+      };
+
+      await addRepostFilteredUser(user);
+
+      const users = await getRepostFilteredUsers();
+      expect(users['did:plc:repost1']).toBeDefined();
+      expect(users['did:plc:repost1'].handle).toBe('repost.bsky.social');
+      expect(users['did:plc:repost1'].displayName).toBe('Repost User');
+    });
+
+    it('should remove a repost filtered user', async () => {
+      const user: RepostFilteredUser = {
+        did: 'did:plc:toremove',
+        handle: 'remove.bsky.social',
+        addedAt: Date.now(),
+      };
+
+      await addRepostFilteredUser(user);
+      await removeRepostFilteredUser('did:plc:toremove');
+
+      const users = await getRepostFilteredUsers();
+      expect(users['did:plc:toremove']).toBeUndefined();
+    });
+
+    it('should check if a user is repost filtered by DID', async () => {
+      const user: RepostFilteredUser = {
+        did: 'did:plc:filtered',
+        handle: 'filtered.bsky.social',
+        addedAt: Date.now(),
+      };
+
+      await addRepostFilteredUser(user);
+
+      expect(await isRepostFiltered('did:plc:filtered')).toBe(true);
+      expect(await isRepostFiltered('did:plc:notfiltered')).toBe(false);
+    });
+
+    it('should check if a user is repost filtered by handle (case insensitive)', async () => {
+      const user: RepostFilteredUser = {
+        did: 'did:plc:handletest',
+        handle: 'TestHandle.bsky.social',
+        addedAt: Date.now(),
+      };
+
+      await addRepostFilteredUser(user);
+
+      expect(await isHandleRepostFiltered('testhandle.bsky.social')).toBe(true);
+      expect(await isHandleRepostFiltered('TESTHANDLE.BSKY.SOCIAL')).toBe(true);
+      expect(await isHandleRepostFiltered('other.bsky.social')).toBe(false);
+    });
+
+    it('should get repost filtered users as sorted array', async () => {
+      const now = Date.now();
+
+      await addRepostFilteredUser({
+        did: 'did:plc:older',
+        handle: 'older.bsky.social',
+        addedAt: now - 1000,
+      });
+
+      await addRepostFilteredUser({
+        did: 'did:plc:newer',
+        handle: 'newer.bsky.social',
+        addedAt: now,
+      });
+
+      const users = await getRepostFilteredUsersArray();
+      expect(users.length).toBe(2);
+      // Newest first
+      expect(users[0].did).toBe('did:plc:newer');
+      expect(users[1].did).toBe('did:plc:older');
+    });
+
+    it('should update an existing filtered user', async () => {
+      await addRepostFilteredUser({
+        did: 'did:plc:update',
+        handle: 'old.bsky.social',
+        addedAt: Date.now() - 1000,
+      });
+
+      await addRepostFilteredUser({
+        did: 'did:plc:update',
+        handle: 'new.bsky.social',
+        displayName: 'Updated Name',
+        addedAt: Date.now(),
+      });
+
+      const users = await getRepostFilteredUsers();
+      expect(users['did:plc:update'].handle).toBe('new.bsky.social');
+      expect(users['did:plc:update'].displayName).toBe('Updated Name');
+    });
+  });
+
   describe('Storage Keys', () => {
     it('should export all required storage keys', () => {
       expect(STORAGE_KEYS.TEMP_BLOCKS).toBe('tempBlocks');
@@ -491,6 +603,7 @@ describe('Storage', () => {
       expect(STORAGE_KEYS.PERMANENT_BLOCKS).toBe('permanentBlocks');
       expect(STORAGE_KEYS.PERMANENT_MUTES).toBe('permanentMutes');
       expect(STORAGE_KEYS.SYNC_STATE).toBe('syncState');
+      expect(STORAGE_KEYS.REPOST_FILTERED_USERS).toBe('repostFilteredUsers');
     });
   });
 });
