@@ -23,6 +23,11 @@ import {
   getFollowsHandles,
   setBlocklistConflicts,
   getDismissedConflicts,
+  getMassOpsSettings,
+  setMassOpsSettings,
+  saveMassOpsScanResult,
+  setCarDownloadProgress,
+  clearCarDownloadProgress,
 } from './storage.js';
 import {
   ListRecordsResponse,
@@ -48,8 +53,26 @@ import {
   BlocklistConflictGroup,
   BlocklistConflict,
   Interaction,
+  OwnedList,
+  ListMember,
+  GraphOperation,
+  MassOpsSettings,
 } from './types.js';
-import { fetchAndParseRepo, ParsedPost } from './carRepo.js';
+import {
+  fetchAndParseRepo,
+  ParsedPost,
+  fetchListsFromCarWithTimestamps,
+  fetchListsFromCar,
+  detectMassOperations,
+  getCarFileSize,
+  fetchExternalUserGraph,
+} from './carRepo.js';
+import {
+  getGraphOperationsSmart,
+  checkCarCacheStatus,
+  type CarDownloadProgress,
+} from './carService.js';
+import { invalidateCarCache } from './carCache.js';
 import { sleep, generateId } from './utils.js';
 
 const ALARM_NAME = 'checkExpirations';
@@ -66,6 +89,7 @@ let followsSyncLockActive = false;
 
 interface AuthData {
   accessJwt: string;
+  refreshJwt?: string;
   did: string;
   pdsUrl: string;
 }
@@ -118,9 +142,74 @@ async function requestFreshAuth(): Promise<AuthData | null> {
   }
 }
 
+/**
+ * Check if an error indicates an expired token
+ */
+function isExpiredTokenError(error: Error): boolean {
+  const message = error.message.toLowerCase();
+  return (
+    message.includes('expiredtoken') ||
+    message.includes('token has expired') ||
+    message.includes('expired token')
+  );
+}
 
 /**
- * Wrapper for API requests that handles auth status updates
+ * Refresh the access token using the refresh token
+ * Returns the new auth data if successful, null otherwise
+ */
+async function refreshSession(auth: AuthData): Promise<AuthData | null> {
+  if (!auth.refreshJwt) {
+    console.log('[ErgoBlock BG] No refresh token available, requesting fresh auth from tab');
+    return requestFreshAuth();
+  }
+
+  try {
+    console.log('[ErgoBlock BG] Attempting to refresh access token...');
+
+    const response = await fetch(`${auth.pdsUrl}/xrpc/com.atproto.server.refreshSession`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${auth.refreshJwt}`,
+        'Content-Type': 'application/json',
+      },
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('[ErgoBlock BG] Token refresh failed:', response.status, errorText);
+      // Refresh token might also be expired, try getting fresh auth from tab
+      return requestFreshAuth();
+    }
+
+    const data = (await response.json()) as {
+      accessJwt: string;
+      refreshJwt: string;
+      did: string;
+      handle: string;
+    };
+
+    const newAuth: AuthData = {
+      accessJwt: data.accessJwt,
+      refreshJwt: data.refreshJwt,
+      did: data.did,
+      pdsUrl: auth.pdsUrl,
+    };
+
+    // Store the refreshed tokens
+    await browser.storage.local.set({ authToken: newAuth, authStatus: 'valid' });
+    console.log('[ErgoBlock BG] Token refreshed successfully');
+
+    return newAuth;
+  } catch (error) {
+    console.error('[ErgoBlock BG] Error refreshing token:', error);
+    // Fall back to requesting fresh auth from tab
+    return requestFreshAuth();
+  }
+}
+
+/**
+ * Wrapper for API requests that handles auth status updates and token refresh
  */
 async function bgApiRequest<T>(
   endpoint: string,
@@ -129,26 +218,63 @@ async function bgApiRequest<T>(
   token: string,
   pdsUrl: string
 ): Promise<T | null> {
-  try {
-    // Background operations should always use the PDS to ensure consistent writes to the user's repo.
+  const doRequest = async (accessJwt: string): Promise<T | null> => {
     const result = await executeApiRequest<T>(
       endpoint,
       method,
       body,
-      { accessJwt: token, pdsUrl },
+      { accessJwt, pdsUrl },
       pdsUrl // Force PDS for background operations to ensure write consistency
     );
+    return result;
+  };
+
+  try {
+    // Background operations should always use the PDS to ensure consistent writes to the user's repo.
+    const result = await doRequest(token);
 
     // If request was successful, ensure status is valid
     await browser.storage.local.set({ authStatus: 'valid' });
     return result;
   } catch (error) {
-    if (
-      error instanceof Error &&
-      (error.message.includes('401') || error.message.includes('Auth error'))
-    ) {
-      console.error('[ErgoBlock BG] Auth failed (401), marking session invalid');
-      await browser.storage.local.set({ authStatus: 'invalid' });
+    if (error instanceof Error) {
+      // Check for expired token error (400 with ExpiredToken)
+      if (isExpiredTokenError(error)) {
+        console.log('[ErgoBlock BG] Token expired, attempting refresh...');
+
+        // Get current auth to access refresh token
+        const auth = await getAuthToken();
+        if (!auth) {
+          console.error('[ErgoBlock BG] No auth available for refresh');
+          await browser.storage.local.set({ authStatus: 'invalid' });
+          throw error;
+        }
+
+        // Try to refresh the token
+        const newAuth = await refreshSession(auth);
+        if (newAuth) {
+          // Retry the request with the new token
+          console.log('[ErgoBlock BG] Retrying request with refreshed token...');
+          try {
+            const result = await doRequest(newAuth.accessJwt);
+            await browser.storage.local.set({ authStatus: 'valid' });
+            return result;
+          } catch (retryError) {
+            console.error('[ErgoBlock BG] Retry after refresh failed:', retryError);
+            throw retryError;
+          }
+        } else {
+          console.error('[ErgoBlock BG] Token refresh failed, marking session invalid');
+          await browser.storage.local.set({ authStatus: 'invalid' });
+          throw error;
+        }
+      }
+
+      // Check for 401 auth errors
+      if (error.message.includes('401') || error.message.includes('Auth error')) {
+        console.error('[ErgoBlock BG] Auth failed (401), marking session invalid');
+        await browser.storage.local.set({ authStatus: 'invalid' });
+      }
     }
     throw error;
   }
@@ -391,6 +517,50 @@ async function fetchAllMutes(auth: AuthData): Promise<ProfileView[]> {
  */
 interface GetProfilesResponse {
   profiles: ProfileWithViewer[];
+}
+
+/**
+ * Fetch profiles in batches (max 25 per request)
+ * Returns array of ProfileWithViewer
+ * Uses public API (AppView) for getProfiles endpoint
+ */
+async function fetchProfiles(
+  dids: string[],
+  accessJwt: string,
+  pdsUrl: string = 'https://bsky.social'
+): Promise<ProfileWithViewer[]> {
+  const result: ProfileWithViewer[] = [];
+  const batchSize = 25;
+  const publicApi = 'https://public.api.bsky.app';
+
+  for (let i = 0; i < dids.length; i += batchSize) {
+    const batch = dids.slice(i, i + batchSize);
+    const params = batch.map((d) => `actors=${encodeURIComponent(d)}`).join('&');
+
+    try {
+      // Use public API for getProfiles (not PDS)
+      const response = await executeApiRequest<GetProfilesResponse>(
+        `app.bsky.actor.getProfiles?${params}`,
+        'GET',
+        null,
+        { accessJwt, pdsUrl },
+        publicApi
+      );
+
+      if (response?.profiles) {
+        result.push(...response.profiles);
+      }
+    } catch (error) {
+      console.error('[ErgoBlock BG] Error fetching profiles:', error);
+    }
+
+    // Rate limit between batches
+    if (i + batchSize < dids.length) {
+      await sleep(200);
+    }
+  }
+
+  return result;
 }
 
 /**
@@ -1023,10 +1193,28 @@ export async function setupSyncAlarm(): Promise<void> {
 // Blocklist Audit Sync
 // ============================================================================
 
+// In-memory cache for follows/followers (used by amnesty review)
+const followsCache: {
+  data: ProfileView[] | null;
+  fetchedAt: number;
+} = { data: null, fetchedAt: 0 };
+
+const followersCache: {
+  data: ProfileView[] | null;
+  fetchedAt: number;
+} = { data: null, fetchedAt: 0 };
+
+const FOLLOW_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
 /**
- * Fetch all follows for a user
+ * Fetch all follows for a user (with caching)
  */
 async function fetchAllFollows(auth: AuthData): Promise<ProfileView[]> {
+  // Check cache first
+  if (followsCache.data && Date.now() - followsCache.fetchedAt < FOLLOW_CACHE_TTL_MS) {
+    console.log(`[ErgoBlock BG] Using cached follows (${followsCache.data.length} entries)`);
+    return followsCache.data;
+  }
   const allFollows: ProfileView[] = [];
   let cursor: string | undefined;
 
@@ -1054,13 +1242,24 @@ async function fetchAllFollows(auth: AuthData): Promise<ProfileView[]> {
     }
   } while (cursor);
 
+  // Update cache
+  followsCache.data = allFollows;
+  followsCache.fetchedAt = Date.now();
+  console.log(`[ErgoBlock BG] Cached ${allFollows.length} follows`);
+
   return allFollows;
 }
 
 /**
- * Fetch all followers for a user
+ * Fetch all followers for a user (with caching)
  */
 async function fetchAllFollowers(auth: AuthData): Promise<ProfileView[]> {
+  // Check cache first
+  if (followersCache.data && Date.now() - followersCache.fetchedAt < FOLLOW_CACHE_TTL_MS) {
+    console.log(`[ErgoBlock BG] Using cached followers (${followersCache.data.length} entries)`);
+    return followersCache.data;
+  }
+
   const allFollowers: ProfileView[] = [];
   let cursor: string | undefined;
 
@@ -1087,6 +1286,11 @@ async function fetchAllFollowers(auth: AuthData): Promise<ProfileView[]> {
       await sleep(PAGINATION_DELAY);
     }
   } while (cursor);
+
+  // Update cache
+  followersCache.data = allFollowers;
+  followersCache.fetchedAt = Date.now();
+  console.log(`[ErgoBlock BG] Cached ${allFollowers.length} followers`);
 
   return allFollowers;
 }
@@ -1708,7 +1912,9 @@ export async function checkExpirations(): Promise<void> {
     // Log final result
     const stillFailed = blockResults.filter((r) => r.authError).length;
     if (stillFailed > 0) {
-      console.log(`[ErgoBlock BG] ${stillFailed} blocks still failed after retry - will try again on next check`);
+      console.log(
+        `[ErgoBlock BG] ${stillFailed} blocks still failed after retry - will try again on next check`
+      );
     }
   }
 
@@ -1744,7 +1950,9 @@ export async function checkExpirations(): Promise<void> {
     // Log final result
     const stillFailed = muteResults.filter((r) => r.authError).length;
     if (stillFailed > 0) {
-      console.log(`[ErgoBlock BG] ${stillFailed} mutes still failed after retry - will try again on next check`);
+      console.log(
+        `[ErgoBlock BG] ${stillFailed} mutes still failed after retry - will try again on next check`
+      );
     }
   }
 
@@ -1783,6 +1991,9 @@ interface ExtensionMessage {
   did?: string;
   handle?: string;
   listUri?: string;
+  rkey?: string;
+  targetDid?: string;
+  beforeTimestamp?: number;
 }
 
 type MessageResponse = { success: boolean; error?: string; [key: string]: unknown };
@@ -2142,6 +2353,711 @@ async function handleFetchAllInteractions(
   }
 }
 
+// ============================================================================
+// List Audit Handlers
+// ============================================================================
+
+/**
+ * Fetch lists owned by the logged-in user from local CAR
+ */
+async function handleFetchOwnedLists(): Promise<{
+  success: boolean;
+  lists?: OwnedList[];
+  error?: string;
+}> {
+  try {
+    const auth = await getAuthToken();
+    if (!auth?.accessJwt || !auth?.did || !auth?.pdsUrl) {
+      return { success: false, error: 'Not authenticated' };
+    }
+
+    console.log('[ErgoBlock BG] Fetching owned lists from CAR...');
+
+    // Fetch and parse lists from CAR file (no API call needed)
+    const result = await fetchListsFromCar(auth.did, auth.pdsUrl);
+
+    // Convert ParsedListData to OwnedList
+    const ownedLists: OwnedList[] = Object.values(result.lists).map((list) => ({
+      uri: list.uri,
+      name: list.name,
+      purpose: list.purpose === 'app.bsky.graph.defs#modlist' ? 'modlist' : 'curatelist',
+      description: list.description,
+      listItemCount: list.members.length,
+      createdAt: list.createdAt,
+    }));
+
+    console.log(`[ErgoBlock BG] Fetched ${ownedLists.length} owned lists from CAR`);
+    return { success: true, lists: ownedLists };
+  } catch (error) {
+    console.error('[ErgoBlock BG] Fetch owned lists failed:', error);
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+  }
+}
+
+/**
+ * Fetch list members with timestamps from CAR file
+ */
+async function handleFetchListMembersWithTimestamps(listUri: string): Promise<{
+  success: boolean;
+  members?: ListMember[];
+  error?: string;
+}> {
+  try {
+    const auth = await getAuthToken();
+    if (!auth?.accessJwt || !auth?.did || !auth?.pdsUrl) {
+      return { success: false, error: 'Not authenticated' };
+    }
+
+    // Get list name from API first
+    const listResponse = await executeApiRequest<{ list: ListView }>(
+      `app.bsky.graph.getList?list=${encodeURIComponent(listUri)}&limit=1`,
+      'GET',
+      null,
+      { accessJwt: auth.accessJwt, pdsUrl: auth.pdsUrl }
+    );
+    const listName = listResponse?.list?.name || 'Unknown List';
+
+    // Fetch user's CAR file and parse for list items
+    const targetListUris = new Set([listUri]);
+    const parsedLists = await fetchListsFromCarWithTimestamps(
+      auth.did,
+      auth.pdsUrl,
+      targetListUris
+    );
+
+    const parsedList = parsedLists.lists[listUri];
+    if (!parsedList || parsedList.members.length === 0) {
+      return { success: true, members: [] };
+    }
+
+    // Hydrate member profiles
+    const memberDids = parsedList.members.map((m) => m.did);
+    const profiles = await fetchProfiles(memberDids, auth.accessJwt);
+    const profileMap = new Map(profiles.map((p) => [p.did, p]));
+
+    // Build ListMember array
+    const members: ListMember[] = parsedList.members.map((m) => {
+      const profile = profileMap.get(m.did);
+      return {
+        did: m.did,
+        handle: profile?.handle || m.did,
+        displayName: profile?.displayName,
+        avatar: profile?.avatar,
+        listUri,
+        listName,
+        addedAt: m.addedAt,
+        listitemRkey: m.rkey,
+      };
+    });
+
+    // Sort by addedAt descending (most recent first)
+    members.sort((a, b) => b.addedAt - a.addedAt);
+
+    console.log(`[ErgoBlock BG] Fetched ${members.length} members with timestamps for ${listName}`);
+    return { success: true, members };
+  } catch (error) {
+    console.error('[ErgoBlock BG] Fetch list members with timestamps failed:', error);
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+  }
+}
+
+/**
+ * Remove a member from a list by deleting the listitem record
+ */
+async function handleRemoveFromList(rkey: string): Promise<{
+  success: boolean;
+  error?: string;
+}> {
+  try {
+    const auth = await getAuthToken();
+    if (!auth?.accessJwt || !auth?.did || !auth?.pdsUrl) {
+      return { success: false, error: 'Not authenticated' };
+    }
+
+    await executeApiRequest(
+      'com.atproto.repo.deleteRecord',
+      'POST',
+      {
+        repo: auth.did,
+        collection: 'app.bsky.graph.listitem',
+        rkey,
+      },
+      { accessJwt: auth.accessJwt, pdsUrl: auth.pdsUrl }
+    );
+
+    console.log(`[ErgoBlock BG] Removed list item with rkey: ${rkey}`);
+    return { success: true };
+  } catch (error) {
+    console.error('[ErgoBlock BG] Remove from list failed:', error);
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+  }
+}
+
+/**
+ * Find interactions with a target user that occurred before a specific timestamp
+ * Used for list audit to find interactions before the member was added to the list
+ */
+async function handleFindInteractionsBefore(
+  targetDid: string,
+  beforeTimestamp: number
+): Promise<{
+  success: boolean;
+  interactions?: Interaction[];
+  error?: string;
+}> {
+  try {
+    const auth = await getAuthToken();
+    if (!auth?.accessJwt || !auth?.did || !auth?.pdsUrl) {
+      return { success: false, error: 'Not authenticated' };
+    }
+
+    // Get target handle
+    const profiles = await fetchProfiles([targetDid], auth.accessJwt);
+    const targetHandle = profiles[0]?.handle || targetDid;
+
+    const loggedInHandle = await getLoggedInHandle(auth);
+
+    // Use existing findAllInteractions function
+    const allInteractions = await findAllInteractions(
+      targetDid,
+      targetHandle,
+      auth.did,
+      loggedInHandle
+    );
+
+    // Filter to only interactions before the timestamp
+    const filteredInteractions = allInteractions.filter((i) => i.createdAt < beforeTimestamp);
+
+    console.log(
+      `[ErgoBlock BG] Found ${filteredInteractions.length} interactions before ${new Date(beforeTimestamp).toISOString()}`
+    );
+
+    return { success: true, interactions: filteredInteractions };
+  } catch (error) {
+    console.error('[ErgoBlock BG] Find interactions before failed:', error);
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+  }
+}
+
+/**
+ * User info for relationship display
+ */
+interface RelationshipUser {
+  did: string;
+  handle: string;
+  displayName?: string;
+  avatar?: string;
+}
+
+/**
+ * Response for follow relationships query
+ */
+interface FollowRelationshipsResponse {
+  success: boolean;
+  followsWhoFollowThem?: RelationshipUser[];
+  followersWhoFollowThem?: RelationshipUser[];
+  followsTheyBlock?: RelationshipUser[];
+  error?: string;
+}
+
+/**
+ * Fetch candidate's followers using public API (works even if blocked)
+ */
+async function fetchCandidateFollowers(candidateDid: string): Promise<Set<string>> {
+  const followerDids = new Set<string>();
+  let cursor: string | undefined;
+
+  do {
+    let url = `https://public.api.bsky.app/xrpc/app.bsky.graph.getFollowers?actor=${encodeURIComponent(candidateDid)}&limit=100`;
+    if (cursor) {
+      url += `&cursor=${encodeURIComponent(cursor)}`;
+    }
+
+    try {
+      const response = await fetch(url);
+      if (!response.ok) break;
+
+      const data = (await response.json()) as { followers?: ProfileView[]; cursor?: string };
+      if (data.followers) {
+        for (const f of data.followers) {
+          followerDids.add(f.did);
+        }
+      }
+      cursor = data.cursor;
+
+      if (cursor) {
+        await sleep(PAGINATION_DELAY);
+      }
+    } catch {
+      break;
+    }
+  } while (cursor);
+
+  return followerDids;
+}
+
+/**
+ * Fetch candidate's blocks from their CAR file
+ */
+async function fetchCandidateBlocks(candidateDid: string): Promise<Set<string>> {
+  try {
+    const pdsUrl = await resolvePdsUrl(candidateDid);
+    console.log(`[ErgoBlock BG] Fetching CAR for ${candidateDid} to get blocks...`);
+    const repoData = await fetchAndParseRepo(candidateDid, pdsUrl);
+    console.log(`[ErgoBlock BG] Candidate has ${repoData.blocks.length} blocks`);
+    return new Set(repoData.blocks);
+  } catch (error) {
+    console.error(`[ErgoBlock BG] Failed to fetch candidate blocks:`, error);
+    return new Set();
+  }
+}
+
+/**
+ * Get follow relationships for amnesty review
+ * Returns:
+ * - followsWhoFollowThem: people you follow who also follow the candidate
+ * - followersWhoFollowThem: your followers who also follow the candidate
+ * - followsTheyBlock: people you follow who the candidate blocks
+ */
+async function handleGetFollowRelationships(
+  candidateDid: string
+): Promise<FollowRelationshipsResponse> {
+  try {
+    const auth = await getAuthToken();
+    if (!auth?.accessJwt || !auth?.did || !auth?.pdsUrl) {
+      return { success: false, error: 'Not authenticated' };
+    }
+
+    console.log(`[ErgoBlock BG] Fetching follow relationships for ${candidateDid}`);
+
+    // Fetch all data in parallel
+    const [myFollows, myFollowers, candidateFollowers, candidateBlocks] = await Promise.all([
+      fetchAllFollows(auth),
+      fetchAllFollowers(auth),
+      fetchCandidateFollowers(candidateDid),
+      fetchCandidateBlocks(candidateDid),
+    ]);
+
+    console.log(
+      `[ErgoBlock BG] Got ${myFollows.length} follows, ${myFollowers.length} followers, candidate has ${candidateFollowers.size} followers and ${candidateBlocks.size} blocks`
+    );
+
+    // Build results for follows/followers who follow the candidate
+    const followsWhoFollowThem: RelationshipUser[] = [];
+    const followersWhoFollowThem: RelationshipUser[] = [];
+    const followsTheyBlock: RelationshipUser[] = [];
+
+    for (const f of myFollows) {
+      if (candidateFollowers.has(f.did)) {
+        followsWhoFollowThem.push({
+          did: f.did,
+          handle: f.handle,
+          displayName: f.displayName,
+          avatar: f.avatar,
+        });
+      }
+      // Check if candidate blocks this person you follow
+      if (candidateBlocks.has(f.did)) {
+        followsTheyBlock.push({
+          did: f.did,
+          handle: f.handle,
+          displayName: f.displayName,
+          avatar: f.avatar,
+        });
+      }
+    }
+
+    for (const f of myFollowers) {
+      if (candidateFollowers.has(f.did)) {
+        followersWhoFollowThem.push({
+          did: f.did,
+          handle: f.handle,
+          displayName: f.displayName,
+          avatar: f.avatar,
+        });
+      }
+    }
+
+    console.log(
+      `[ErgoBlock BG] Follow relationships: ${followsWhoFollowThem.length} follows follow them, ${followersWhoFollowThem.length} followers follow them, ${followsTheyBlock.length} follows they block`
+    );
+
+    return {
+      success: true,
+      followsWhoFollowThem,
+      followersWhoFollowThem,
+      followsTheyBlock,
+    };
+  } catch (error) {
+    console.error('[ErgoBlock BG] Get follow relationships failed:', error);
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+  }
+}
+
+// ============================================================================
+// Mass Operations Detection Handlers
+// ============================================================================
+
+interface MassOpsScanResponse {
+  success: boolean;
+  error?: string;
+}
+
+interface MassOpsUndoResponse {
+  success: boolean;
+  undone: number;
+  failed: number;
+  errors: string[];
+}
+
+/**
+ * Scan user's CAR file for mass operations
+ * Uses smart caching to avoid redundant downloads
+ */
+async function handleScanMassOps(
+  settings: MassOpsSettings,
+  forceRefresh = false
+): Promise<MassOpsScanResponse> {
+  try {
+    const auth = await getAuthToken();
+    if (!auth?.accessJwt || !auth?.did || !auth?.pdsUrl) {
+      return { success: false, error: 'Not authenticated' };
+    }
+
+    console.log('[ErgoBlock BG] Starting mass ops scan with settings:', settings);
+
+    // Use the smart service with progress reporting
+    // When not forcing refresh, prefer cached data (even if stale) for historical analysis
+    const result = await getGraphOperationsSmart({
+      did: auth.did,
+      pdsUrl: auth.pdsUrl,
+      forceRefresh,
+      preferCache: !forceRefresh,
+      onProgress: async (progress: CarDownloadProgress) => {
+        console.log(`[ErgoBlock BG] Mass ops scan: ${progress.message}`);
+        // Update storage so UI can read progress
+        await setCarDownloadProgress({
+          did: progress.did,
+          stage: progress.stage,
+          bytesDownloaded: progress.bytesDownloaded,
+          bytesTotal: progress.bytesTotal,
+          percentComplete: progress.percentComplete,
+          message: progress.message,
+          isIncremental: progress.isIncremental,
+          startedAt: progress.startedAt,
+          error: progress.error,
+        });
+      },
+    });
+
+    // Detect mass operations from the cached/downloaded data
+    const clusters = detectMassOperations(
+      {
+        blocks: result.blocks,
+        follows: result.follows,
+        listitems: result.listitems,
+      },
+      settings
+    );
+
+    // Save the scan result
+    await saveMassOpsScanResult({
+      clusters,
+      scannedAt: Date.now(),
+      operationCounts: {
+        blocks: result.blocks.length,
+        follows: result.follows.length,
+        listitems: result.listitems.length,
+      },
+    });
+
+    // Clear progress
+    await clearCarDownloadProgress();
+
+    console.log(
+      `[ErgoBlock BG] Mass ops scan complete: ${clusters.length} clusters found, ` +
+        `${result.blocks.length} blocks, ${result.follows.length} follows, ` +
+        `${result.listitems.length} list items ` +
+        `(cached: ${result.wasCached}, incremental: ${result.wasIncremental})`
+    );
+
+    return { success: true };
+  } catch (error) {
+    console.error('[ErgoBlock BG] Mass ops scan failed:', error);
+    // Clear progress on error
+    await clearCarDownloadProgress();
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+  }
+}
+
+/**
+ * Undo (delete) selected mass operations
+ * Rate-limited to avoid API throttling
+ */
+async function handleUndoMassOperations(
+  operations: GraphOperation[]
+): Promise<MassOpsUndoResponse> {
+  const auth = await getAuthToken();
+  if (!auth?.accessJwt || !auth?.did || !auth?.pdsUrl) {
+    return { success: false, undone: 0, failed: operations.length, errors: ['Not authenticated'] };
+  }
+
+  let undone = 0;
+  let failed = 0;
+  const errors: string[] = [];
+
+  console.log(`[ErgoBlock BG] Undoing ${operations.length} mass operations`);
+
+  for (const op of operations) {
+    try {
+      // Determine the collection based on operation type
+      const collection =
+        op.type === 'block'
+          ? 'app.bsky.graph.block'
+          : op.type === 'follow'
+            ? 'app.bsky.graph.follow'
+            : 'app.bsky.graph.listitem';
+
+      const response = await bgApiRequest<{ success?: boolean }>(
+        'com.atproto.repo.deleteRecord',
+        'POST',
+        {
+          repo: auth.did,
+          collection,
+          rkey: op.rkey,
+        },
+        auth.accessJwt,
+        auth.pdsUrl
+      );
+
+      if (response) {
+        undone++;
+
+        // Add history entry for blocks/follows (not list items - too noisy)
+        if (op.type === 'block' || op.type === 'follow') {
+          await addHistoryEntry({
+            did: op.did,
+            handle: op.did, // We don't have handle here, use DID
+            action: op.type === 'block' ? 'unblocked' : 'unblocked', // Use unblocked for follows too
+            timestamp: Date.now(),
+            trigger: 'manual',
+            success: true,
+          });
+        }
+      } else {
+        failed++;
+        errors.push(`Failed to delete ${op.type} for ${op.did}`);
+      }
+
+      // Rate limit: 350ms between operations
+      await sleep(350);
+    } catch (error) {
+      failed++;
+      const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+      errors.push(`${op.type} ${op.did}: ${errorMsg}`);
+      console.error(`[ErgoBlock BG] Failed to undo ${op.type} for ${op.did}:`, error);
+    }
+  }
+
+  console.log(`[ErgoBlock BG] Mass ops undo complete: ${undone} undone, ${failed} failed`);
+
+  return { success: failed === 0, undone, failed, errors };
+}
+
+// ============================================================================
+// Copy User handlers
+// ============================================================================
+
+/**
+ * Fetch another user's follows and blocks from their CAR file
+ */
+async function handleFetchCopyUserData(handle: string): Promise<MessageResponse> {
+  console.log(`[ErgoBlock BG] Fetching Copy User data for: ${handle}`);
+
+  try {
+    // Step 1: Resolve handle to profile (includes DID)
+    const profile = await bgApiRequestPublic<ProfileWithViewer>(
+      `app.bsky.actor.getProfile?actor=${encodeURIComponent(handle)}`
+    );
+
+    if (!profile) {
+      return { success: false, error: `User not found: ${handle}` };
+    }
+
+    const targetDid = profile.did;
+    console.log(`[ErgoBlock BG] Resolved ${handle} to DID: ${targetDid}`);
+
+    // Step 2: Get target user's PDS URL
+    const pdsUrl = await resolvePdsUrl(targetDid);
+    console.log(`[ErgoBlock BG] Target PDS: ${pdsUrl || 'using relay'}`);
+
+    // Step 3: Fetch and parse their CAR file for follows/blocks
+    const graphData = await fetchExternalUserGraph(targetDid, pdsUrl, (message) => {
+      console.log(`[ErgoBlock BG] Copy User progress: ${message}`);
+    });
+
+    console.log(
+      `[ErgoBlock BG] Found ${graphData.follows.length} follows, ${graphData.blocks.length} blocks`
+    );
+
+    return {
+      success: true,
+      did: targetDid,
+      profile,
+      follows: graphData.follows,
+      blocks: graphData.blocks,
+    };
+  } catch (error) {
+    console.error('[ErgoBlock BG] Failed to fetch Copy User data:', error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    };
+  }
+}
+
+/**
+ * Execute batch follow operations for Copy User
+ */
+async function handleExecuteCopyUserFollows(dids: string[]): Promise<MessageResponse> {
+  const auth = await getAuthToken();
+  if (!auth?.accessJwt || !auth?.did || !auth?.pdsUrl) {
+    return { success: false, error: 'Not authenticated' };
+  }
+
+  console.log(`[ErgoBlock BG] Executing Copy User follows for ${dids.length} users`);
+
+  let succeeded = 0;
+  let failed = 0;
+  const errors: string[] = [];
+
+  for (const did of dids) {
+    try {
+      const record = {
+        $type: 'app.bsky.graph.follow',
+        subject: did,
+        createdAt: new Date().toISOString(),
+      };
+
+      const response = await bgApiRequest<{ uri: string; cid: string }>(
+        'com.atproto.repo.createRecord',
+        'POST',
+        {
+          repo: auth.did,
+          collection: 'app.bsky.graph.follow',
+          record,
+        },
+        auth.accessJwt,
+        auth.pdsUrl
+      );
+
+      if (response) {
+        succeeded++;
+      } else {
+        failed++;
+        errors.push(`Failed to follow ${did}`);
+      }
+
+      // Rate limit: 350ms between operations
+      await sleep(350);
+    } catch (error) {
+      failed++;
+      const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+      errors.push(`${did}: ${errorMsg}`);
+      console.error(`[ErgoBlock BG] Failed to follow ${did}:`, error);
+    }
+  }
+
+  console.log(`[ErgoBlock BG] Copy User follows complete: ${succeeded} succeeded, ${failed} failed`);
+
+  return { success: failed === 0, succeeded, failed, errors };
+}
+
+/**
+ * Execute batch block operations for Copy User
+ */
+async function handleExecuteCopyUserBlocks(dids: string[]): Promise<MessageResponse> {
+  const auth = await getAuthToken();
+  if (!auth?.accessJwt || !auth?.did || !auth?.pdsUrl) {
+    return { success: false, error: 'Not authenticated' };
+  }
+
+  console.log(`[ErgoBlock BG] Executing Copy User blocks for ${dids.length} users`);
+
+  let succeeded = 0;
+  let failed = 0;
+  const errors: string[] = [];
+
+  for (const did of dids) {
+    try {
+      const record = {
+        $type: 'app.bsky.graph.block',
+        subject: did,
+        createdAt: new Date().toISOString(),
+      };
+
+      const response = await bgApiRequest<{ uri: string; cid: string }>(
+        'com.atproto.repo.createRecord',
+        'POST',
+        {
+          repo: auth.did,
+          collection: 'app.bsky.graph.block',
+          record,
+        },
+        auth.accessJwt,
+        auth.pdsUrl
+      );
+
+      if (response) {
+        succeeded++;
+
+        // Add history entry for the block
+        await addHistoryEntry({
+          did,
+          handle: did, // We don't have handle here, use DID
+          action: 'blocked',
+          timestamp: Date.now(),
+          trigger: 'manual',
+          success: true,
+        });
+      } else {
+        failed++;
+        errors.push(`Failed to block ${did}`);
+      }
+
+      // Rate limit: 350ms between operations
+      await sleep(350);
+    } catch (error) {
+      failed++;
+      const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+      errors.push(`${did}: ${errorMsg}`);
+      console.error(`[ErgoBlock BG] Failed to block ${did}:`, error);
+    }
+  }
+
+  console.log(`[ErgoBlock BG] Copy User blocks complete: ${succeeded} succeeded, ${failed} failed`);
+
+  return { success: failed === 0, succeeded, failed, errors };
+}
+
+/**
+ * Make a public API request (no auth needed) to the Bluesky public API
+ */
+async function bgApiRequestPublic<T>(endpoint: string): Promise<T | null> {
+  const BSKY_PUBLIC_API = 'https://public.api.bsky.app';
+  try {
+    const response = await fetch(`${BSKY_PUBLIC_API}/xrpc/${endpoint}`);
+    if (!response.ok) {
+      console.error(`[ErgoBlock BG] Public API request failed: ${response.status}`);
+      return null;
+    }
+    return (await response.json()) as T;
+  } catch (error) {
+    console.error(`[ErgoBlock BG] Public API request error:`, error);
+    return null;
+  }
+}
+
 // Async message handler for communication with content scripts and popup
 // Using the async pattern which returns Promise<unknown> per webextension-polyfill types
 const messageHandler = async (rawMessage: unknown): Promise<MessageResponse | undefined> => {
@@ -2156,6 +3072,11 @@ const messageHandler = async (rawMessage: unknown): Promise<MessageResponse | un
   if (message.type === 'SET_AUTH_TOKEN' && message.auth) {
     await browser.storage.local.set({ authToken: message.auth });
     return { success: true };
+  }
+
+  if (message.type === 'GET_AUTH_STATUS') {
+    const auth = await getAuthToken();
+    return { success: true, isAuthenticated: !!auth };
   }
 
   if (message.type === 'CHECK_NOW') {
@@ -2197,6 +3118,132 @@ const messageHandler = async (rawMessage: unknown): Promise<MessageResponse | un
 
   if (message.type === 'UNSUBSCRIBE_BLOCKLIST' && message.listUri) {
     return await handleUnsubscribeFromBlocklist(message.listUri as string);
+  }
+
+  // List Audit handlers
+  if (message.type === 'FETCH_OWNED_LISTS') {
+    return await handleFetchOwnedLists();
+  }
+
+  if (message.type === 'FETCH_LIST_MEMBERS_WITH_TIMESTAMPS' && message.listUri) {
+    return await handleFetchListMembersWithTimestamps(message.listUri as string);
+  }
+
+  if (message.type === 'REMOVE_FROM_LIST' && message.rkey) {
+    return await handleRemoveFromList(message.rkey as string);
+  }
+
+  if (message.type === 'FIND_INTERACTIONS_BEFORE' && message.targetDid && message.beforeTimestamp) {
+    return await handleFindInteractionsBefore(
+      message.targetDid as string,
+      message.beforeTimestamp as number
+    );
+  }
+
+  if (message.type === 'GET_FOLLOW_RELATIONSHIPS' && message.did) {
+    return await handleGetFollowRelationships(message.did as string);
+  }
+
+  // Mass Operations Detection handlers
+  if (message.type === 'SCAN_MASS_OPS' && message.settings) {
+    const forceRefresh = message.forceRefresh === true;
+    return await handleScanMassOps(message.settings as MassOpsSettings, forceRefresh);
+  }
+
+  if (message.type === 'UNDO_MASS_OPERATIONS' && message.operations) {
+    return await handleUndoMassOperations(message.operations as GraphOperation[]);
+  }
+
+  if (message.type === 'GET_MASS_OPS_SETTINGS') {
+    const settings = await getMassOpsSettings();
+    return { success: true, settings };
+  }
+
+  if (message.type === 'SET_MASS_OPS_SETTINGS' && message.settings) {
+    await setMassOpsSettings(message.settings as MassOpsSettings);
+    return { success: true };
+  }
+
+  // CAR cache status and size estimation
+  if (message.type === 'CHECK_CAR_CACHE_STATUS') {
+    try {
+      const auth = await getAuthToken();
+      if (!auth?.did || !auth?.pdsUrl) {
+        return { success: false, error: 'Not authenticated' };
+      }
+      const status = await checkCarCacheStatus(auth.did, auth.pdsUrl);
+      return { success: true, status };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+    }
+  }
+
+  if (message.type === 'ESTIMATE_CAR_SIZE') {
+    try {
+      const auth = await getAuthToken();
+      if (!auth?.did || !auth?.pdsUrl) {
+        return { success: false, error: 'Not authenticated' };
+      }
+      const sizeBytes = await getCarFileSize(auth.did, auth.pdsUrl);
+      return { success: true, sizeBytes };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+    }
+  }
+
+  if (message.type === 'INVALIDATE_CAR_CACHE') {
+    try {
+      const auth = await getAuthToken();
+      if (!auth?.did) {
+        return { success: false, error: 'Not authenticated' };
+      }
+      await invalidateCarCache(auth.did);
+      return { success: true };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+    }
+  }
+
+  // ============================================================================
+  // Profile fetching for UI components
+  // ============================================================================
+
+  if (message.type === 'GET_PROFILES_BATCHED' && message.dids) {
+    try {
+      const auth = await getAuthToken();
+      if (!auth) {
+        return { success: false, error: 'Not authenticated' };
+      }
+      const profiles = await fetchProfiles(
+        message.dids as string[],
+        auth.accessJwt,
+        auth.pdsUrl
+      );
+      // Convert to Map-like object for JSON serialization
+      const profileMap: Record<string, ProfileWithViewer> = {};
+      for (const profile of profiles) {
+        profileMap[profile.did] = profile;
+      }
+      return { success: true, profiles: profileMap };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+    }
+  }
+
+  // ============================================================================
+  // Copy User handlers
+  // ============================================================================
+
+  if (message.type === 'FETCH_COPY_USER_DATA' && message.handle) {
+    return await handleFetchCopyUserData(message.handle as string);
+  }
+
+  if (message.type === 'EXECUTE_COPY_USER_FOLLOWS' && message.dids) {
+    return await handleExecuteCopyUserFollows(message.dids as string[]);
+  }
+
+  if (message.type === 'EXECUTE_COPY_USER_BLOCKS' && message.dids) {
+    return await handleExecuteCopyUserBlocks(message.dids as string[]);
   }
 
   return undefined;

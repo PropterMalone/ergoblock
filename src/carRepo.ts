@@ -40,6 +40,7 @@ export interface ParsedPost {
  */
 export interface ParsedRepoData {
   posts: ParsedPost[];
+  blocks: string[]; // DIDs this user has blocked
   fetchedAt: number;
 }
 
@@ -114,7 +115,11 @@ async function downloadCarFile(
       } catch (error) {
         // Check if this was an abort (timeout)
         // Note: DOMException may not extend Error in all environments
-        if (error && typeof error === 'object' && (error as { name?: string }).name === 'AbortError') {
+        if (
+          error &&
+          typeof error === 'object' &&
+          (error as { name?: string }).name === 'AbortError'
+        ) {
           throw new Error(`CAR download timed out after ${timeoutMs}ms`);
         }
         console.warn(`[ErgoBlock CAR] PDS fetch error, trying relay:`, error);
@@ -239,6 +244,8 @@ export interface ParsedListData {
   uri: string;
   name: string;
   description?: string;
+  purpose: string;
+  createdAt: number;
   members: string[];
 }
 
@@ -247,6 +254,33 @@ export interface ParsedListData {
  */
 export interface ParsedListsResult {
   lists: Record<string, ParsedListData>; // keyed by list URI
+  creatorDid: string;
+}
+
+/**
+ * List member with timestamp info for auditing
+ */
+export interface ListMemberWithTimestamp {
+  did: string;
+  addedAt: number; // Unix ms from createdAt
+  rkey: string; // Record key for deletion
+}
+
+/**
+ * Parsed list data with member timestamps
+ */
+export interface ParsedListDataWithTimestamps {
+  uri: string;
+  name: string;
+  description?: string;
+  members: ListMemberWithTimestamp[];
+}
+
+/**
+ * Result of parsing lists with timestamps
+ */
+export interface ParsedListsWithTimestampsResult {
+  lists: Record<string, ParsedListDataWithTimestamps>;
   creatorDid: string;
 }
 
@@ -305,9 +339,106 @@ export function parseCarForLists(
   const repo = repoFromUint8Array(carData);
 
   // First pass: collect list metadata
-  const listMetadata: Record<string, { name: string; description?: string; rkey: string }> = {};
+  const listMetadata: Record<
+    string,
+    { name: string; description?: string; purpose: string; createdAt: number; rkey: string }
+  > = {};
   // Second pass data: list items grouped by list URI
   const listItems: Record<string, string[]> = {};
+
+  for (const entry of repo as Iterable<RepoEntry>) {
+    try {
+      if (entry.collection === 'app.bsky.graph.list') {
+        const record = decode(entry.bytes) as { $type?: string };
+        if (record.$type === 'app.bsky.graph.list') {
+          const list = record as ListRecord;
+          const listUri = `at://${creatorDid}/app.bsky.graph.list/${entry.rkey}`;
+
+          // Skip if we have a target filter and this list isn't in it
+          if (targetListUris && !targetListUris.has(listUri)) {
+            continue;
+          }
+
+          listMetadata[listUri] = {
+            name: list.name,
+            description: list.description,
+            purpose: list.purpose,
+            createdAt: new Date(list.createdAt).getTime(),
+            rkey: entry.rkey,
+          };
+          listItems[listUri] = [];
+        }
+      } else if (entry.collection === 'app.bsky.graph.listitem') {
+        const record = decode(entry.bytes) as { $type?: string };
+        if (record.$type === 'app.bsky.graph.listitem') {
+          const item = record as ListItemRecord;
+
+          // Skip if we have a target filter and this item's list isn't in it
+          if (targetListUris && !targetListUris.has(item.list)) {
+            continue;
+          }
+
+          if (!listItems[item.list]) {
+            listItems[item.list] = [];
+          }
+          listItems[item.list].push(item.subject);
+        }
+      }
+    } catch (error) {
+      // Skip malformed entries
+      console.warn('[ErgoBlock CAR] Failed to decode list entry:', error);
+    }
+  }
+
+  // Combine metadata and items
+  const lists: Record<string, ParsedListData> = {};
+  for (const [uri, metadata] of Object.entries(listMetadata)) {
+    lists[uri] = {
+      uri,
+      name: metadata.name,
+      description: metadata.description,
+      purpose: metadata.purpose,
+      createdAt: metadata.createdAt,
+      members: listItems[uri] || [],
+    };
+  }
+
+  // Also include lists we found items for but no metadata (shouldn't happen but be safe)
+  for (const [uri, members] of Object.entries(listItems)) {
+    if (!lists[uri] && members.length > 0) {
+      lists[uri] = {
+        uri,
+        name: 'Unknown List',
+        purpose: 'app.bsky.graph.defs#curatelist',
+        createdAt: 0,
+        members,
+      };
+    }
+  }
+
+  return { lists, creatorDid };
+}
+
+/**
+ * Parse a CAR file and extract lists with member timestamps
+ * Used for list audit to know when each member was added
+ *
+ * @param carData - Raw CAR file data
+ * @param creatorDid - DID of the list creator (for building URIs)
+ * @param targetListUris - Optional set of list URIs to filter (only parse these lists)
+ * @returns Lists with their members including timestamps
+ */
+export function parseCarForListsWithTimestamps(
+  carData: Uint8Array,
+  creatorDid: string,
+  targetListUris?: Set<string>
+): ParsedListsWithTimestampsResult {
+  const repo = repoFromUint8Array(carData);
+
+  // First pass: collect list metadata
+  const listMetadata: Record<string, { name: string; description?: string; rkey: string }> = {};
+  // Second pass data: list items grouped by list URI with timestamps
+  const listItems: Record<string, ListMemberWithTimestamp[]> = {};
 
   for (const entry of repo as Iterable<RepoEntry>) {
     try {
@@ -342,7 +473,11 @@ export function parseCarForLists(
           if (!listItems[item.list]) {
             listItems[item.list] = [];
           }
-          listItems[item.list].push(item.subject);
+          listItems[item.list].push({
+            did: item.subject,
+            addedAt: new Date(item.createdAt).getTime(),
+            rkey: entry.rkey,
+          });
         }
       }
     } catch (error) {
@@ -352,7 +487,7 @@ export function parseCarForLists(
   }
 
   // Combine metadata and items
-  const lists: Record<string, ParsedListData> = {};
+  const lists: Record<string, ParsedListDataWithTimestamps> = {};
   for (const [uri, metadata] of Object.entries(listMetadata)) {
     lists[uri] = {
       uri,
@@ -374,6 +509,26 @@ export function parseCarForLists(
   }
 
   return { lists, creatorDid };
+}
+
+/**
+ * Fetch a user's CAR file and extract their lists with member timestamps
+ *
+ * @param did - DID of the list creator
+ * @param pdsUrl - Optional PDS URL
+ * @param targetListUris - Optional set of list URIs to filter
+ * @param onProgress - Optional progress callback
+ * @returns Parsed lists with members including timestamps
+ */
+export async function fetchListsFromCarWithTimestamps(
+  did: string,
+  pdsUrl: string | null,
+  targetListUris?: Set<string>,
+  onProgress?: CarProgressCallback
+): Promise<ParsedListsWithTimestampsResult> {
+  const carData = await downloadCarFile(did, pdsUrl, onProgress);
+  onProgress?.('Parsing lists...');
+  return parseCarForListsWithTimestamps(carData, did, targetListUris);
 }
 
 /**
@@ -464,7 +619,9 @@ async function downloadCarFileIncremental(
         }
         // If incremental fails with 400, PDS might not support `since` - fall through to full download
         if (response.status === 400 && since) {
-          console.warn(`[ErgoBlock CAR] PDS doesn't support incremental sync, will do full download`);
+          console.warn(
+            `[ErgoBlock CAR] PDS doesn't support incremental sync, will do full download`
+          );
           throw new Error('Incremental not supported');
         }
         console.warn(`[ErgoBlock CAR] PDS fetch failed: ${response.status}, trying relay`);
@@ -473,7 +630,11 @@ async function downloadCarFileIncremental(
           throw error;
         }
         // Note: DOMException may not extend Error in all environments
-        if (error && typeof error === 'object' && (error as { name?: string }).name === 'AbortError') {
+        if (
+          error &&
+          typeof error === 'object' &&
+          (error as { name?: string }).name === 'AbortError'
+        ) {
           throw new Error(`CAR download timed out after ${timeoutMs}ms`);
         }
         console.warn(`[ErgoBlock CAR] PDS fetch error, trying relay:`, error);
@@ -611,7 +772,54 @@ export async function fetchBlocksFromCarIncremental(
 /**
  * Parse a CAR file and extract all posts
  */
-function parseCarForPosts(carData: Uint8Array, did: string): ParsedPost[] {
+export function parseCarForPosts(
+  carData: Uint8Array,
+  did: string
+): { posts: ParsedPost[]; creatorDid: string } {
+  const repo = repoFromUint8Array(carData);
+  const posts: ParsedPost[] = [];
+
+  for (const entry of repo as Iterable<RepoEntry>) {
+    if (entry.collection !== 'app.bsky.feed.post') {
+      continue;
+    }
+
+    try {
+      const record = decode(entry.bytes) as { $type?: string };
+
+      if (record.$type === 'app.bsky.feed.post') {
+        const post = record as PostRecord;
+        posts.push({
+          uri: `at://${did}/app.bsky.feed.post/${entry.rkey}`,
+          cid: '',
+          text: post.text || '',
+          createdAt: post.createdAt,
+          reply: post.reply
+            ? {
+                parent: { uri: post.reply.parent.uri },
+                root: post.reply.root ? { uri: post.reply.root.uri } : undefined,
+              }
+            : undefined,
+          embed: post.embed
+            ? {
+                $type: post.embed.$type,
+                record: post.embed.record ? { uri: post.embed.record.uri } : undefined,
+              }
+            : undefined,
+        });
+      }
+    } catch (error) {
+      console.warn('[ErgoBlock CAR] Failed to decode entry:', error);
+    }
+  }
+
+  return { posts, creatorDid: did };
+}
+
+/**
+ * Internal: Parse posts returning just the array (for backwards compatibility)
+ */
+function parseCarForPostsInternal(carData: Uint8Array, did: string): ParsedPost[] {
   const repo = repoFromUint8Array(carData);
   const posts: ParsedPost[] = [];
 
@@ -672,12 +880,359 @@ export async function fetchAndParseRepo(
   const carData = await downloadCarFile(did, pdsUrl, onProgress);
 
   onProgress?.('Parsing repository...');
-  const posts = parseCarForPosts(carData, did);
+  const posts = parseCarForPostsInternal(carData, did);
+  const blocks = parseCarForBlocks(carData);
 
-  onProgress?.(`Found ${posts.length} posts`);
+  onProgress?.(`Found ${posts.length} posts, ${blocks.length} blocks`);
 
   return {
     posts,
+    blocks,
     fetchedAt: Date.now(),
   };
+}
+
+/**
+ * Estimate the download size of a CAR file using HEAD request
+ *
+ * @param did - User's DID
+ * @param pdsUrl - User's PDS URL (optional)
+ * @returns Estimated size in bytes, or null if unavailable
+ */
+export async function getCarFileSize(
+  did: string,
+  pdsUrl: string | null
+): Promise<number | null> {
+  const endpoints = [
+    pdsUrl
+      ? `${pdsUrl}/xrpc/com.atproto.sync.getRepo?did=${encodeURIComponent(did)}`
+      : null,
+    `${BSKY_RELAY}/xrpc/com.atproto.sync.getRepo?did=${encodeURIComponent(did)}`,
+  ].filter(Boolean) as string[];
+
+  for (const url of endpoints) {
+    try {
+      const response = await fetch(url, { method: 'HEAD' });
+      if (response.ok) {
+        const contentLength = response.headers.get('content-length');
+        if (contentLength) {
+          return parseInt(contentLength, 10);
+        }
+      }
+    } catch {
+      // Try next endpoint
+    }
+  }
+
+  return null;
+}
+
+// ============================================================================
+// Mass Operations Detection
+// ============================================================================
+
+import type { GraphOperation, MassOperationCluster, MassOpsSettings } from './types.js';
+import { generateId } from './utils.js';
+
+/**
+ * Follow record structure in the CAR file
+ */
+interface FollowRecord {
+  $type: 'app.bsky.graph.follow';
+  subject: string;
+  createdAt: string;
+}
+
+/**
+ * All graph operations extracted from a CAR file
+ */
+export interface AllGraphOperations {
+  blocks: GraphOperation[];
+  follows: GraphOperation[];
+  listitems: GraphOperation[];
+}
+
+/**
+ * Parse a CAR file and extract all graph operations with timestamps
+ * Single-pass extraction for efficiency
+ *
+ * @param carData - Raw CAR file data
+ * @param creatorDid - DID of the repo owner (for building URIs)
+ * @returns All graph operations with timestamps
+ */
+export function parseCarForAllGraphOperations(
+  carData: Uint8Array,
+  creatorDid: string
+): AllGraphOperations {
+  const repo = repoFromUint8Array(carData);
+
+  const blocks: GraphOperation[] = [];
+  const follows: GraphOperation[] = [];
+  const listitems: GraphOperation[] = [];
+
+  // First pass: collect list metadata for names
+  const listNames: Record<string, string> = {};
+
+  for (const entry of repo as Iterable<RepoEntry>) {
+    try {
+      if (entry.collection === 'app.bsky.graph.list') {
+        const record = decode(entry.bytes) as { $type?: string };
+        if (record.$type === 'app.bsky.graph.list') {
+          const list = record as ListRecord;
+          const listUri = `at://${creatorDid}/app.bsky.graph.list/${entry.rkey}`;
+          listNames[listUri] = list.name;
+        }
+      }
+    } catch {
+      // Skip malformed entries
+    }
+  }
+
+  // Second pass: need to re-iterate for the actual operations
+  // (Unfortunately @atcute/repo iterators are not reusable, so parse again)
+  const repo2 = repoFromUint8Array(carData);
+
+  for (const entry of repo2 as Iterable<RepoEntry>) {
+    try {
+      if (entry.collection === 'app.bsky.graph.block') {
+        const record = decode(entry.bytes) as { $type?: string };
+        if (record.$type === 'app.bsky.graph.block') {
+          const block = record as BlockRecord;
+          if (block.subject && block.createdAt) {
+            blocks.push({
+              type: 'block',
+              did: block.subject,
+              rkey: entry.rkey,
+              createdAt: new Date(block.createdAt).getTime(),
+            });
+          }
+        }
+      } else if (entry.collection === 'app.bsky.graph.follow') {
+        const record = decode(entry.bytes) as { $type?: string };
+        if (record.$type === 'app.bsky.graph.follow') {
+          const follow = record as FollowRecord;
+          if (follow.subject && follow.createdAt) {
+            follows.push({
+              type: 'follow',
+              did: follow.subject,
+              rkey: entry.rkey,
+              createdAt: new Date(follow.createdAt).getTime(),
+            });
+          }
+        }
+      } else if (entry.collection === 'app.bsky.graph.listitem') {
+        const record = decode(entry.bytes) as { $type?: string };
+        if (record.$type === 'app.bsky.graph.listitem') {
+          const item = record as ListItemRecord;
+          if (item.subject && item.createdAt) {
+            listitems.push({
+              type: 'listitem',
+              did: item.subject,
+              rkey: entry.rkey,
+              createdAt: new Date(item.createdAt).getTime(),
+              listUri: item.list,
+              listName: listNames[item.list] || 'Unknown List',
+            });
+          }
+        }
+      }
+    } catch (error) {
+      console.warn('[ErgoBlock CAR] Failed to decode graph operation:', error);
+    }
+  }
+
+  return { blocks, follows, listitems };
+}
+
+/**
+ * Detect mass operation clusters from graph operations
+ *
+ * Algorithm:
+ * 1. Group operations by type
+ * 2. Sort each group by createdAt timestamp
+ * 3. Use sliding window to find clusters where all operations fall within timeWindowMinutes
+ * 4. Return clusters meeting minOperationCount threshold
+ *
+ * @param operations - All graph operations from CAR file
+ * @param settings - Detection settings (time window, min count)
+ * @returns Detected mass operation clusters
+ */
+export function detectMassOperations(
+  operations: AllGraphOperations,
+  settings: MassOpsSettings
+): MassOperationCluster[] {
+  const clusters: MassOperationCluster[] = [];
+  const timeWindowMs = settings.timeWindowMinutes * 60 * 1000;
+
+  // Process each operation type separately
+  const operationGroups: Array<{ type: 'block' | 'follow' | 'listitem'; ops: GraphOperation[] }> = [
+    { type: 'block', ops: operations.blocks },
+    { type: 'follow', ops: operations.follows },
+    { type: 'listitem', ops: operations.listitems },
+  ];
+
+  for (const group of operationGroups) {
+    if (group.ops.length < settings.minOperationCount) {
+      continue;
+    }
+
+    // Sort by timestamp
+    const sorted = [...group.ops].sort((a, b) => a.createdAt - b.createdAt);
+
+    // Track which operations are already in a cluster
+    const used = new Set<string>();
+
+    // Sliding window to find clusters
+    for (let i = 0; i < sorted.length; i++) {
+      if (used.has(sorted[i].rkey)) {
+        continue;
+      }
+
+      const windowStart = sorted[i].createdAt;
+      const windowEnd = windowStart + timeWindowMs;
+
+      // Find all operations within this window
+      const windowOps: GraphOperation[] = [];
+      for (let j = i; j < sorted.length && sorted[j].createdAt <= windowEnd; j++) {
+        if (!used.has(sorted[j].rkey)) {
+          windowOps.push(sorted[j]);
+        }
+      }
+
+      // Check if this window forms a valid cluster
+      if (windowOps.length >= settings.minOperationCount) {
+        // Mark all operations in this cluster as used
+        for (const op of windowOps) {
+          used.add(op.rkey);
+        }
+
+        clusters.push({
+          id: generateId('cluster'),
+          type: group.type,
+          operations: windowOps,
+          startTime: windowOps[0].createdAt,
+          endTime: windowOps[windowOps.length - 1].createdAt,
+          count: windowOps.length,
+        });
+      }
+    }
+  }
+
+  // Sort clusters by start time (newest first)
+  clusters.sort((a, b) => b.startTime - a.startTime);
+
+  return clusters;
+}
+
+/**
+ * Fetch CAR file and scan for mass operations
+ *
+ * @param did - User's DID
+ * @param pdsUrl - User's PDS URL (optional)
+ * @param settings - Detection settings
+ * @param onProgress - Progress callback
+ * @returns Scan result with detected clusters
+ */
+export async function scanForMassOperations(
+  did: string,
+  pdsUrl: string | null,
+  settings: MassOpsSettings,
+  onProgress?: CarProgressCallback
+): Promise<{
+  clusters: MassOperationCluster[];
+  operationCounts: { blocks: number; follows: number; listitems: number };
+}> {
+  const carData = await downloadCarFile(did, pdsUrl, onProgress);
+
+  onProgress?.('Parsing operations...');
+  const operations = parseCarForAllGraphOperations(carData, did);
+
+  onProgress?.('Detecting mass operations...');
+  const clusters = detectMassOperations(operations, settings);
+
+  onProgress?.(
+    clusters.length > 0
+      ? `Found ${clusters.length} mass operation clusters`
+      : 'No mass operations detected'
+  );
+
+  return {
+    clusters,
+    operationCounts: {
+      blocks: operations.blocks.length,
+      follows: operations.follows.length,
+      listitems: operations.listitems.length,
+    },
+  };
+}
+
+// ============================================================================
+// Copy User - Extract follows and blocks from external user's CAR
+// ============================================================================
+
+/**
+ * Result of parsing follows and blocks from an external user's CAR file
+ */
+export interface ExternalUserGraphData {
+  follows: string[]; // DIDs of people they follow
+  blocks: string[]; // DIDs of people they block
+}
+
+/**
+ * Parse a CAR file and extract the follows and blocks (just DIDs, no timestamps)
+ * Used for the Copy User feature to mirror another user's graph
+ *
+ * @param carData - Raw CAR file data
+ * @returns DIDs of follows and blocks
+ */
+export function parseCarForFollowsAndBlocks(carData: Uint8Array): ExternalUserGraphData {
+  const repo = repoFromUint8Array(carData);
+
+  const follows: string[] = [];
+  const blocks: string[] = [];
+
+  for (const entry of repo as Iterable<RepoEntry>) {
+    try {
+      if (entry.collection === 'app.bsky.graph.follow') {
+        const record = decode(entry.bytes) as { $type?: string };
+        if (record.$type === 'app.bsky.graph.follow') {
+          const follow = record as FollowRecord;
+          if (follow.subject) {
+            follows.push(follow.subject);
+          }
+        }
+      } else if (entry.collection === 'app.bsky.graph.block') {
+        const record = decode(entry.bytes) as { $type?: string };
+        if (record.$type === 'app.bsky.graph.block') {
+          const block = record as BlockRecord;
+          if (block.subject) {
+            blocks.push(block.subject);
+          }
+        }
+      }
+    } catch (error) {
+      // Skip malformed entries
+      console.warn('[ErgoBlock CAR] Failed to decode graph entry:', error);
+    }
+  }
+
+  return { follows, blocks };
+}
+
+/**
+ * Fetch an external user's CAR file and extract their follows and blocks
+ *
+ * @param did - DID of the user to fetch
+ * @param pdsUrl - User's PDS URL (optional, will fallback to relay)
+ * @param onProgress - Progress callback
+ * @returns DIDs of follows and blocks
+ */
+export async function fetchExternalUserGraph(
+  did: string,
+  pdsUrl: string | null,
+  onProgress?: CarProgressCallback
+): Promise<ExternalUserGraphData> {
+  const carData = await downloadCarFile(did, pdsUrl, onProgress);
+  onProgress?.('Parsing follows and blocks...');
+  return parseCarForFollowsAndBlocks(carData);
 }

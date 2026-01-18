@@ -619,3 +619,100 @@ export interface RepostFilteredUser {
   avatar?: string;
   addedAt: number; // Timestamp when added to filter list
 }
+
+// ============================================================================
+// List Audit Types
+// ============================================================================
+
+/**
+ * A list owned by the user (from app.bsky.graph.getLists)
+ */
+export interface OwnedList {
+  uri: string;
+  name: string;
+  purpose: 'modlist' | 'curatelist';
+  description?: string;
+  avatar?: string;
+  listItemCount: number;
+  createdAt: number;
+}
+
+/**
+ * A member of a list with timestamp info for auditing
+ */
+export interface ListMember {
+  did: string;
+  handle: string;
+  displayName?: string;
+  avatar?: string;
+  listUri: string;
+  listName: string;
+  addedAt: number; // When added to list (from CAR parsing)
+  listitemRkey: string; // Record key for deletion
+}
+
+/**
+ * Record of a list member that has been reviewed by List Audit feature
+ */
+export interface ListAuditReview {
+  did: string;
+  handle: string;
+  listUri: string;
+  listName: string;
+  reviewedAt: number;
+  decision: 'removed' | 'kept';
+}
+
+// ============================================================================
+// Mass Operations Detection Types
+// ============================================================================
+
+/**
+ * A single graph operation extracted from CAR file with timestamp
+ */
+export interface GraphOperation {
+  type: 'block' | 'follow' | 'listitem';
+  did: string; // Target DID (blocked/followed user, or list member)
+  rkey: string; // Record key for deletion
+  createdAt: number; // Unix timestamp (ms)
+  listUri?: string; // Only for listitem operations
+  listName?: string; // Human-readable list name
+}
+
+/**
+ * A cluster of operations detected as a "mass operation"
+ */
+export interface MassOperationCluster {
+  id: string; // Unique ID for this cluster
+  type: 'block' | 'follow' | 'listitem';
+  operations: GraphOperation[];
+  startTime: number; // Earliest operation timestamp
+  endTime: number; // Latest operation timestamp
+  count: number; // Number of operations
+}
+
+/**
+ * Result of a mass ops scan
+ */
+export interface MassOpsScanResult {
+  clusters: MassOperationCluster[];
+  scannedAt: number;
+  operationCounts: {
+    blocks: number;
+    follows: number;
+    listitems: number;
+  };
+}
+
+/**
+ * User settings for mass ops detection
+ */
+export interface MassOpsSettings {
+  timeWindowMinutes: number; // Default: 5
+  minOperationCount: number; // Default: 10
+}
+
+export const DEFAULT_MASS_OPS_SETTINGS: MassOpsSettings = {
+  timeWindowMinutes: 5,
+  minOperationCount: 10,
+};

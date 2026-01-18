@@ -11,5 +11,7 @@ export * from './HistoryTable.js';
 export * from './AmnestyTab.js';
 export * from './BlocklistAuditTab.js';
 export * from './RepostFiltersTab.js';
+export * from './MassOpsTab.js';
+export * from './CopyUserTab.js';
 export * from './ExportSection.js';
 export * from './utils.js';

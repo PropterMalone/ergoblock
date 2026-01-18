@@ -1287,6 +1287,7 @@ function syncAuthToBackground(): void {
         type: 'SET_AUTH_TOKEN',
         auth: {
           accessJwt: session.accessJwt,
+          refreshJwt: session.refreshJwt,
           did: session.did,
           pdsUrl: session.pdsUrl,
         },
@@ -1311,11 +1312,17 @@ function syncAuthToBackground(): void {
 /**
  * Get current auth data for on-demand requests from background
  */
-function getCurrentAuth(): { accessJwt: string; did: string; pdsUrl: string } | null {
+function getCurrentAuth(): {
+  accessJwt: string;
+  refreshJwt?: string;
+  did: string;
+  pdsUrl: string;
+} | null {
   const session = getSession();
   if (session?.accessJwt && session?.did && session?.pdsUrl) {
     return {
       accessJwt: session.accessJwt,
+      refreshJwt: session.refreshJwt,
       did: session.did,
       pdsUrl: session.pdsUrl,
     };

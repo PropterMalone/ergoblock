@@ -6,6 +6,7 @@
 import browser from './browser.js';
 import {
   DEFAULT_OPTIONS,
+  DEFAULT_MASS_OPS_SETTINGS,
   type ExtensionOptions,
   type HistoryEntry,
   type PostContext,
@@ -18,6 +19,9 @@ import {
   type BlocklistConflictGroup,
   type BlocklistAuditState,
   type RepostFilteredUser,
+  type ListAuditReview,
+  type MassOpsScanResult,
+  type MassOpsSettings,
 } from './types.js';
 import { generateId, isValidDid, isValidDuration } from './utils.js';
 
@@ -159,6 +163,13 @@ export const STORAGE_KEYS = {
   REPOST_FILTERED_USERS: 'repostFilteredUsers',
   // Lightweight follows list (just handles, for repost filter feature)
   FOLLOWS_HANDLES: 'followsHandles',
+  // List audit feature
+  LIST_AUDIT_REVIEWS: 'listAuditReviews',
+  // Mass operations detection feature
+  MASS_OPS_SCAN_RESULT: 'massOpsScanResult',
+  MASS_OPS_SETTINGS: 'massOpsSettings',
+  // CAR download progress (for UI updates)
+  CAR_DOWNLOAD_PROGRESS: 'carDownloadProgress',
 };
 
 const HISTORY_MAX_ENTRIES = 100;
@@ -238,7 +249,10 @@ export async function addTempBlock(
     })
     .catch((err) => {
       // Background may be inactive in MV3 - alarm will be set on next wake
-      console.debug('[ErgoBlock] Background not ready for temp block notification:', err?.message || err);
+      console.debug(
+        '[ErgoBlock] Background not ready for temp block notification:',
+        err?.message || err
+      );
     });
 }
 
@@ -292,7 +306,10 @@ export async function addTempMute(
     })
     .catch((err) => {
       // Background may be inactive in MV3 - alarm will be set on next wake
-      console.debug('[ErgoBlock] Background not ready for temp mute notification:', err?.message || err);
+      console.debug(
+        '[ErgoBlock] Background not ready for temp mute notification:',
+        err?.message || err
+      );
     });
 }
 
@@ -324,11 +341,6 @@ export async function getOptions(): Promise<ExtensionOptions> {
   return {
     ...DEFAULT_OPTIONS,
     ...stored,
-    // Deep merge for nested objects
-    blockRelationships: {
-      ...DEFAULT_OPTIONS.blockRelationships,
-      ...(stored.blockRelationships || {}),
-    },
   };
 }
 
@@ -944,4 +956,155 @@ export async function isHandleRepostFiltered(handle: string): Promise<boolean> {
 export async function getRepostFilteredUsersArray(): Promise<RepostFilteredUser[]> {
   const users = await getRepostFilteredUsers();
   return Object.values(users).sort((a, b) => b.addedAt - a.addedAt);
+}
+
+// ============================================================================
+// List Audit Storage Functions
+// ============================================================================
+
+/**
+ * Get all list audit reviews from storage
+ */
+export async function getListAuditReviews(): Promise<ListAuditReview[]> {
+  const result = await browser.storage.local.get(STORAGE_KEYS.LIST_AUDIT_REVIEWS);
+  return (result[STORAGE_KEYS.LIST_AUDIT_REVIEWS] as ListAuditReview[]) || [];
+}
+
+/**
+ * Add a list audit review
+ * Updates existing review for the same DID+listUri combination
+ */
+export async function addListAuditReview(review: ListAuditReview): Promise<void> {
+  const reviews = await getListAuditReviews();
+  // Remove any existing review for the same DID+list combination
+  const filtered = reviews.filter((r) => !(r.did === review.did && r.listUri === review.listUri));
+  filtered.push(review);
+  await browser.storage.local.set({ [STORAGE_KEYS.LIST_AUDIT_REVIEWS]: filtered });
+}
+
+/**
+ * Get set of DIDs that have been reviewed for a specific list
+ */
+export async function getListAuditReviewedDids(listUri: string): Promise<Set<string>> {
+  const reviews = await getListAuditReviews();
+  const dids = reviews.filter((r) => r.listUri === listUri).map((r) => r.did);
+  return new Set(dids);
+}
+
+/**
+ * Get stats for a specific list's audit reviews
+ */
+export async function getListAuditStats(
+  listUri: string
+): Promise<{ reviewed: number; removed: number; kept: number }> {
+  const reviews = await getListAuditReviews();
+  const listReviews = reviews.filter((r) => r.listUri === listUri);
+
+  return {
+    reviewed: listReviews.length,
+    removed: listReviews.filter((r) => r.decision === 'removed').length,
+    kept: listReviews.filter((r) => r.decision === 'kept').length,
+  };
+}
+
+/**
+ * Clear all reviews for a specific list
+ * Useful when user wants to re-audit a list from scratch
+ */
+export async function clearListAuditReviews(listUri: string): Promise<void> {
+  const reviews = await getListAuditReviews();
+  const filtered = reviews.filter((r) => r.listUri !== listUri);
+  await browser.storage.local.set({ [STORAGE_KEYS.LIST_AUDIT_REVIEWS]: filtered });
+}
+
+// ============================================================================
+// Mass Operations Detection Storage
+// ============================================================================
+
+/**
+ * Get mass ops scan result from local storage
+ * Uses local storage because results can be large
+ */
+export async function getMassOpsScanResult(): Promise<MassOpsScanResult | null> {
+  const result = await browser.storage.local.get(STORAGE_KEYS.MASS_OPS_SCAN_RESULT);
+  return (result[STORAGE_KEYS.MASS_OPS_SCAN_RESULT] as MassOpsScanResult) || null;
+}
+
+/**
+ * Save mass ops scan result to local storage
+ */
+export async function saveMassOpsScanResult(scanResult: MassOpsScanResult): Promise<void> {
+  await browser.storage.local.set({ [STORAGE_KEYS.MASS_OPS_SCAN_RESULT]: scanResult });
+}
+
+/**
+ * Clear mass ops scan result
+ */
+export async function clearMassOpsScanResult(): Promise<void> {
+  await browser.storage.local.remove(STORAGE_KEYS.MASS_OPS_SCAN_RESULT);
+}
+
+/**
+ * Get mass ops settings from sync storage (small, cross-device)
+ */
+export async function getMassOpsSettings(): Promise<MassOpsSettings> {
+  const result = await browser.storage.sync.get(STORAGE_KEYS.MASS_OPS_SETTINGS);
+  const stored = result[STORAGE_KEYS.MASS_OPS_SETTINGS] as MassOpsSettings | undefined;
+  return stored || DEFAULT_MASS_OPS_SETTINGS;
+}
+
+/**
+ * Set mass ops settings in sync storage
+ */
+export async function setMassOpsSettings(settings: MassOpsSettings): Promise<void> {
+  await browser.storage.sync.set({ [STORAGE_KEYS.MASS_OPS_SETTINGS]: settings });
+}
+
+// ============================================================================
+// CAR Download Progress
+// ============================================================================
+
+/**
+ * Progress state for CAR downloads
+ * Stored in local storage for UI access via storage.onChanged
+ */
+export interface CarDownloadProgressState {
+  did: string;
+  stage: 'checking' | 'downloading' | 'parsing' | 'saving' | 'complete' | 'error';
+  bytesDownloaded: number;
+  bytesTotal: number | null;
+  percentComplete: number | null;
+  message: string;
+  isIncremental: boolean;
+  startedAt: number;
+  error?: string;
+}
+
+/**
+ * Get current CAR download progress
+ */
+export async function getCarDownloadProgress(): Promise<CarDownloadProgressState | null> {
+  const result = await browser.storage.local.get(STORAGE_KEYS.CAR_DOWNLOAD_PROGRESS);
+  return (result[STORAGE_KEYS.CAR_DOWNLOAD_PROGRESS] as CarDownloadProgressState) || null;
+}
+
+/**
+ * Set CAR download progress (for UI updates)
+ * UI can listen to storage.onChanged for real-time updates
+ */
+export async function setCarDownloadProgress(
+  progress: CarDownloadProgressState | null
+): Promise<void> {
+  if (progress === null) {
+    await browser.storage.local.remove(STORAGE_KEYS.CAR_DOWNLOAD_PROGRESS);
+  } else {
+    await browser.storage.local.set({ [STORAGE_KEYS.CAR_DOWNLOAD_PROGRESS]: progress });
+  }
+}
+
+/**
+ * Clear CAR download progress
+ */
+export async function clearCarDownloadProgress(): Promise<void> {
+  await browser.storage.local.remove(STORAGE_KEYS.CAR_DOWNLOAD_PROGRESS);
 }

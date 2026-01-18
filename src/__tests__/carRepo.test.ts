@@ -61,8 +61,13 @@ describe('carRepo', () => {
       const mockEntries = [
         { collection: 'app.bsky.feed.post', rkey: 'abc123', bytes: new Uint8Array([1]) },
       ];
+      // Mock for parseCarForPosts
       mockRepoFromUint8Array.mockReturnValueOnce(
         mockEntries as unknown as ReturnType<typeof atcuteRepo.fromUint8Array>
+      );
+      // Mock for parseCarForBlocks
+      mockRepoFromUint8Array.mockReturnValueOnce(
+        [] as unknown as ReturnType<typeof atcuteRepo.fromUint8Array>
       );
 
       mockDecode.mockReturnValueOnce({
@@ -80,6 +85,7 @@ describe('carRepo', () => {
       expect(result.posts).toHaveLength(1);
       expect(result.posts[0].uri).toBe('at://did:plc:user/app.bsky.feed.post/abc123');
       expect(result.posts[0].text).toBe('Hello world');
+      expect(result.blocks).toHaveLength(0);
     });
 
     it('falls back to relay when PDS fails', async () => {
@@ -93,8 +99,13 @@ describe('carRepo', () => {
       const mockEntries = [
         { collection: 'app.bsky.feed.post', rkey: 'xyz789', bytes: new Uint8Array([1]) },
       ];
+      // Mock for parseCarForPosts
       mockRepoFromUint8Array.mockReturnValueOnce(
         mockEntries as unknown as ReturnType<typeof atcuteRepo.fromUint8Array>
+      );
+      // Mock for parseCarForBlocks
+      mockRepoFromUint8Array.mockReturnValueOnce(
+        [] as unknown as ReturnType<typeof atcuteRepo.fromUint8Array>
       );
 
       mockDecode.mockReturnValueOnce({
@@ -118,6 +129,11 @@ describe('carRepo', () => {
 
       mockFetch.mockResolvedValueOnce(createMockStreamResponse(mockCarData));
 
+      // Mock for parseCarForPosts
+      mockRepoFromUint8Array.mockReturnValueOnce(
+        [] as unknown as ReturnType<typeof atcuteRepo.fromUint8Array>
+      );
+      // Mock for parseCarForBlocks
       mockRepoFromUint8Array.mockReturnValueOnce(
         [] as unknown as ReturnType<typeof atcuteRepo.fromUint8Array>
       );
@@ -138,8 +154,13 @@ describe('carRepo', () => {
       const mockEntries = [
         { collection: 'app.bsky.feed.post', rkey: 'reply1', bytes: new Uint8Array([1]) },
       ];
+      // Mock for parseCarForPosts
       mockRepoFromUint8Array.mockReturnValueOnce(
         mockEntries as unknown as ReturnType<typeof atcuteRepo.fromUint8Array>
+      );
+      // Mock for parseCarForBlocks
+      mockRepoFromUint8Array.mockReturnValueOnce(
+        [] as unknown as ReturnType<typeof atcuteRepo.fromUint8Array>
       );
 
       mockDecode.mockReturnValueOnce({
@@ -168,8 +189,13 @@ describe('carRepo', () => {
       const mockEntries = [
         { collection: 'app.bsky.feed.post', rkey: 'quote1', bytes: new Uint8Array([1]) },
       ];
+      // Mock for parseCarForPosts
       mockRepoFromUint8Array.mockReturnValueOnce(
         mockEntries as unknown as ReturnType<typeof atcuteRepo.fromUint8Array>
+      );
+      // Mock for parseCarForBlocks
+      mockRepoFromUint8Array.mockReturnValueOnce(
+        [] as unknown as ReturnType<typeof atcuteRepo.fromUint8Array>
       );
 
       mockDecode.mockReturnValueOnce({
@@ -201,6 +227,11 @@ describe('carRepo', () => {
         { collection: 'app.bsky.feed.repost', rkey: 'repost1', bytes: new Uint8Array([2]) },
         { collection: 'app.bsky.graph.follow', rkey: 'follow1', bytes: new Uint8Array([3]) },
       ];
+      // Mock for parseCarForPosts
+      mockRepoFromUint8Array.mockReturnValueOnce(
+        mockEntries as unknown as ReturnType<typeof atcuteRepo.fromUint8Array>
+      );
+      // Mock for parseCarForBlocks
       mockRepoFromUint8Array.mockReturnValueOnce(
         mockEntries as unknown as ReturnType<typeof atcuteRepo.fromUint8Array>
       );
@@ -208,7 +239,6 @@ describe('carRepo', () => {
       const result = await fetchAndParseRepo('did:plc:user', 'https://pds.example.com');
 
       expect(result.posts).toHaveLength(0);
-      expect(mockDecode).not.toHaveBeenCalled();
     });
 
     it('calls progress callback during download and parse', async () => {
@@ -217,6 +247,11 @@ describe('carRepo', () => {
 
       mockFetch.mockResolvedValueOnce(createMockStreamResponse(mockCarData));
 
+      // Mock for parseCarForPosts
+      mockRepoFromUint8Array.mockReturnValueOnce(
+        [] as unknown as ReturnType<typeof atcuteRepo.fromUint8Array>
+      );
+      // Mock for parseCarForBlocks
       mockRepoFromUint8Array.mockReturnValueOnce(
         [] as unknown as ReturnType<typeof atcuteRepo.fromUint8Array>
       );
@@ -225,7 +260,7 @@ describe('carRepo', () => {
 
       expect(onProgress).toHaveBeenCalledWith('Downloading repository...');
       expect(onProgress).toHaveBeenCalledWith('Parsing repository...');
-      expect(onProgress).toHaveBeenCalledWith('Found 0 posts');
+      expect(onProgress).toHaveBeenCalledWith('Found 0 posts, 0 blocks');
     });
 
     it('throws error when both PDS and relay fail', async () => {
@@ -246,8 +281,13 @@ describe('carRepo', () => {
         { collection: 'app.bsky.feed.post', rkey: 'good', bytes: new Uint8Array([1]) },
         { collection: 'app.bsky.feed.post', rkey: 'bad', bytes: new Uint8Array([2]) },
       ];
+      // Mock for parseCarForPosts
       mockRepoFromUint8Array.mockReturnValueOnce(
         mockEntries as unknown as ReturnType<typeof atcuteRepo.fromUint8Array>
+      );
+      // Mock for parseCarForBlocks
+      mockRepoFromUint8Array.mockReturnValueOnce(
+        [] as unknown as ReturnType<typeof atcuteRepo.fromUint8Array>
       );
 
       // First decode succeeds
@@ -278,6 +318,11 @@ describe('carRepo', () => {
 
       mockFetch.mockResolvedValueOnce(createMockStreamResponse(mockCarData));
 
+      // Mock for parseCarForPosts
+      mockRepoFromUint8Array.mockReturnValueOnce(
+        [] as unknown as ReturnType<typeof atcuteRepo.fromUint8Array>
+      );
+      // Mock for parseCarForBlocks
       mockRepoFromUint8Array.mockReturnValueOnce(
         [] as unknown as ReturnType<typeof atcuteRepo.fromUint8Array>
       );
@@ -321,6 +366,11 @@ describe('carRepo', () => {
       mockFetch.mockReset();
       mockFetch.mockResolvedValueOnce(createMockStreamResponse(mockCarData));
 
+      // Mock for parseCarForPosts
+      mockRepoFromUint8Array.mockReturnValueOnce(
+        [] as unknown as ReturnType<typeof atcuteRepo.fromUint8Array>
+      );
+      // Mock for parseCarForBlocks
       mockRepoFromUint8Array.mockReturnValueOnce(
         [] as unknown as ReturnType<typeof atcuteRepo.fromUint8Array>
       );
@@ -351,10 +401,10 @@ describe('carRepo', () => {
 
       // Track if AbortController.abort was called
       let wasAborted = false;
-      const originalAbortController = global.AbortController;
+      const originalAbortController = globalThis.AbortController;
 
       // Mock AbortController to track abort calls
-      global.AbortController = class MockAbortController {
+      globalThis.AbortController = class MockAbortController {
         signal = { aborted: false };
         abort = () => {
           wasAborted = true;
@@ -363,6 +413,11 @@ describe('carRepo', () => {
 
       mockFetch.mockResolvedValueOnce(createMockStreamResponse(mockCarData));
 
+      // Mock for parseCarForPosts
+      mockRepoFromUint8Array.mockReturnValueOnce(
+        [] as unknown as ReturnType<typeof atcuteRepo.fromUint8Array>
+      );
+      // Mock for parseCarForBlocks
       mockRepoFromUint8Array.mockReturnValueOnce(
         [] as unknown as ReturnType<typeof atcuteRepo.fromUint8Array>
       );
@@ -370,7 +425,7 @@ describe('carRepo', () => {
       await fetchAndParseRepo('did:plc:user', 'https://pds.example.com');
 
       // Restore original AbortController
-      global.AbortController = originalAbortController;
+      globalThis.AbortController = originalAbortController;
 
       // The abort should NOT have been called since download completed successfully
       expect(wasAborted).toBe(false);

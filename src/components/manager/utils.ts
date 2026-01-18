@@ -1,7 +1,7 @@
 /**
  * Utility functions for Manager page
  */
-import type { ManagedEntry, HistoryEntry, PostContext } from '../../types.js';
+import type { ManagedEntry, HistoryEntry, PostContext, ListMember } from '../../types.js';
 import type { SortColumn, SortDirection } from '../../signals/manager.js';
 
 export function formatTimeAgo(timestamp: number): string {
@@ -206,4 +206,27 @@ export function postUriToUrl(postUri: string): string {
   return postUri
     .replace('at://', 'https://bsky.app/profile/')
     .replace('/app.bsky.feed.post/', '/post/');
+}
+
+// ============================================================================
+// List Audit Utilities
+// ============================================================================
+
+/**
+ * Get list audit candidates - members that haven't been reviewed yet
+ */
+export function getListAuditCandidates(
+  members: ListMember[],
+  reviewedDids: Set<string>
+): ListMember[] {
+  return members.filter((member) => !reviewedDids.has(member.did));
+}
+
+/**
+ * Select a random candidate from list audit candidates
+ */
+export function selectRandomListMember(candidates: ListMember[]): ListMember | null {
+  if (candidates.length === 0) return null;
+  const index = Math.floor(Math.random() * candidates.length);
+  return candidates[index] ?? null;
 }

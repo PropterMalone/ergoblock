@@ -10,8 +10,16 @@ import {
   ChevronRight,
   Shield,
   Users,
+  List,
+  UserMinus,
 } from 'lucide-preact';
-import type { ManagedEntry, AmnestyReview } from '../../types.js';
+import type {
+  ManagedEntry,
+  AmnestyReview,
+  ListMember,
+  ListAuditReview,
+  Interaction,
+} from '../../types.js';
 import {
   blocks,
   mutes,
@@ -24,21 +32,49 @@ import {
   contexts,
   expandedRows,
   toggleExpanded,
+  amnestyMode,
+  setAmnestyMode,
+  ownedLists,
+  selectedListUri,
+  selectList,
+  listMembers,
+  listAuditCandidate,
+  listAuditReviewedDids,
+  setInteractions,
 } from '../../signals/manager.js';
 import {
   FORGIVENESS_OPTIONS,
   getAmnestyCandidates,
   selectRandomCandidate,
   postUriToUrl,
+  getListAuditCandidates,
+  selectRandomListMember,
+  formatTimeAgo,
 } from './utils.js';
-import { setOptions, getPostContexts, addAmnestyReview, getAmnestyStats } from '../../storage.js';
+import {
+  setOptions,
+  getPostContexts,
+  addAmnestyReview,
+  getAmnestyStats,
+  addListAuditReview,
+  getListAuditReviewedDids,
+  getListAuditStats,
+} from '../../storage.js';
 import browser from '../../browser.js';
 import { InteractionsList } from './InteractionsList.js';
 
-interface BlockRelationshipsResponse {
+interface RelationshipUser {
+  did: string;
+  handle: string;
+  displayName?: string;
+  avatar?: string;
+}
+
+interface FollowRelationshipsResponse {
   success: boolean;
-  blockedBy?: Array<{ did: string; handle: string; displayName?: string; avatar?: string }>;
-  blocking?: Array<{ did: string; handle: string; displayName?: string; avatar?: string }>;
+  followsWhoFollowThem?: RelationshipUser[];
+  followersWhoFollowThem?: RelationshipUser[];
+  followsTheyBlock?: RelationshipUser[];
 }
 
 interface AmnestyTabProps {
@@ -187,7 +223,37 @@ export function AmnestyTab({
     }
   };
 
-  // Show candidate card if active
+  // Mode toggle component
+  const ModeToggle = () => (
+    <div class="amnesty-mode-toggle">
+      <button
+        class={`amnesty-mode-btn ${amnestyMode.value === 'blocks_mutes' ? 'active' : ''}`}
+        onClick={() => setAmnestyMode('blocks_mutes')}
+      >
+        <Shield size={16} /> Blocks/Mutes
+      </button>
+      <button
+        class={`amnesty-mode-btn ${amnestyMode.value === 'list_members' ? 'active' : ''}`}
+        onClick={() => setAmnestyMode('list_members')}
+      >
+        <List size={16} /> List Members
+      </button>
+    </div>
+  );
+
+  // Show list audit mode
+  if (amnestyMode.value === 'list_members') {
+    return (
+      <ListAuditMode
+        onReload={onReload}
+        onFetchInteractions={onFetchInteractions}
+        onTempUnblockAndView={onTempUnblockAndView}
+        ModeToggle={ModeToggle}
+      />
+    );
+  }
+
+  // Show candidate card if active (blocks/mutes mode)
   if (amnestyCandidate.value) {
     return (
       <AmnestyCard
@@ -197,6 +263,7 @@ export function AmnestyTab({
         processing={processing}
         onDecision={handleDecision}
         onViewPost={onTempUnblockAndView}
+        ModeToggle={ModeToggle}
         onFetchInteractions={onFetchInteractions}
       />
     );
@@ -209,6 +276,8 @@ export function AmnestyTab({
 
   return (
     <div class="amnesty-container">
+      <ModeToggle />
+
       <div class="amnesty-intro">
         <h3>Amnesty</h3>
         <p>Review old blocks and mutes to decide if they still deserve it.</p>
@@ -278,6 +347,7 @@ interface AmnestyCardProps {
   onDecision: (decision: 'unblocked' | 'unmuted' | 'kept_blocked' | 'kept_muted') => Promise<void>;
   onViewPost: (did: string, handle: string, url: string) => Promise<void>;
   onFetchInteractions: (did: string, handle: string) => Promise<void>;
+  ModeToggle: () => JSX.Element;
 }
 
 function AmnestyCard({
@@ -288,6 +358,7 @@ function AmnestyCard({
   onDecision,
   onViewPost,
   onFetchInteractions,
+  ModeToggle,
 }: AmnestyCardProps): JSX.Element {
   const ctx = contextMap.value.get(candidate.did);
   const actionDate = candidate.createdAt || candidate.syncedAt;
@@ -300,14 +371,16 @@ function AmnestyCard({
 
   const postUrl = ctx?.postUri ? postUriToUrl(ctx.postUri) : '';
 
-  // Block relationship state
-  const [blockRelations, setBlockRelations] = useState<{
-    blockedBy: Array<{ handle: string; displayName?: string }>;
-    blocking: Array<{ handle: string; displayName?: string }>;
+  // Follow relationship state
+  const [followRelations, setFollowRelations] = useState<{
+    followsWhoFollowThem: RelationshipUser[];
+    followersWhoFollowThem: RelationshipUser[];
+    followsTheyBlock: RelationshipUser[];
     loading: boolean;
-  }>({ blockedBy: [], blocking: [], loading: true });
-  const [blockedByExpanded, setBlockedByExpanded] = useState(false);
-  const [blockingExpanded, setBlockingExpanded] = useState(false);
+  }>({ followsWhoFollowThem: [], followersWhoFollowThem: [], followsTheyBlock: [], loading: true });
+  const [followsFollowExpanded, setFollowsFollowExpanded] = useState(false);
+  const [followersFollowExpanded, setFollowersFollowExpanded] = useState(false);
+  const [followsBlockedExpanded, setFollowsBlockedExpanded] = useState(false);
 
   // Profile stats state
   const [profileStats, setProfileStats] = useState<{
@@ -317,28 +390,29 @@ function AmnestyCard({
     loading: boolean;
   }>({ followersCount: 0, followsCount: 0, postsCount: 0, loading: true });
 
-  // Fetch block relationships for this candidate
+  // Fetch follow relationships for this candidate
   useEffect(() => {
     let cancelled = false;
     const fetchRelations = async () => {
       try {
         const response = (await browser.runtime.sendMessage({
-          type: 'GET_BLOCK_RELATIONSHIPS',
+          type: 'GET_FOLLOW_RELATIONSHIPS',
           did: candidate.did,
-        })) as BlockRelationshipsResponse;
+        })) as FollowRelationshipsResponse;
 
         if (!cancelled && response.success) {
-          setBlockRelations({
-            blockedBy: response.blockedBy || [],
-            blocking: response.blocking || [],
+          setFollowRelations({
+            followsWhoFollowThem: response.followsWhoFollowThem || [],
+            followersWhoFollowThem: response.followersWhoFollowThem || [],
+            followsTheyBlock: response.followsTheyBlock || [],
             loading: false,
           });
         } else if (!cancelled) {
-          setBlockRelations((prev) => ({ ...prev, loading: false }));
+          setFollowRelations((prev) => ({ ...prev, loading: false }));
         }
       } catch {
         if (!cancelled) {
-          setBlockRelations((prev) => ({ ...prev, loading: false }));
+          setFollowRelations((prev) => ({ ...prev, loading: false }));
         }
       }
     };
@@ -387,6 +461,8 @@ function AmnestyCard({
 
   return (
     <div class="amnesty-container">
+      <ModeToggle />
+
       <div class="amnesty-stats">
         <div class="amnesty-stat">
           <div class="amnesty-stat-value">{candidates.length}</div>
@@ -438,80 +514,145 @@ function AmnestyCard({
           </div>
         )}
 
-        {/* Block Relationships Section */}
-        {!blockRelations.loading &&
-          (blockRelations.blockedBy.length > 0 || blockRelations.blocking.length > 0) && (
-            <div class="amnesty-block-relations">
-              {blockRelations.blockedBy.length > 0 && (
-                <div class="amnesty-block-rel-section">
-                  <button
-                    type="button"
-                    class="amnesty-block-rel-header amnesty-blocked-by"
-                    onClick={() => setBlockedByExpanded(!blockedByExpanded)}
-                  >
-                    <Shield size={14} />
-                    <span>
-                      Blocked by {blockRelations.blockedBy.length}{' '}
-                      {blockRelations.blockedBy.length === 1 ? 'person' : 'people'} you follow
-                    </span>
-                    {blockedByExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                  </button>
-                  {blockedByExpanded && (
-                    <div class="amnesty-block-rel-list">
-                      {blockRelations.blockedBy.map((u) => (
-                        <a
-                          key={u.handle}
-                          href={`https://bsky.app/profile/${u.handle}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          class="amnesty-block-rel-user"
-                        >
-                          @{u.handle}
-                          {u.displayName && (
-                            <span class="amnesty-block-rel-name"> ({u.displayName})</span>
-                          )}
-                        </a>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-              {blockRelations.blocking.length > 0 && (
-                <div class="amnesty-block-rel-section">
-                  <button
-                    type="button"
-                    class="amnesty-block-rel-header amnesty-blocking"
-                    onClick={() => setBlockingExpanded(!blockingExpanded)}
-                  >
-                    <Users size={14} />
-                    <span>
-                      Blocks {blockRelations.blocking.length}{' '}
-                      {blockRelations.blocking.length === 1 ? 'person' : 'people'} you follow
-                    </span>
-                    {blockingExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                  </button>
-                  {blockingExpanded && (
-                    <div class="amnesty-block-rel-list">
-                      {blockRelations.blocking.map((u) => (
-                        <a
-                          key={u.handle}
-                          href={`https://bsky.app/profile/${u.handle}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          class="amnesty-block-rel-user"
-                        >
-                          @{u.handle}
-                          {u.displayName && (
-                            <span class="amnesty-block-rel-name"> ({u.displayName})</span>
-                          )}
-                        </a>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
+        {/* Follow Relationships Section */}
+        <div class="amnesty-block-relations">
+          {followRelations.loading ? (
+            <div class="amnesty-searching">
+              <Loader2 size={16} class="spinner" />
+              Checking social connections...
             </div>
+          ) : (
+            <>
+              <div class="amnesty-block-rel-section">
+                <button
+                  type="button"
+                  class="amnesty-block-rel-header amnesty-follows-follow"
+                  onClick={() =>
+                    followRelations.followsWhoFollowThem.length > 0 &&
+                    setFollowsFollowExpanded(!followsFollowExpanded)
+                  }
+                  disabled={followRelations.followsWhoFollowThem.length === 0}
+                >
+                  <Users size={14} />
+                  <span>
+                    <strong>{followRelations.followsWhoFollowThem.length}</strong>{' '}
+                    {followRelations.followsWhoFollowThem.length === 1 ? 'person' : 'people'} you
+                    follow{' '}
+                    {followRelations.followsWhoFollowThem.length === 1 ? 'follows' : 'follow'} them
+                  </span>
+                  {followRelations.followsWhoFollowThem.length > 0 &&
+                    (followsFollowExpanded ? (
+                      <ChevronDown size={14} />
+                    ) : (
+                      <ChevronRight size={14} />
+                    ))}
+                </button>
+                {followsFollowExpanded && followRelations.followsWhoFollowThem.length > 0 && (
+                  <div class="amnesty-block-rel-list">
+                    {followRelations.followsWhoFollowThem.map((u) => (
+                      <a
+                        key={u.handle}
+                        href={`https://bsky.app/profile/${u.handle}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        class="amnesty-block-rel-user"
+                      >
+                        @{u.handle}
+                        {u.displayName && (
+                          <span class="amnesty-block-rel-name"> ({u.displayName})</span>
+                        )}
+                      </a>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div class="amnesty-block-rel-section">
+                <button
+                  type="button"
+                  class="amnesty-block-rel-header amnesty-followers-follow"
+                  onClick={() =>
+                    followRelations.followersWhoFollowThem.length > 0 &&
+                    setFollowersFollowExpanded(!followersFollowExpanded)
+                  }
+                  disabled={followRelations.followersWhoFollowThem.length === 0}
+                >
+                  <Users size={14} />
+                  <span>
+                    <strong>{followRelations.followersWhoFollowThem.length}</strong> of your
+                    followers{' '}
+                    {followRelations.followersWhoFollowThem.length === 1 ? 'follows' : 'follow'}{' '}
+                    them
+                  </span>
+                  {followRelations.followersWhoFollowThem.length > 0 &&
+                    (followersFollowExpanded ? (
+                      <ChevronDown size={14} />
+                    ) : (
+                      <ChevronRight size={14} />
+                    ))}
+                </button>
+                {followersFollowExpanded && followRelations.followersWhoFollowThem.length > 0 && (
+                  <div class="amnesty-block-rel-list">
+                    {followRelations.followersWhoFollowThem.map((u) => (
+                      <a
+                        key={u.handle}
+                        href={`https://bsky.app/profile/${u.handle}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        class="amnesty-block-rel-user"
+                      >
+                        @{u.handle}
+                        {u.displayName && (
+                          <span class="amnesty-block-rel-name"> ({u.displayName})</span>
+                        )}
+                      </a>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div class="amnesty-block-rel-section">
+                <button
+                  type="button"
+                  class="amnesty-block-rel-header amnesty-blocking"
+                  onClick={() =>
+                    followRelations.followsTheyBlock.length > 0 &&
+                    setFollowsBlockedExpanded(!followsBlockedExpanded)
+                  }
+                  disabled={followRelations.followsTheyBlock.length === 0}
+                >
+                  <Shield size={14} />
+                  <span>
+                    They block <strong>{followRelations.followsTheyBlock.length}</strong>{' '}
+                    {followRelations.followsTheyBlock.length === 1 ? 'person' : 'people'} you follow
+                  </span>
+                  {followRelations.followsTheyBlock.length > 0 &&
+                    (followsBlockedExpanded ? (
+                      <ChevronDown size={14} />
+                    ) : (
+                      <ChevronRight size={14} />
+                    ))}
+                </button>
+                {followsBlockedExpanded && followRelations.followsTheyBlock.length > 0 && (
+                  <div class="amnesty-block-rel-list">
+                    {followRelations.followsTheyBlock.map((u) => (
+                      <a
+                        key={u.handle}
+                        href={`https://bsky.app/profile/${u.handle}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        class="amnesty-block-rel-user"
+                      >
+                        @{u.handle}
+                        {u.displayName && (
+                          <span class="amnesty-block-rel-name"> ({u.displayName})</span>
+                        )}
+                      </a>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </>
           )}
+        </div>
 
         <div class="amnesty-card-context">
           <div class="amnesty-context-header">
@@ -588,6 +729,425 @@ function AmnestyCard({
             disabled={processing}
           >
             <ThumbsDown size={18} /> Keep {actionVerb}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// List Audit Mode Component
+// ============================================================================
+
+interface ListAuditModeProps {
+  onReload: () => Promise<void>;
+  onFetchInteractions: (did: string, handle: string) => Promise<void>;
+  onTempUnblockAndView: (did: string, handle: string, url: string) => Promise<void>;
+  ModeToggle: () => JSX.Element;
+}
+
+function ListAuditMode({
+  onReload: _onReload,
+  onFetchInteractions,
+  onTempUnblockAndView,
+  ModeToggle,
+}: ListAuditModeProps): JSX.Element {
+  const [processing, setProcessing] = useState(false);
+  const [stats, setStats] = useState({ reviewed: 0, removed: 0, kept: 0 });
+  const [loadingLists, setLoadingLists] = useState(false);
+  const [loadingMembers, setLoadingMembers] = useState(false);
+
+  // Fetch owned lists on mount
+  useEffect(() => {
+    const fetchLists = async () => {
+      if (ownedLists.value.length > 0) return; // Already loaded
+      setLoadingLists(true);
+      try {
+        const response = (await browser.runtime.sendMessage({
+          type: 'FETCH_OWNED_LISTS',
+        })) as { success: boolean; lists?: typeof ownedLists.value; error?: string };
+
+        if (response.success && response.lists) {
+          ownedLists.value = response.lists;
+        }
+      } catch (error) {
+        console.error('[ListAuditMode] Failed to fetch owned lists:', error);
+      } finally {
+        setLoadingLists(false);
+      }
+    };
+    fetchLists();
+  }, []);
+
+  // Fetch stats when list is selected
+  useEffect(() => {
+    if (selectedListUri.value) {
+      getListAuditStats(selectedListUri.value).then(setStats);
+      getListAuditReviewedDids(selectedListUri.value).then((dids) => {
+        listAuditReviewedDids.value = dids;
+      });
+    }
+  }, [selectedListUri.value]);
+
+  const handleListChange = async (e: Event) => {
+    const uri = (e.target as HTMLSelectElement).value;
+    selectList(uri || null);
+
+    if (uri) {
+      setLoadingMembers(true);
+      try {
+        const response = (await browser.runtime.sendMessage({
+          type: 'FETCH_LIST_MEMBERS_WITH_TIMESTAMPS',
+          listUri: uri,
+        })) as { success: boolean; members?: ListMember[]; error?: string };
+
+        if (response.success && response.members) {
+          listMembers.value = response.members;
+        }
+      } catch (error) {
+        console.error('[ListAuditMode] Failed to fetch list members:', error);
+      } finally {
+        setLoadingMembers(false);
+      }
+    }
+  };
+
+  const startReview = () => {
+    const candidates = getListAuditCandidates(listMembers.value, listAuditReviewedDids.value);
+    const candidate = selectRandomListMember(candidates);
+    if (candidate) {
+      listAuditCandidate.value = candidate;
+    }
+  };
+
+  const handleDecision = async (decision: 'removed' | 'kept') => {
+    const candidate = listAuditCandidate.value;
+    if (!candidate) return;
+
+    setProcessing(true);
+    try {
+      // If removing, call the API
+      if (decision === 'removed') {
+        const response = (await browser.runtime.sendMessage({
+          type: 'REMOVE_FROM_LIST',
+          rkey: candidate.listitemRkey,
+        })) as { success: boolean; error?: string };
+
+        if (!response.success) {
+          throw new Error(response.error || 'Failed to remove from list');
+        }
+
+        // Remove from local list
+        listMembers.value = listMembers.value.filter((m) => m.did !== candidate.did);
+      }
+
+      // Record the review
+      const review: ListAuditReview = {
+        did: candidate.did,
+        handle: candidate.handle,
+        listUri: candidate.listUri,
+        listName: candidate.listName,
+        reviewedAt: Date.now(),
+        decision,
+      };
+      await addListAuditReview(review);
+
+      // Update reviewed DIDs
+      const newReviewedDids = new Set(listAuditReviewedDids.value);
+      newReviewedDids.add(candidate.did);
+      listAuditReviewedDids.value = newReviewedDids;
+
+      // Update stats
+      const newStats = await getListAuditStats(candidate.listUri);
+      setStats(newStats);
+
+      // Clear candidate and start next review
+      listAuditCandidate.value = null;
+      startReview();
+    } catch (error) {
+      console.error('[ListAuditMode] Decision failed:', error);
+      alert('Failed to process decision');
+    } finally {
+      setProcessing(false);
+    }
+  };
+
+  // Show list member audit card if reviewing
+  if (listAuditCandidate.value) {
+    const candidates = getListAuditCandidates(listMembers.value, listAuditReviewedDids.value);
+    return (
+      <ListAuditCard
+        member={listAuditCandidate.value}
+        stats={stats}
+        candidatesRemaining={candidates.length}
+        processing={processing}
+        onDecision={handleDecision}
+        onFetchInteractions={onFetchInteractions}
+        onViewPost={onTempUnblockAndView}
+        ModeToggle={ModeToggle}
+      />
+    );
+  }
+
+  // Show list selection / intro screen
+  const candidates = getListAuditCandidates(listMembers.value, listAuditReviewedDids.value);
+
+  return (
+    <div class="amnesty-container">
+      <ModeToggle />
+
+      <div class="amnesty-intro">
+        <h3>List Audit</h3>
+        <p>Review members of your lists to see if they still belong there.</p>
+      </div>
+
+      <div class="amnesty-forgiveness">
+        <label class="amnesty-forgiveness-label">Select a list to audit</label>
+        {loadingLists ? (
+          <div class="amnesty-loading">
+            <Loader2 size={20} class="spin" /> Loading your lists...
+          </div>
+        ) : (
+          <select
+            class="amnesty-forgiveness-select"
+            value={selectedListUri.value || ''}
+            onChange={handleListChange}
+          >
+            <option value="">Select a list...</option>
+            {ownedLists.value.map((list) => (
+              <option key={list.uri} value={list.uri}>
+                {list.name} ({list.listItemCount} members)
+              </option>
+            ))}
+          </select>
+        )}
+        {ownedLists.value.length === 0 && !loadingLists && (
+          <p class="amnesty-forgiveness-hint">You don't have any lists to audit.</p>
+        )}
+      </div>
+
+      {loadingMembers && (
+        <div class="amnesty-loading">
+          <Loader2 size={20} class="spin" /> Loading list members...
+        </div>
+      )}
+
+      {selectedListUri.value && !loadingMembers && (
+        <>
+          <div class="amnesty-stats">
+            <div class="amnesty-stat amnesty-stat-primary">
+              <div class="amnesty-stat-value">{candidates.length}</div>
+              <div class="amnesty-stat-label">Ready for Review</div>
+              {listMembers.value.length > 0 && (
+                <div class="amnesty-stat-detail">{listMembers.value.length} total members</div>
+              )}
+            </div>
+            <div class="amnesty-stat">
+              <div class="amnesty-stat-value">{stats.reviewed}</div>
+              <div class="amnesty-stat-label">Reviewed</div>
+            </div>
+            <div class="amnesty-stat">
+              <div class="amnesty-stat-value">{stats.removed}</div>
+              <div class="amnesty-stat-label">Removed</div>
+            </div>
+          </div>
+
+          {candidates.length > 0 ? (
+            <button class="amnesty-start-btn" onClick={startReview}>
+              <Play size={20} /> Start Review
+            </button>
+          ) : (
+            <div class="amnesty-empty">
+              <h3>No members to review</h3>
+              <p>
+                {listMembers.value.length === 0
+                  ? 'This list has no members.'
+                  : 'All members have been reviewed.'}
+              </p>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
+// List Audit Card Component
+// ============================================================================
+
+interface ListAuditCardProps {
+  member: ListMember;
+  stats: { reviewed: number; removed: number; kept: number };
+  candidatesRemaining: number;
+  processing: boolean;
+  onDecision: (decision: 'removed' | 'kept') => Promise<void>;
+  onFetchInteractions: (did: string, handle: string) => Promise<void>;
+  onViewPost: (did: string, handle: string, url: string) => Promise<void>;
+  ModeToggle: () => JSX.Element;
+}
+
+function ListAuditCard({
+  member,
+  stats,
+  candidatesRemaining,
+  processing,
+  onDecision,
+  onFetchInteractions: _onFetchInteractions,
+  onViewPost: _onViewPost,
+  ModeToggle,
+}: ListAuditCardProps): JSX.Element {
+  const [loadingInteractions, setLoadingInteractions] = useState(false);
+  const [interactions, setLocalInteractions] = useState<Interaction[]>([]);
+  const [interactionsLoaded, setInteractionsLoaded] = useState(false);
+  const isExpanded = expandedRows.value.has(member.did);
+  const addedDateStr = new Date(member.addedAt).toLocaleDateString();
+
+  // Fetch interactions before the addedAt timestamp
+  useEffect(() => {
+    const fetchInteractions = async () => {
+      setLoadingInteractions(true);
+      try {
+        const response = (await browser.runtime.sendMessage({
+          type: 'FIND_INTERACTIONS_BEFORE',
+          targetDid: member.did,
+          beforeTimestamp: member.addedAt,
+        })) as { success: boolean; interactions?: Interaction[]; error?: string };
+
+        if (response.success && response.interactions) {
+          setLocalInteractions(response.interactions);
+          // Also store in global signal for InteractionsList component
+          setInteractions(member.did, response.interactions);
+        }
+      } catch (error) {
+        console.error('[ListAuditCard] Failed to fetch interactions:', error);
+      } finally {
+        setLoadingInteractions(false);
+        setInteractionsLoaded(true);
+      }
+    };
+    fetchInteractions();
+  }, [member.did, member.addedAt]);
+
+  return (
+    <div class="amnesty-container">
+      <ModeToggle />
+
+      <div class="amnesty-stats">
+        <div class="amnesty-stat">
+          <div class="amnesty-stat-value">{candidatesRemaining}</div>
+          <div class="amnesty-stat-label">Remaining</div>
+        </div>
+        <div class="amnesty-stat">
+          <div class="amnesty-stat-value">{stats.reviewed}</div>
+          <div class="amnesty-stat-label">Reviewed</div>
+        </div>
+        <div class="amnesty-stat">
+          <div class="amnesty-stat-value">{stats.removed}</div>
+          <div class="amnesty-stat-label">Removed</div>
+        </div>
+      </div>
+
+      <div class="amnesty-card amnesty-card-list">
+        <div class="amnesty-card-header">
+          {member.avatar ? (
+            <img src={member.avatar} class="amnesty-avatar" alt="" loading="lazy" />
+          ) : (
+            <div class="amnesty-avatar" />
+          )}
+          <div class="amnesty-user-info">
+            <div class="amnesty-handle">@{member.handle}</div>
+            {member.displayName && <div class="amnesty-display-name">{member.displayName}</div>}
+            <div class="amnesty-blocked-date">
+              <span class="amnesty-type-badge badge-list">
+                <List size={12} /> {member.listName}
+              </span>
+              Added {addedDateStr}
+            </div>
+          </div>
+        </div>
+
+        <div class="amnesty-context-container">
+          <div class="amnesty-context-header">
+            <button
+              class="amnesty-context-toggle"
+              onClick={() => toggleExpanded(member.did)}
+              disabled={loadingInteractions}
+            >
+              {isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+              Interactions before adding to list
+            </button>
+          </div>
+
+          {loadingInteractions && (
+            <div class="amnesty-loading">
+              <Loader2 size={16} class="spin" /> Finding interactions...
+            </div>
+          )}
+
+          {interactionsLoaded && !loadingInteractions && (
+            <>
+              {interactions.length > 0 ? (
+                <div class="amnesty-context-summary">
+                  Found {interactions.length} interaction{interactions.length !== 1 ? 's' : ''}{' '}
+                  before you added them
+                </div>
+              ) : (
+                <div class="amnesty-no-context">
+                  No interactions found before you added them to this list
+                </div>
+              )}
+            </>
+          )}
+
+          {isExpanded && interactions.length > 0 && (
+            <div class="amnesty-interactions-expanded">
+              <div class="interactions-list">
+                {interactions.slice(0, 10).map((interaction, idx) => (
+                  <div key={idx} class="interaction-item">
+                    <div class="interaction-header">
+                      <span class={`interaction-type ${interaction.type}`}>{interaction.type}</span>
+                      <span class="interaction-author">
+                        {interaction.author === 'you' ? 'You' : `@${interaction.authorHandle}`}
+                      </span>
+                      <span class="interaction-date">{formatTimeAgo(interaction.createdAt)}</span>
+                    </div>
+                    <div class="interaction-text">{interaction.text}</div>
+                  </div>
+                ))}
+                {interactions.length > 10 && (
+                  <div class="interaction-more">
+                    And {interactions.length - 10} more interactions...
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div class="amnesty-card-actions">
+          <button
+            class="amnesty-btn amnesty-btn-keep"
+            onClick={() => {
+              onDecision('kept').catch((err) => {
+                console.error('[ListAuditCard] Decision error:', err);
+              });
+            }}
+            disabled={processing}
+          >
+            <ThumbsUp size={18} /> Keep on List
+          </button>
+          <button
+            class="amnesty-btn amnesty-btn-remove"
+            onClick={() => {
+              onDecision('removed').catch((err) => {
+                console.error('[ListAuditCard] Decision error:', err);
+              });
+            }}
+            disabled={processing}
+          >
+            <UserMinus size={18} /> Remove from List
           </button>
         </div>
       </div>

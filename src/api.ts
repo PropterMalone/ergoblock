@@ -16,11 +16,13 @@ import {
   GetListBlocksResponse,
   GetListMutesResponse,
   GetListResponse,
+  GetListsResponse,
   ListView,
   FollowRecord,
   ListFollowRecordsResponse,
   ListNotificationsResponse,
   GetActorLikesResponse,
+  OwnedList,
 } from './types.js';
 import { sleep, withRetry, isRetryableError } from './utils.js';
 
@@ -198,7 +200,10 @@ export async function executeApiRequest<T>(
       const response = await fetch(url, fetchOptions);
 
       if (!response.ok) {
-        const error = (await response.json().catch(() => ({}))) as { message?: string; error?: string };
+        const error = (await response.json().catch(() => ({}))) as {
+          message?: string;
+          error?: string;
+        };
         const errorCode = error.error || '';
         const errorMessage = error.message || error.error || `API error: ${response.status}`;
 
@@ -872,6 +877,63 @@ export async function getAllListMembers(
 
   console.log('[ErgoBlock] Fetched all list members for', listUri, ':', allMembers.length);
   return allMembers;
+}
+
+/**
+ * Get lists created by a specific actor
+ * @param actor - DID or handle of the actor
+ * @param cursor - Pagination cursor
+ * @param limit - Number of results per page (max 100)
+ */
+export async function getLists(
+  actor: string,
+  cursor?: string,
+  limit = 100
+): Promise<GetListsResponse> {
+  let endpoint = `app.bsky.graph.getLists?actor=${encodeURIComponent(actor)}&limit=${limit}`;
+  if (cursor) {
+    endpoint += `&cursor=${encodeURIComponent(cursor)}`;
+  }
+
+  // getLists is a public endpoint
+  const response = await apiRequest<GetListsResponse>(endpoint);
+  return response || { lists: [] };
+}
+
+/**
+ * Fetch all lists owned by a user
+ * @param actor - DID of the actor (typically the logged-in user)
+ * @returns Array of OwnedList objects
+ */
+export async function getActorLists(actor: string): Promise<OwnedList[]> {
+  const allLists: OwnedList[] = [];
+  let cursor: string | undefined;
+
+  do {
+    const response = await getLists(actor, cursor);
+    for (const list of response.lists) {
+      // Only include lists where the actor is the creator
+      if (list.creator.did === actor) {
+        allLists.push({
+          uri: list.uri,
+          name: list.name,
+          purpose: list.purpose === 'app.bsky.graph.defs#modlist' ? 'modlist' : 'curatelist',
+          description: list.description,
+          avatar: list.avatar,
+          listItemCount: list.listItemCount || 0,
+          createdAt: new Date(list.indexedAt).getTime(),
+        });
+      }
+    }
+    cursor = response.cursor;
+
+    if (cursor) {
+      await sleep(PAGINATION_DELAY);
+    }
+  } while (cursor);
+
+  console.log('[ErgoBlock] Fetched all owned lists for', actor, ':', allLists.length);
+  return allLists;
 }
 
 /**

@@ -79,13 +79,6 @@ describe('types module', () => {
         savePostContext: true,
         postContextRetentionDays: 60,
         forgivenessPeriodDays: 90,
-        blockRelationships: {
-          enabled: true,
-          displayMode: 'compact',
-          autoSyncInterval: 60,
-          maxCacheSize: 8 * 1024 * 1024,
-          showOnProfiles: true,
-        },
       };
 
       expect(options.defaultDuration).toBe(3600000);

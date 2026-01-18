@@ -52,7 +52,9 @@ export function isValidHandle(handle: string): boolean {
   // Must have at least one dot (domain-like)
   // Max length 253 (DNS limit)
   if (handle.length > 253) return false;
-  return /^[a-zA-Z0-9]([a-zA-Z0-9._-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9._-]*[a-zA-Z0-9])?)+$/.test(handle);
+  return /^[a-zA-Z0-9]([a-zA-Z0-9._-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9._-]*[a-zA-Z0-9])?)+$/.test(
+    handle
+  );
 }
 
 /**
@@ -110,6 +112,9 @@ export interface RetryOptions {
  * Default function to determine if an error is retryable
  * Retries on: network errors, 5xx server errors, 429 rate limits
  * Does NOT retry on: 4xx client errors (except 429), auth errors
+ *
+ * Note: ExpiredToken errors (400) are NOT retried here - they're handled
+ * separately by bgApiRequest which refreshes the token and retries.
  */
 export function isRetryableError(error: Error): boolean {
   const message = error.message.toLowerCase();
@@ -131,12 +136,27 @@ export function isRetryableError(error: Error): boolean {
   }
 
   // Server errors (5xx) - retry
-  if (message.includes('500') || message.includes('502') || message.includes('503') || message.includes('504')) {
+  if (
+    message.includes('500') ||
+    message.includes('502') ||
+    message.includes('503') ||
+    message.includes('504')
+  ) {
     return true;
   }
 
-  // Auth errors (401) - do NOT retry, token needs refresh
+  // Auth errors (401) - do NOT retry here, let caller handle refresh
   if (message.includes('401') || message.includes('auth error')) {
+    return false;
+  }
+
+  // Expired token errors - do NOT retry here, let bgApiRequest handle refresh
+  // These come as 400 errors with "ExpiredToken" or "Token has expired"
+  if (
+    message.includes('expiredtoken') ||
+    message.includes('token has expired') ||
+    message.includes('expired token')
+  ) {
     return false;
   }
 
@@ -156,10 +176,7 @@ export function isRetryableError(error: Error): boolean {
  * @returns Result of the function
  * @throws Last error if all retries fail
  */
-export async function withRetry<T>(
-  fn: () => Promise<T>,
-  options: RetryOptions = {}
-): Promise<T> {
+export async function withRetry<T>(fn: () => Promise<T>, options: RetryOptions = {}): Promise<T> {
   const {
     maxRetries = 3,
     initialDelayMs = 1000,

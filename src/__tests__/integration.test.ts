@@ -245,13 +245,6 @@ describe('Integration Tests', () => {
         savePostContext: true,
         postContextRetentionDays: 90,
         forgivenessPeriodDays: 90,
-        blockRelationships: {
-          enabled: true,
-          displayMode: 'compact',
-          autoSyncInterval: 60,
-          maxCacheSize: 8 * 1024 * 1024,
-          showOnProfiles: true,
-        },
       };
 
       await setOptions(customOptions);

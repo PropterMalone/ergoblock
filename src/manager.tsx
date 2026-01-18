@@ -50,6 +50,8 @@ import {
   AmnestyTab,
   BlocklistAuditTab,
   RepostFiltersTab,
+  MassOpsTab,
+  CopyUserTab,
   ExportSection,
   formatTimeAgo,
 } from './components/manager/index.js';
@@ -406,6 +408,10 @@ function ManagerApp(): JSX.Element {
         return <BlocklistAuditTab onReload={loadData} />;
       case 'repost-filters':
         return <RepostFiltersTab onReload={loadData} />;
+      case 'mass-ops':
+        return <MassOpsTab onReload={loadData} />;
+      case 'copy-user':
+        return <CopyUserTab onReload={loadData} />;
       default:
         return null;
     }

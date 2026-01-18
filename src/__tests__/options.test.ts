@@ -157,7 +157,6 @@ describe('options module', () => {
         savePostContext: true,
         postContextRetentionDays: 90,
         forgivenessPeriodDays: 90,
-        blockRelationships: DEFAULT_OPTIONS.blockRelationships,
       };
       mockLocalStorage['extensionOptions'] = customOptions;
 
@@ -178,7 +177,6 @@ describe('options module', () => {
         savePostContext: false,
         postContextRetentionDays: 30,
         forgivenessPeriodDays: 90,
-        blockRelationships: DEFAULT_OPTIONS.blockRelationships,
       };
 
       await mockChrome.storage.local.set({ extensionOptions: options });

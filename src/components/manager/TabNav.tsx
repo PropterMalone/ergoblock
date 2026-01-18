@@ -13,6 +13,8 @@ const TABS: Tab[] = [
   { id: 'amnesty', label: 'Amnesty' },
   { id: 'blocklist-audit', label: 'Blocklist Audit' },
   { id: 'repost-filters', label: 'Repost Filters' },
+  { id: 'mass-ops', label: 'Mass Ops' },
+  { id: 'copy-user', label: 'Copy User' },
 ];
 
 export function TabNav(): JSX.Element {
