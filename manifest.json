@@ -1,13 +1,14 @@
 {
   "manifest_version": 3,
   "name": "ErgoBlock for Bluesky",
-  "version": "1.13.0",
+  "version": "1.13.1",
   "description": "Temporary block and mute for Bluesky - auto-expires after your chosen duration",
   "permissions": ["storage", "alarms", "notifications", "unlimitedStorage"],
   "host_permissions": [
     "https://*.bsky.app/*",
     "https://*.bsky.social/*",
-    "https://*.bsky.network/*"
+    "https://*.bsky.network/*",
+    "https://*.clearsky.services/*"
   ],
   "background": {
     "service_worker": "background.js",

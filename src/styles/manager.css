@@ -1024,6 +1024,22 @@ input[type="checkbox"] {
   color: var(--text-2);
 }
 
+/* Community blocks (Clearsky) - new section */
+.amnesty-community-blocks {
+  color: #dc2626;
+}
+
+.amnesty-community-blocks.has-blocks {
+  color: #dc2626;
+  font-weight: 600;
+}
+
+.amnesty-total-blockers {
+  color: var(--text-2);
+  font-size: var(--font-size-00);
+  font-weight: normal;
+}
+
 /* Block Relationships Tab Styles */
 .block-rel-search-section {
   margin-top: var(--space-lg);
@@ -1179,6 +1195,16 @@ input[type="checkbox"] {
   font-size: var(--font-size-0);
 }
 
+.amnesty-context-speaker {
+  font-size: var(--font-size-1);
+  color: var(--text-2);
+  margin-bottom: var(--space-xxs);
+}
+
+.amnesty-context-speaker strong {
+  color: var(--link);
+}
+
 .amnesty-context-text {
   font-size: var(--font-size-2);
   color: var(--text-1);
@@ -1205,6 +1231,15 @@ input[type="checkbox"] {
   align-items: center;
   gap: var(--space-xs);
   color: var(--text-2);
+}
+
+.amnesty-rel-loading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  color: var(--text-2);
+  font-size: var(--font-size-sm);
+  padding: var(--space-xs) 0;
 }
 
 .amnesty-interactions-expanded {

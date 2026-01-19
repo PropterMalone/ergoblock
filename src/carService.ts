@@ -27,6 +27,7 @@ import type { GraphOperation } from './types.js';
 
 const BSKY_RELAY = 'https://bsky.network';
 const CAR_DOWNLOAD_TIMEOUT_MS = 120000;
+const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 /**
  * Progress state for CAR downloads
@@ -162,11 +163,12 @@ export async function checkCarCacheStatus(
     };
   }
 
-  const isStale = !latestCommit || cached.rev !== latestCommit.rev;
+  const cacheAge = Date.now() - cached.downloadedAt;
+  const isExpired = cacheAge > CACHE_TTL_MS;
 
   return {
     hasCached: true,
-    isStale,
+    isStale: isExpired, // Only stale if older than 24 hours
     cachedRev: cached.rev,
     latestRev: latestCommit?.rev,
     cachedAt: cached.downloadedAt,
@@ -344,26 +346,39 @@ export async function getCarDataSmart(options: CarFetchOptions): Promise<CarFetc
   const cached = forceRefresh ? null : await getCachedCarData(did);
   const cachedMeta = forceRefresh ? null : await getCarCacheMetadata(did);
 
-  // Step 2: If preferCache and we have cached data, return it without checking freshness
-  // This is useful for historical analysis where staleness doesn't matter
-  if (preferCache && cached && cachedMeta) {
-    console.log(`[CarService] Using cached data for ${did} (preferCache=true, rev: ${cachedMeta.rev.slice(0, 8)}...)`);
-    reportProgress(createProgress(did, 'complete', 'Using cached data'));
-    return {
-      data: cached,
-      wasIncremental: false,
-      wasCached: true,
-      downloadSize: 0,
-    };
+  // Step 2: If we have cached data within TTL (24 hours), use it without checking revision
+  if (cached && cachedMeta) {
+    const cacheAge = Date.now() - cachedMeta.downloadedAt;
+    const isFresh = cacheAge <= CACHE_TTL_MS;
+
+    if (isFresh || preferCache) {
+      const reason = isFresh ? 'within 24h TTL' : 'preferCache=true';
+      console.log(`[CarService] Using cached data for ${did} (${reason}, rev: ${cachedMeta.rev.slice(0, 8)}...)`);
+      reportProgress(createProgress(did, 'complete', 'Using cached data'));
+      return {
+        data: cached,
+        wasIncremental: false,
+        wasCached: true,
+        downloadSize: 0,
+      };
+    }
   }
 
-  // Step 3: Get latest revision
+  // Step 3: Cache is expired, get latest revision
   reportProgress(createProgress(did, 'checking', 'Checking repository version...'));
   const latestCommit = await getLatestCommit(did, pdsUrl);
 
-  // Step 4: If cache matches latest revision, return cached
+  // Step 4: If cache matches latest revision, update timestamp and return cached
   if (cached && cachedMeta && latestCommit && cachedMeta.rev === latestCommit.rev) {
-    console.log(`[CarService] Cache hit for ${did} (rev: ${latestCommit.rev.slice(0, 8)}...)`);
+    console.log(`[CarService] Cache rev matches latest for ${did}, refreshing timestamp`);
+    // Re-save to update downloadedAt timestamp
+    await saveCarData(did, cachedMeta.rev, cachedMeta.sizeBytes, {
+      posts: cached.posts,
+      blocks: cached.blocks,
+      follows: cached.follows,
+      listitems: cached.listitems,
+      lists: cached.lists,
+    });
     reportProgress(createProgress(did, 'complete', 'Using cached data'));
     return {
       data: cached,

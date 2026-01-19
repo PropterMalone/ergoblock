@@ -516,6 +516,24 @@ export async function setPermanentMutes(mutes: PermanentBlocksMutesMap): Promise
   await browser.storage.local.set({ [STORAGE_KEYS.PERMANENT_MUTES]: mutes });
 }
 
+/**
+ * Remove a permanent block from local storage
+ */
+export async function removePermanentBlock(did: string): Promise<void> {
+  const blocks = await getPermanentBlocks();
+  delete blocks[did];
+  await browser.storage.local.set({ [STORAGE_KEYS.PERMANENT_BLOCKS]: blocks });
+}
+
+/**
+ * Remove a permanent mute from local storage
+ */
+export async function removePermanentMute(did: string): Promise<void> {
+  const mutes = await getPermanentMutes();
+  delete mutes[did];
+  await browser.storage.local.set({ [STORAGE_KEYS.PERMANENT_MUTES]: mutes });
+}
+
 // ============================================================================
 // Sync state management
 // ============================================================================

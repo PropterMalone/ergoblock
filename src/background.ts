@@ -74,18 +74,28 @@ import {
 } from './carService.js';
 import { invalidateCarCache } from './carCache.js';
 import { sleep, generateId } from './utils.js';
+import {
+  getFollowsWhoBlock,
+  getFollowsWhoBlockCached,
+  processBlockedByQueue,
+  prewarmBlockedByCache,
+  hasQueuedItems,
+} from './clearskyService.js';
 
 const ALARM_NAME = 'checkExpirations';
 const SYNC_ALARM_NAME = 'syncWithBluesky';
 const FOLLOWS_SYNC_ALARM_NAME = 'followsSync';
+const CLEARSKY_QUEUE_ALARM_NAME = 'clearskyQueue';
 const SYNC_INTERVAL_MINUTES = 60; // Sync every 60 minutes (was 15)
 const FOLLOWS_SYNC_INTERVAL_MINUTES = 120; // Sync follows every 2 hours
+const CLEARSKY_QUEUE_INTERVAL_MINUTES = 2; // Process Clearsky queue every 2 minutes
 const PAGINATION_DELAY = 100; // ms between paginated requests (was 500ms)
 
 // In-memory sync locks (atomic, no race window)
 let syncLockActive = false;
 let blocklistAuditLockActive = false;
 let followsSyncLockActive = false;
+let clearskyQueueLockActive = false;
 
 interface AuthData {
   accessJwt: string;
@@ -1204,7 +1214,7 @@ const followersCache: {
   fetchedAt: number;
 } = { data: null, fetchedAt: 0 };
 
-const FOLLOW_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const FOLLOW_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
 
 /**
  * Fetch all follows for a user (with caching)
@@ -1219,6 +1229,9 @@ async function fetchAllFollows(auth: AuthData): Promise<ProfileView[]> {
   let cursor: string | undefined;
 
   do {
+    // Re-read auth on each iteration to pick up any refreshed tokens
+    const currentAuth = (await getAuthToken()) || auth;
+
     let endpoint = `app.bsky.graph.getFollows?actor=${encodeURIComponent(auth.did)}&limit=100`;
     if (cursor) {
       endpoint += `&cursor=${encodeURIComponent(cursor)}`;
@@ -1228,8 +1241,8 @@ async function fetchAllFollows(auth: AuthData): Promise<ProfileView[]> {
       endpoint,
       'GET',
       null,
-      auth.accessJwt,
-      auth.pdsUrl
+      currentAuth.accessJwt,
+      currentAuth.pdsUrl
     );
 
     if (response?.follows) {
@@ -1264,6 +1277,9 @@ async function fetchAllFollowers(auth: AuthData): Promise<ProfileView[]> {
   let cursor: string | undefined;
 
   do {
+    // Re-read auth on each iteration to pick up any refreshed tokens
+    const currentAuth = (await getAuthToken()) || auth;
+
     let endpoint = `app.bsky.graph.getFollowers?actor=${encodeURIComponent(auth.did)}&limit=100`;
     if (cursor) {
       endpoint += `&cursor=${encodeURIComponent(cursor)}`;
@@ -1273,8 +1289,8 @@ async function fetchAllFollowers(auth: AuthData): Promise<ProfileView[]> {
       endpoint,
       'GET',
       null,
-      auth.accessJwt,
-      auth.pdsUrl
+      currentAuth.accessJwt,
+      currentAuth.pdsUrl
     );
 
     if (response?.followers) {
@@ -1354,6 +1370,50 @@ function setupFollowsSyncAlarm(): void {
   browser.alarms.create(FOLLOWS_SYNC_ALARM_NAME, {
     delayInMinutes: 1, // First sync after 1 minute (give time for auth)
     periodInMinutes: FOLLOWS_SYNC_INTERVAL_MINUTES,
+  });
+}
+
+// ============================================================================
+// Clearsky Queue Processing
+// ============================================================================
+
+/**
+ * Process the Clearsky blocked-by queue
+ * Fetches "who blocks this person" data in the background
+ */
+async function processClearskyQueue(): Promise<void> {
+  if (clearskyQueueLockActive) {
+    console.log('[ErgoBlock BG] Clearsky queue processing already in progress');
+    return;
+  }
+
+  // Check if there's anything to process
+  const hasItems = await hasQueuedItems();
+  if (!hasItems) {
+    return; // Nothing to do, skip silently
+  }
+
+  clearskyQueueLockActive = true;
+  try {
+    console.log('[ErgoBlock BG] Processing Clearsky blocked-by queue...');
+    const processed = await processBlockedByQueue(3); // Process 3 items per run
+    if (processed > 0) {
+      console.log(`[ErgoBlock BG] Processed ${processed} Clearsky queue items`);
+    }
+  } catch (error) {
+    console.error('[ErgoBlock BG] Clearsky queue processing failed:', error);
+  } finally {
+    clearskyQueueLockActive = false;
+  }
+}
+
+/**
+ * Set up Clearsky queue processing alarm
+ */
+function setupClearskyQueueAlarm(): void {
+  browser.alarms.create(CLEARSKY_QUEUE_ALARM_NAME, {
+    delayInMinutes: 2, // First run after 2 minutes
+    periodInMinutes: CLEARSKY_QUEUE_INTERVAL_MINUTES,
   });
 }
 
@@ -1982,6 +2042,9 @@ browser.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === FOLLOWS_SYNC_ALARM_NAME) {
     return syncFollowsOnly();
   }
+  if (alarm.name === CLEARSKY_QUEUE_ALARM_NAME) {
+    return processClearskyQueue();
+  }
 });
 
 // Listen for messages from content script and popup
@@ -1993,6 +2056,7 @@ interface ExtensionMessage {
   listUri?: string;
   rkey?: string;
   targetDid?: string;
+  targetDids?: string[];
   beforeTimestamp?: number;
 }
 
@@ -2195,7 +2259,7 @@ function classifyRawInteractionType(
 
 // Cache for logged-in user's posts (cleared on auth change)
 let myPostsCache: { did: string; posts: RawPostRecord[]; fetchedAt: number } | null = null;
-const MY_POSTS_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+const MY_POSTS_CACHE_TTL = 60 * 60 * 1000; // 1 hour
 
 /**
  * Fetch and cache the logged-in user's posts using CAR file download.
@@ -2694,6 +2758,225 @@ async function handleGetFollowRelationships(
   }
 }
 
+/**
+ * Get follows who follow the candidate (incremental loading)
+ */
+async function handleGetFollowsWhoFollowThem(
+  candidateDid: string
+): Promise<{ success: boolean; users?: RelationshipUser[]; error?: string }> {
+  try {
+    const auth = await getAuthToken();
+    if (!auth?.accessJwt || !auth?.did || !auth?.pdsUrl) {
+      return { success: false, error: 'Not authenticated' };
+    }
+
+    const [myFollows, candidateFollowers] = await Promise.all([
+      fetchAllFollows(auth),
+      fetchCandidateFollowers(candidateDid),
+    ]);
+
+    const users: RelationshipUser[] = [];
+    for (const f of myFollows) {
+      if (candidateFollowers.has(f.did)) {
+        users.push({
+          did: f.did,
+          handle: f.handle,
+          displayName: f.displayName,
+          avatar: f.avatar,
+        });
+      }
+    }
+
+    console.log(`[ErgoBlock BG] Follows who follow them: ${users.length}`);
+    return { success: true, users };
+  } catch (error) {
+    console.error('[ErgoBlock BG] Get follows who follow them failed:', error);
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+  }
+}
+
+/**
+ * Get followers who follow the candidate (incremental loading)
+ */
+async function handleGetFollowersWhoFollowThem(
+  candidateDid: string
+): Promise<{ success: boolean; users?: RelationshipUser[]; error?: string }> {
+  try {
+    const auth = await getAuthToken();
+    if (!auth?.accessJwt || !auth?.did || !auth?.pdsUrl) {
+      return { success: false, error: 'Not authenticated' };
+    }
+
+    const [myFollowers, candidateFollowers] = await Promise.all([
+      fetchAllFollowers(auth),
+      fetchCandidateFollowers(candidateDid),
+    ]);
+
+    const users: RelationshipUser[] = [];
+    for (const f of myFollowers) {
+      if (candidateFollowers.has(f.did)) {
+        users.push({
+          did: f.did,
+          handle: f.handle,
+          displayName: f.displayName,
+          avatar: f.avatar,
+        });
+      }
+    }
+
+    console.log(`[ErgoBlock BG] Followers who follow them: ${users.length}`);
+    return { success: true, users };
+  } catch (error) {
+    console.error('[ErgoBlock BG] Get followers who follow them failed:', error);
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+  }
+}
+
+/**
+ * Get follows who are blocked by the candidate (incremental loading)
+ */
+async function handleGetFollowsTheyBlock(
+  candidateDid: string
+): Promise<{ success: boolean; users?: RelationshipUser[]; error?: string }> {
+  try {
+    const auth = await getAuthToken();
+    if (!auth?.accessJwt || !auth?.did || !auth?.pdsUrl) {
+      return { success: false, error: 'Not authenticated' };
+    }
+
+    const [myFollows, candidateBlocks] = await Promise.all([
+      fetchAllFollows(auth),
+      fetchCandidateBlocks(candidateDid),
+    ]);
+
+    const users: RelationshipUser[] = [];
+    for (const f of myFollows) {
+      if (candidateBlocks.has(f.did)) {
+        users.push({
+          did: f.did,
+          handle: f.handle,
+          displayName: f.displayName,
+          avatar: f.avatar,
+        });
+      }
+    }
+
+    console.log(`[ErgoBlock BG] Follows they block: ${users.length}`);
+    return { success: true, users };
+  } catch (error) {
+    console.error('[ErgoBlock BG] Get follows they block failed:', error);
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+  }
+}
+
+// ============================================================================
+// Clearsky "Follows Who Block" Handlers
+// ============================================================================
+
+/**
+ * Get follows who block the candidate (via Clearsky API)
+ * This is the reverse of "follows they block" - shows community consensus
+ */
+async function handleGetFollowsWhoBlockThem(
+  candidateDid: string
+): Promise<{ success: boolean; count?: number; users?: RelationshipUser[]; totalBlockers?: number; cached?: boolean; error?: string }> {
+  try {
+    const auth = await getAuthToken();
+    if (!auth?.accessJwt || !auth?.did || !auth?.pdsUrl) {
+      return { success: false, error: 'Not authenticated' };
+    }
+
+    // Get my follows as a Set
+    const myFollows = await fetchAllFollows(auth);
+    const myFollowDids = new Set(myFollows.map((f) => f.did));
+
+    // Get follows who block this person from Clearsky
+    const result = await getFollowsWhoBlock(candidateDid, myFollowDids);
+
+    // Convert DIDs to user info
+    const users: RelationshipUser[] = [];
+    for (const did of result.dids) {
+      const follow = myFollows.find((f) => f.did === did);
+      if (follow) {
+        users.push({
+          did: follow.did,
+          handle: follow.handle,
+          displayName: follow.displayName,
+          avatar: follow.avatar,
+        });
+      }
+    }
+
+    console.log(`[ErgoBlock BG] Follows who block them: ${result.count} (total blockers: ${result.totalBlockers}, cached: ${result.cached})`);
+    return {
+      success: true,
+      count: result.count,
+      users,
+      totalBlockers: result.totalBlockers,
+      cached: result.cached,
+    };
+  } catch (error) {
+    console.error('[ErgoBlock BG] Get follows who block them failed:', error);
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+  }
+}
+
+/**
+ * Get cached follows who block count (without triggering a fetch)
+ */
+async function handleGetFollowsWhoBlockThemCached(
+  candidateDid: string
+): Promise<{ success: boolean; count?: number; cached: boolean; error?: string }> {
+  try {
+    const auth = await getAuthToken();
+    if (!auth?.accessJwt || !auth?.did) {
+      return { success: false, cached: false, error: 'Not authenticated' };
+    }
+
+    const myFollows = await fetchAllFollows(auth);
+    const myFollowDids = new Set(myFollows.map((f) => f.did));
+
+    const result = await getFollowsWhoBlockCached(candidateDid, myFollowDids);
+    if (!result) {
+      return { success: true, cached: false };
+    }
+
+    return {
+      success: true,
+      count: result.count,
+      cached: true,
+    };
+  } catch (error) {
+    console.error('[ErgoBlock BG] Get cached follows who block failed:', error);
+    return { success: false, cached: false, error: error instanceof Error ? error.message : 'Unknown error' };
+  }
+}
+
+/**
+ * Prewarm Clearsky cache for amnesty candidates
+ */
+async function handlePrewarmClearskyCache(
+  targetDids: string[]
+): Promise<{ success: boolean; queued?: number; alreadyCached?: number; error?: string }> {
+  try {
+    const result = await prewarmBlockedByCache(targetDids);
+    console.log(`[ErgoBlock BG] Prewarm Clearsky: ${result.queued} queued, ${result.alreadyCached} cached`);
+
+    // Start processing immediately instead of waiting for the 2-minute alarm
+    if (result.queued > 0) {
+      // Process in background (don't await) so we return quickly
+      processBlockedByQueue(3).catch((err) => {
+        console.error('[ErgoBlock BG] Immediate queue processing failed:', err);
+      });
+    }
+
+    return { success: true, ...result };
+  } catch (error) {
+    console.error('[ErgoBlock BG] Prewarm Clearsky cache failed:', error);
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+  }
+}
+
 // ============================================================================
 // Mass Operations Detection Handlers
 // ============================================================================
@@ -3144,6 +3427,47 @@ const messageHandler = async (rawMessage: unknown): Promise<MessageResponse | un
     return await handleGetFollowRelationships(message.did as string);
   }
 
+  // Incremental social connection loading
+  if (message.type === 'GET_FOLLOWS_WHO_FOLLOW_THEM' && message.did) {
+    return await handleGetFollowsWhoFollowThem(message.did as string);
+  }
+
+  if (message.type === 'GET_FOLLOWERS_WHO_FOLLOW_THEM' && message.did) {
+    return await handleGetFollowersWhoFollowThem(message.did as string);
+  }
+
+  if (message.type === 'GET_FOLLOWS_THEY_BLOCK' && message.did) {
+    return await handleGetFollowsTheyBlock(message.did as string);
+  }
+
+  // Clearsky "follows who block them" handlers
+  if (message.type === 'GET_FOLLOWS_WHO_BLOCK_THEM' && message.did) {
+    return await handleGetFollowsWhoBlockThem(message.did as string);
+  }
+
+  if (message.type === 'GET_FOLLOWS_WHO_BLOCK_THEM_CACHED' && message.did) {
+    return await handleGetFollowsWhoBlockThemCached(message.did as string);
+  }
+
+  if (message.type === 'PREWARM_CLEARSKY_CACHE' && message.targetDids) {
+    return await handlePrewarmClearskyCache(message.targetDids as string[]);
+  }
+
+  // Lookahead prefetch for next amnesty candidates (high priority, immediate processing)
+  if (message.type === 'PREFETCH_CLEARSKY_LOOKAHEAD' && message.targetDids) {
+    const targetDids = message.targetDids as string[];
+    // Queue with high priority (1) so these process before regular prewarm items
+    const result = await prewarmBlockedByCache(targetDids, true);
+    console.log(`[ErgoBlock BG] Lookahead prefetch: ${result.queued} queued, ${result.alreadyCached} cached`);
+    // Process immediately in background
+    if (result.queued > 0) {
+      processBlockedByQueue(result.queued).catch((err) => {
+        console.error('[ErgoBlock BG] Lookahead processing failed:', err);
+      });
+    }
+    return { success: true, ...result };
+  }
+
   // Mass Operations Detection handlers
   if (message.type === 'SCAN_MASS_OPS' && message.settings) {
     const forceRefresh = message.forceRefresh === true;
@@ -3264,6 +3588,7 @@ async function clearStaleSyncState(): Promise<void> {
   syncLockActive = false;
   blocklistAuditLockActive = false;
   followsSyncLockActive = false;
+  clearskyQueueLockActive = false;
 
   // Clear main sync state
   const state = await getSyncState();
@@ -3320,6 +3645,7 @@ browser.runtime.onInstalled.addListener(async () => {
   setupAlarm();
   setupSyncAlarm();
   setupFollowsSyncAlarm();
+  setupClearskyQueueAlarm();
   browser.action.setBadgeText({ text: '' });
 
   // Sync follows immediately after a short delay (for repost filter feature)
@@ -3334,6 +3660,7 @@ browser.runtime.onStartup.addListener(async () => {
   setupAlarm();
   setupSyncAlarm();
   setupFollowsSyncAlarm();
+  setupClearskyQueueAlarm();
   browser.action.setBadgeText({ text: '' });
 
   // Sync follows immediately after a short delay (for repost filter feature)
@@ -3347,6 +3674,7 @@ clearBloatedStorageData();
 setupAlarm();
 setupSyncAlarm();
 setupFollowsSyncAlarm();
+setupClearskyQueueAlarm();
 
 // Sync follows on script load after a short delay (for repost filter feature)
 setTimeout(() => syncFollowsOnly(), 5000);

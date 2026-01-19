@@ -1,72 +1,71 @@
-# Chrome Web Store Listing Content
+# Store Listing Content
 
 ## Short Description (132 characters max)
-Temporary block and mute for Bluesky - auto-expires after your chosen duration. Take a break without permanent consequences.
+
+Smarter moderation for Bluesky - temporary blocks/mutes that auto-expire, plus tools to review and manage your block list.
 
 ## Detailed Description
 
-Ever wish you could take a break from someone on Bluesky without making it permanent? ErgoBlock adds temporary block and mute options that automatically expire after your chosen duration.
+Take control of your Bluesky moderation with ErgoBlock. Set temporary blocks and mutes that automatically expire, review old decisions with Amnesty mode, and clean up your block list with powerful management tools.
 
-**HOW IT WORKS**
+**TEMPORARY BLOCKS & MUTES**
 
-When you temp block or mute someone:
-1. ErgoBlock creates a normal block/mute via Bluesky's API
-2. The expiration time is saved securely in your browser
-3. When time's up, the block/mute is automatically removed
+Block or mute someone temporarily - when time's up, it's automatically removed. No more forgetting to unblock people.
 
-No more forgetting to unblock people. No more permanent actions when you just need some space.
+• Choose from 1 hour to 1 week durations
+• Works from post menus and profile pages
+• Desktop notifications when blocks expire
+• Syncs across devices via browser sync
 
-**FEATURES**
+**AMNESTY MODE - Review Past Decisions**
 
-• Temp Block - Block a user temporarily, auto-unblock when time expires
-• Temp Mute - Mute a user temporarily, auto-unmute when time expires
-• Flexible durations - 1 hour, 6 hours, 12 hours, 24 hours, 3 days, or 1 week
-• Works everywhere - Available in profile menus and post dropdown menus
-• Syncs across devices - Your temp blocks/mutes sync via Chrome
-• Status popup - See all active temp blocks/mutes and time remaining
-• Desktop notifications - Get notified when blocks/mutes expire (optional)
+Revisit your blocks and mutes one at a time:
+• See why you blocked them (interaction context)
+• View mutual connections and relationships
+• Keep, remove, or skip with one click
+• Track your review progress over time
 
-**DURATION OPTIONS**
+**MASS OPERATIONS - Clean Up Block Lists**
 
-• 1 hour - Quick cooldown
-• 6 hours - Take most of the day off
-• 12 hours - Half-day break
-• 24 hours - Full day timeout
-• 3 days - Weekend break
-• 1 week - Extended break
+Scan your account for mass-block patterns:
+• Find blocks clustered by shared follows
+• Bulk unblock/unmute with one click
+• Great for cleaning up old mass-block actions
+
+**COPY USER - Bootstrap Your Moderation**
+
+Look up any Bluesky user and selectively copy their blocks or follows to your account. Useful for getting started with moderation based on people you trust.
+
+**LIST AUDIT - Review Moderation Lists**
+
+Review members of your moderation lists using the same Amnesty workflow. Keep your lists curated and up to date.
+
+**MANAGER DASHBOARD**
+
+Full-featured management interface:
+• View all blocks, mutes, and managed lists
+• Search and filter by handle or context
+• See interaction history and relationship info
+• Expandable rows for detailed context
 
 **PRIVACY FOCUSED**
 
-• All data stays in your browser - nothing sent to external servers
+• All data stays in your browser
+• No external servers, no tracking, no ads
 • Open source - review the code yourself
 • Only communicates with Bluesky's official API
-• No analytics, no tracking, no ads
 
 **HOW TO USE**
 
 1. Go to bsky.app and log in
-2. Click the ••• menu on any post or profile
-3. Select "Temp Mute..." or "Temp Block..."
-4. Choose your duration
-5. That's it! The action will auto-expire
+2. Click ••• on any post or profile
+3. Select "Temp Block..." or "Temp Mute..."
+4. Choose duration - it auto-expires!
+5. Click extension icon → "Manage" for advanced features
 
-**MANAGE ACTIVE BLOCKS/MUTES**
+**SUPPORT**
 
-Click the extension icon to see:
-• All active temporary blocks with countdown timers
-• All active temporary mutes with countdown timers
-• Manual "Check Expirations Now" button
-
-**PERFECT FOR**
-
-• Taking a break during heated discussions
-• Avoiding spoilers temporarily
-• Giving yourself space during events
-• Any time you need a temporary pause
-
-**SUPPORT & FEEDBACK**
-
-ErgoBlock is free and open source. Report issues or contribute at:
+Free and open source. Report issues or contribute:
 https://github.com/PropterMalone/ergoblock
 
 ---
@@ -77,10 +76,31 @@ Social & Communication
 ## Language
 English
 
-## Tags/Keywords (for search)
-- bluesky
-- block
-- mute
-- temporary
-- social media
-- timeout
+## Tags/Keywords
+bluesky, block, mute, temporary, moderation, social media, timeout, blocklist, amnesty
+
+---
+
+# Firefox Add-ons Listing
+
+## Summary (250 characters max)
+Smarter Bluesky moderation: temporary blocks/mutes that auto-expire, Amnesty mode to review past decisions, Mass Ops to clean up block lists, and tools to copy blocks from trusted users.
+
+## Description
+(Same as Chrome detailed description above)
+
+## Categories
+- Social & Communication
+- Privacy & Security
+
+## Tags
+bluesky, block, mute, temporary, moderation
+
+## Support Email
+(Your email for AMO listing)
+
+## Support Site
+https://github.com/PropterMalone/ergoblock
+
+## License
+MIT

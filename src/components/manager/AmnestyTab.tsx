@@ -12,6 +12,7 @@ import {
   Users,
   List,
   UserMinus,
+  AlertTriangle,
 } from 'lucide-preact';
 import type {
   ManagedEntry,
@@ -70,13 +71,6 @@ interface RelationshipUser {
   avatar?: string;
 }
 
-interface FollowRelationshipsResponse {
-  success: boolean;
-  followsWhoFollowThem?: RelationshipUser[];
-  followersWhoFollowThem?: RelationshipUser[];
-  followsTheyBlock?: RelationshipUser[];
-}
-
 interface AmnestyTabProps {
   onUnblock: (did: string) => Promise<void>;
   onUnmute: (did: string) => Promise<void>;
@@ -122,6 +116,19 @@ export function AmnestyTab({
     currentPeriod,
     amnestyReviewedDids.value
   );
+
+  // Prewarm Clearsky cache for amnesty candidates in the background
+  useEffect(() => {
+    if (candidates.length > 0) {
+      const candidateDids = candidates.map((c) => c.did);
+      browser.runtime.sendMessage({
+        type: 'PREWARM_CLEARSKY_CACHE',
+        targetDids: candidateDids,
+      }).catch(() => {
+        // Ignore errors - prewarming is best-effort
+      });
+    }
+  }, [candidates.length]); // Only trigger when candidate count changes
 
   const handlePeriodChange = async (e: Event) => {
     const newPeriod = parseInt((e.target as HTMLSelectElement).value, 10);
@@ -371,16 +378,30 @@ function AmnestyCard({
 
   const postUrl = ctx?.postUri ? postUriToUrl(ctx.postUri) : '';
 
-  // Follow relationship state
-  const [followRelations, setFollowRelations] = useState<{
-    followsWhoFollowThem: RelationshipUser[];
-    followersWhoFollowThem: RelationshipUser[];
-    followsTheyBlock: RelationshipUser[];
+  // Follow relationship state - each section loads independently
+  const [followsWhoFollow, setFollowsWhoFollow] = useState<{
+    users: RelationshipUser[];
     loading: boolean;
-  }>({ followsWhoFollowThem: [], followersWhoFollowThem: [], followsTheyBlock: [], loading: true });
+  }>({ users: [], loading: true });
+  const [followersWhoFollow, setFollowersWhoFollow] = useState<{
+    users: RelationshipUser[];
+    loading: boolean;
+  }>({ users: [], loading: true });
+  const [followsTheyBlock, setFollowsTheyBlock] = useState<{
+    users: RelationshipUser[];
+    loading: boolean;
+  }>({ users: [], loading: true });
+  const [followsWhoBlockThem, setFollowsWhoBlockThem] = useState<{
+    users: RelationshipUser[];
+    count: number;
+    totalBlockers: number;
+    loading: boolean;
+  }>({ users: [], count: 0, totalBlockers: 0, loading: true });
+
   const [followsFollowExpanded, setFollowsFollowExpanded] = useState(false);
   const [followersFollowExpanded, setFollowersFollowExpanded] = useState(false);
   const [followsBlockedExpanded, setFollowsBlockedExpanded] = useState(false);
+  const [followsWhoBlockExpanded, setFollowsWhoBlockExpanded] = useState(false);
 
   // Profile stats state
   const [profileStats, setProfileStats] = useState<{
@@ -390,33 +411,101 @@ function AmnestyCard({
     loading: boolean;
   }>({ followersCount: 0, followsCount: 0, postsCount: 0, loading: true });
 
-  // Fetch follow relationships for this candidate
+  // Fetch each social connection type independently for faster display
   useEffect(() => {
     let cancelled = false;
-    const fetchRelations = async () => {
+
+    // Fetch follows who follow them
+    const fetchFollowsWhoFollow = async () => {
       try {
         const response = (await browser.runtime.sendMessage({
-          type: 'GET_FOLLOW_RELATIONSHIPS',
+          type: 'GET_FOLLOWS_WHO_FOLLOW_THEM',
           did: candidate.did,
-        })) as FollowRelationshipsResponse;
+        })) as { success: boolean; users?: RelationshipUser[] };
 
         if (!cancelled && response.success) {
-          setFollowRelations({
-            followsWhoFollowThem: response.followsWhoFollowThem || [],
-            followersWhoFollowThem: response.followersWhoFollowThem || [],
-            followsTheyBlock: response.followsTheyBlock || [],
-            loading: false,
-          });
+          setFollowsWhoFollow({ users: response.users || [], loading: false });
         } else if (!cancelled) {
-          setFollowRelations((prev) => ({ ...prev, loading: false }));
+          setFollowsWhoFollow((prev) => ({ ...prev, loading: false }));
         }
       } catch {
         if (!cancelled) {
-          setFollowRelations((prev) => ({ ...prev, loading: false }));
+          setFollowsWhoFollow((prev) => ({ ...prev, loading: false }));
         }
       }
     };
-    fetchRelations();
+
+    // Fetch followers who follow them
+    const fetchFollowersWhoFollow = async () => {
+      try {
+        const response = (await browser.runtime.sendMessage({
+          type: 'GET_FOLLOWERS_WHO_FOLLOW_THEM',
+          did: candidate.did,
+        })) as { success: boolean; users?: RelationshipUser[] };
+
+        if (!cancelled && response.success) {
+          setFollowersWhoFollow({ users: response.users || [], loading: false });
+        } else if (!cancelled) {
+          setFollowersWhoFollow((prev) => ({ ...prev, loading: false }));
+        }
+      } catch {
+        if (!cancelled) {
+          setFollowersWhoFollow((prev) => ({ ...prev, loading: false }));
+        }
+      }
+    };
+
+    // Fetch follows they block
+    const fetchFollowsTheyBlock = async () => {
+      try {
+        const response = (await browser.runtime.sendMessage({
+          type: 'GET_FOLLOWS_THEY_BLOCK',
+          did: candidate.did,
+        })) as { success: boolean; users?: RelationshipUser[] };
+
+        if (!cancelled && response.success) {
+          setFollowsTheyBlock({ users: response.users || [], loading: false });
+        } else if (!cancelled) {
+          setFollowsTheyBlock((prev) => ({ ...prev, loading: false }));
+        }
+      } catch {
+        if (!cancelled) {
+          setFollowsTheyBlock((prev) => ({ ...prev, loading: false }));
+        }
+      }
+    };
+
+    // Fetch follows who block them (via Clearsky)
+    const fetchFollowsWhoBlockThem = async () => {
+      try {
+        const response = (await browser.runtime.sendMessage({
+          type: 'GET_FOLLOWS_WHO_BLOCK_THEM',
+          did: candidate.did,
+        })) as { success: boolean; users?: RelationshipUser[]; count?: number; totalBlockers?: number };
+
+        if (!cancelled && response.success) {
+          setFollowsWhoBlockThem({
+            users: response.users || [],
+            count: response.count || 0,
+            totalBlockers: response.totalBlockers || 0,
+            loading: false,
+          });
+        } else if (!cancelled) {
+          setFollowsWhoBlockThem((prev) => ({ ...prev, loading: false }));
+        }
+      } catch {
+        if (!cancelled) {
+          setFollowsWhoBlockThem((prev) => ({ ...prev, loading: false }));
+        }
+      }
+    };
+
+    // Fire all four requests in parallel
+    fetchFollowsWhoFollow();
+    fetchFollowersWhoFollow();
+    fetchFollowsTheyBlock();
+    fetchFollowsWhoBlockThem();
+
     return () => {
       cancelled = true;
     };
@@ -458,6 +547,26 @@ function AmnestyCard({
       cancelled = true;
     };
   }, [candidate.did]);
+
+  // Lookahead prefetch: when showing a candidate, prefetch Clearsky data for next few candidates
+  useEffect(() => {
+    if (candidates.length <= 1) return;
+
+    // Get up to 3 other candidates (excluding current one) for lookahead
+    const otherCandidates = candidates.filter((c) => c.did !== candidate.did);
+    const lookaheadDids = otherCandidates.slice(0, 3).map((c) => c.did);
+
+    if (lookaheadDids.length > 0) {
+      browser.runtime
+        .sendMessage({
+          type: 'PREFETCH_CLEARSKY_LOOKAHEAD',
+          targetDids: lookaheadDids,
+        })
+        .catch(() => {
+          // Ignore errors - prefetching is best-effort
+        });
+    }
+  }, [candidate.did, candidates.length]);
 
   return (
     <div class="amnesty-container">
@@ -514,42 +623,42 @@ function AmnestyCard({
           </div>
         )}
 
-        {/* Follow Relationships Section */}
+        {/* Follow Relationships Section - each loads independently */}
         <div class="amnesty-block-relations">
-          {followRelations.loading ? (
-            <div class="amnesty-searching">
-              <Loader2 size={16} class="spinner" />
-              Checking social connections...
-            </div>
-          ) : (
-            <>
-              <div class="amnesty-block-rel-section">
+          {/* Follows who follow them */}
+          <div class="amnesty-block-rel-section">
+            {followsWhoFollow.loading ? (
+              <div class="amnesty-rel-loading">
+                <Loader2 size={14} class="spinner" />
+                <span>Checking your follows...</span>
+              </div>
+            ) : (
+              <>
                 <button
                   type="button"
                   class="amnesty-block-rel-header amnesty-follows-follow"
                   onClick={() =>
-                    followRelations.followsWhoFollowThem.length > 0 &&
+                    followsWhoFollow.users.length > 0 &&
                     setFollowsFollowExpanded(!followsFollowExpanded)
                   }
-                  disabled={followRelations.followsWhoFollowThem.length === 0}
+                  disabled={followsWhoFollow.users.length === 0}
                 >
                   <Users size={14} />
                   <span>
-                    <strong>{followRelations.followsWhoFollowThem.length}</strong>{' '}
-                    {followRelations.followsWhoFollowThem.length === 1 ? 'person' : 'people'} you
-                    follow{' '}
-                    {followRelations.followsWhoFollowThem.length === 1 ? 'follows' : 'follow'} them
+                    <strong>{followsWhoFollow.users.length}</strong>{' '}
+                    {followsWhoFollow.users.length === 1 ? 'person' : 'people'} you follow{' '}
+                    {followsWhoFollow.users.length === 1 ? 'follows' : 'follow'} them
                   </span>
-                  {followRelations.followsWhoFollowThem.length > 0 &&
+                  {followsWhoFollow.users.length > 0 &&
                     (followsFollowExpanded ? (
                       <ChevronDown size={14} />
                     ) : (
                       <ChevronRight size={14} />
                     ))}
                 </button>
-                {followsFollowExpanded && followRelations.followsWhoFollowThem.length > 0 && (
+                {followsFollowExpanded && followsWhoFollow.users.length > 0 && (
                   <div class="amnesty-block-rel-list">
-                    {followRelations.followsWhoFollowThem.map((u) => (
+                    {followsWhoFollow.users.map((u) => (
                       <a
                         key={u.handle}
                         href={`https://bsky.app/profile/${u.handle}`}
@@ -565,34 +674,43 @@ function AmnestyCard({
                     ))}
                   </div>
                 )}
+              </>
+            )}
+          </div>
+
+          {/* Followers who follow them */}
+          <div class="amnesty-block-rel-section">
+            {followersWhoFollow.loading ? (
+              <div class="amnesty-rel-loading">
+                <Loader2 size={14} class="spinner" />
+                <span>Checking your followers...</span>
               </div>
-              <div class="amnesty-block-rel-section">
+            ) : (
+              <>
                 <button
                   type="button"
                   class="amnesty-block-rel-header amnesty-followers-follow"
                   onClick={() =>
-                    followRelations.followersWhoFollowThem.length > 0 &&
+                    followersWhoFollow.users.length > 0 &&
                     setFollowersFollowExpanded(!followersFollowExpanded)
                   }
-                  disabled={followRelations.followersWhoFollowThem.length === 0}
+                  disabled={followersWhoFollow.users.length === 0}
                 >
                   <Users size={14} />
                   <span>
-                    <strong>{followRelations.followersWhoFollowThem.length}</strong> of your
-                    followers{' '}
-                    {followRelations.followersWhoFollowThem.length === 1 ? 'follows' : 'follow'}{' '}
-                    them
+                    <strong>{followersWhoFollow.users.length}</strong> of your followers{' '}
+                    {followersWhoFollow.users.length === 1 ? 'follows' : 'follow'} them
                   </span>
-                  {followRelations.followersWhoFollowThem.length > 0 &&
+                  {followersWhoFollow.users.length > 0 &&
                     (followersFollowExpanded ? (
                       <ChevronDown size={14} />
                     ) : (
                       <ChevronRight size={14} />
                     ))}
                 </button>
-                {followersFollowExpanded && followRelations.followersWhoFollowThem.length > 0 && (
+                {followersFollowExpanded && followersWhoFollow.users.length > 0 && (
                   <div class="amnesty-block-rel-list">
-                    {followRelations.followersWhoFollowThem.map((u) => (
+                    {followersWhoFollow.users.map((u) => (
                       <a
                         key={u.handle}
                         href={`https://bsky.app/profile/${u.handle}`}
@@ -608,32 +726,43 @@ function AmnestyCard({
                     ))}
                   </div>
                 )}
+              </>
+            )}
+          </div>
+
+          {/* Follows they block */}
+          <div class="amnesty-block-rel-section">
+            {followsTheyBlock.loading ? (
+              <div class="amnesty-rel-loading">
+                <Loader2 size={14} class="spinner" />
+                <span>Checking who they block...</span>
               </div>
-              <div class="amnesty-block-rel-section">
+            ) : (
+              <>
                 <button
                   type="button"
                   class="amnesty-block-rel-header amnesty-blocking"
                   onClick={() =>
-                    followRelations.followsTheyBlock.length > 0 &&
+                    followsTheyBlock.users.length > 0 &&
                     setFollowsBlockedExpanded(!followsBlockedExpanded)
                   }
-                  disabled={followRelations.followsTheyBlock.length === 0}
+                  disabled={followsTheyBlock.users.length === 0}
                 >
                   <Shield size={14} />
                   <span>
-                    They block <strong>{followRelations.followsTheyBlock.length}</strong>{' '}
-                    {followRelations.followsTheyBlock.length === 1 ? 'person' : 'people'} you follow
+                    They block <strong>{followsTheyBlock.users.length}</strong>{' '}
+                    {followsTheyBlock.users.length === 1 ? 'person' : 'people'} you follow
                   </span>
-                  {followRelations.followsTheyBlock.length > 0 &&
+                  {followsTheyBlock.users.length > 0 &&
                     (followsBlockedExpanded ? (
                       <ChevronDown size={14} />
                     ) : (
                       <ChevronRight size={14} />
                     ))}
                 </button>
-                {followsBlockedExpanded && followRelations.followsTheyBlock.length > 0 && (
+                {followsBlockedExpanded && followsTheyBlock.users.length > 0 && (
                   <div class="amnesty-block-rel-list">
-                    {followRelations.followsTheyBlock.map((u) => (
+                    {followsTheyBlock.users.map((u) => (
                       <a
                         key={u.handle}
                         href={`https://bsky.app/profile/${u.handle}`}
@@ -649,9 +778,67 @@ function AmnestyCard({
                     ))}
                   </div>
                 )}
+              </>
+            )}
+          </div>
+
+          {/* Follows who block them (community consensus via Clearsky) */}
+          <div class="amnesty-block-rel-section">
+            {followsWhoBlockThem.loading ? (
+              <div class="amnesty-rel-loading">
+                <Loader2 size={14} class="spinner" />
+                <span>Checking community blocks...</span>
               </div>
-            </>
-          )}
+            ) : (
+              <>
+                <button
+                  type="button"
+                  class={`amnesty-block-rel-header amnesty-community-blocks ${followsWhoBlockThem.count > 0 ? 'has-blocks' : ''}`}
+                  onClick={() =>
+                    followsWhoBlockThem.users.length > 0 &&
+                    setFollowsWhoBlockExpanded(!followsWhoBlockExpanded)
+                  }
+                  disabled={followsWhoBlockThem.users.length === 0}
+                >
+                  <AlertTriangle size={14} />
+                  <span>
+                    <strong>{followsWhoBlockThem.count}</strong>{' '}
+                    {followsWhoBlockThem.count === 1 ? 'person' : 'people'} you follow{' '}
+                    {followsWhoBlockThem.count === 1 ? 'blocks' : 'block'} them
+                    {followsWhoBlockThem.totalBlockers > 0 && (
+                      <span class="amnesty-total-blockers">
+                        {' '}({followsWhoBlockThem.totalBlockers.toLocaleString()} total)
+                      </span>
+                    )}
+                  </span>
+                  {followsWhoBlockThem.users.length > 0 &&
+                    (followsWhoBlockExpanded ? (
+                      <ChevronDown size={14} />
+                    ) : (
+                      <ChevronRight size={14} />
+                    ))}
+                </button>
+                {followsWhoBlockExpanded && followsWhoBlockThem.users.length > 0 && (
+                  <div class="amnesty-block-rel-list">
+                    {followsWhoBlockThem.users.map((u) => (
+                      <a
+                        key={u.handle}
+                        href={`https://bsky.app/profile/${u.handle}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        class="amnesty-block-rel-user"
+                      >
+                        @{u.handle}
+                        {u.displayName && (
+                          <span class="amnesty-block-rel-name"> ({u.displayName})</span>
+                        )}
+                      </a>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
         </div>
 
         <div class="amnesty-card-context">
@@ -673,6 +860,19 @@ function AmnestyCard({
             </div>
           ) : ctx ? (
             <>
+              <div class="amnesty-context-speaker">
+                {ctx.postAuthorDid === candidate.did ? (
+                  <strong>@{candidate.handle}</strong>
+                ) : ctx.engagementType ? (
+                  <>
+                    <strong>@{candidate.handle}</strong>
+                    {' '}{ctx.engagementType === 'like' ? 'liked' : 'reposted'} your post:
+                  </>
+                ) : (
+                  <strong>@{ctx.postAuthorHandle || 'unknown'}</strong>
+                )}
+                {ctx.postAuthorDid === candidate.did && ':'}
+              </div>
               <div class="amnesty-context-text">{ctx.postText || 'No post text available'}</div>
               {postUrl && (
                 <div class="amnesty-context-link">

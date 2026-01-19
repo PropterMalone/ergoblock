@@ -18,6 +18,8 @@ import {
   getBlocklistConflicts,
   removeTempBlock,
   removeTempMute,
+  removePermanentBlock,
+  removePermanentMute,
 } from './storage.js';
 import {
   blocks,
@@ -175,8 +177,16 @@ function ManagerApp(): JSX.Element {
         alert(`Failed to unblock: ${response.error}`);
         return;
       }
-      // Only remove from storage after API success
-      await removeTempBlock(did);
+      // Cancel any pending reblock timer (from "peek" feature)
+      const pendingTimer = tempUnblockTimers.value.get(did);
+      if (pendingTimer) {
+        window.clearTimeout(pendingTimer.timerId);
+        const newTimers = new Map(tempUnblockTimers.value);
+        newTimers.delete(did);
+        tempUnblockTimers.value = newTimers;
+      }
+      // Remove from both temp and permanent storage after API success
+      await Promise.all([removeTempBlock(did), removePermanentBlock(did)]);
       await loadData();
     } catch (error) {
       console.error('[Manager] Unblock error:', error);
@@ -195,8 +205,8 @@ function ManagerApp(): JSX.Element {
         alert(`Failed to unmute: ${response.error}`);
         return;
       }
-      // Only remove from storage after API success
-      await removeTempMute(did);
+      // Remove from both temp and permanent storage after API success
+      await Promise.all([removeTempMute(did), removePermanentMute(did)]);
       await loadData();
     } catch (error) {
       console.error('[Manager] Unmute error:', error);
