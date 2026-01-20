@@ -238,7 +238,16 @@ export async function executeApiRequest<T>(
           errorCode === 'BlockedByActor' ||
           errorMessage.includes('blocked');
 
-        if (!isBlockError) {
+        // Expired token errors are expected on cold boot before Bluesky refreshes the session
+        const isExpiredToken =
+          errorCode === 'ExpiredToken' ||
+          errorMessage.toLowerCase().includes('token has expired') ||
+          errorMessage.toLowerCase().includes('expired token');
+
+        if (isExpiredToken) {
+          // Log at debug level - this is expected behavior on browser startup
+          logger.debug('Session token expired, waiting for Bluesky to refresh...');
+        } else if (!isBlockError) {
           logger.error('API error:', response.status, JSON.stringify(error));
         }
 
