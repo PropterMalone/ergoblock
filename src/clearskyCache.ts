@@ -152,6 +152,28 @@ export async function getAllBlockedByCache(): Promise<BlockedByData[]> {
   }
 }
 
+/**
+ * Clear all cached blocked-by entries
+ * Used for cache invalidation when the data source changes
+ */
+export async function clearAllBlockedByCache(): Promise<void> {
+  try {
+    const db = await openDatabase();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORES.BLOCKED_BY, 'readwrite');
+      const request = tx.objectStore(STORES.BLOCKED_BY).clear();
+      request.onsuccess = () => {
+        console.log('[ClearskyCache] Cleared all blocked-by cache');
+        resolve();
+      };
+      request.onerror = () => reject(request.error);
+    });
+  } catch (error) {
+    console.error('[ClearskyCache] Failed to clear blocked-by cache:', error);
+    throw error;
+  }
+}
+
 // ============================================================================
 // Fetch Queue Operations
 // ============================================================================

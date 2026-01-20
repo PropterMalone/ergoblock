@@ -39,6 +39,8 @@ import {
   updatePendingRollback,
   removePendingRollback,
   cleanupOldRollbacks,
+  getAmnestyReviews,
+  removePermanentBlock,
 } from './storage.js';
 import {
   ListRecordsResponse,
@@ -101,6 +103,7 @@ import {
   prewarmBlockedByCache,
   hasQueuedItems,
 } from './clearskyService.js';
+import { clearClearskyCache } from './clearskyCache.js';
 
 const ALARM_NAME = 'checkExpirations';
 const SYNC_ALARM_NAME = 'syncWithBluesky';
@@ -294,25 +297,34 @@ export async function unblockUser(
     return true;
   }
 
-  // Fallback: find the block record (legacy method, O(N))
+  // Fallback: find the block record by paginating through all blocks (legacy method, O(N))
   console.log('[ErgoBlock BG] Unblocking using list scan (legacy)...');
-  const blocks = await bgApiRequest<ListRecordsResponse>(
-    `com.atproto.repo.listRecords?repo=${ownerDid}&collection=app.bsky.graph.block&limit=100`,
-    'GET',
-    null,
-    token,
-    pdsUrl
-  );
+  let cursor: string | undefined;
+  let foundRkey: string | undefined;
 
-  const blockRecord = blocks?.records?.find((r) => r.value.subject === did);
-  if (!blockRecord) {
-    console.log('[ErgoBlock BG] No block record found for', did);
-    return false;
+  while (!foundRkey) {
+    const url = cursor
+      ? `com.atproto.repo.listRecords?repo=${ownerDid}&collection=app.bsky.graph.block&limit=100&cursor=${cursor}`
+      : `com.atproto.repo.listRecords?repo=${ownerDid}&collection=app.bsky.graph.block&limit=100`;
+
+    const blocks = await bgApiRequest<ListRecordsResponse>(url, 'GET', null, token, pdsUrl);
+
+    const blockRecord = blocks?.records?.find((r) => r.value.subject === did);
+    if (blockRecord) {
+      foundRkey = blockRecord.uri.split('/').pop();
+      break;
+    }
+
+    // Check if there are more pages
+    if (!blocks?.cursor) {
+      console.log('[ErgoBlock BG] No block record found for', did);
+      return false;
+    }
+    cursor = blocks.cursor;
   }
 
-  const foundRkey = blockRecord.uri.split('/').pop();
   if (!foundRkey) {
-    console.log('[ErgoBlock BG] Could not determine rkey from block URI', blockRecord.uri);
+    console.log('[ErgoBlock BG] Could not determine rkey for', did);
     return false;
   }
 
@@ -2264,10 +2276,12 @@ async function handleUnblockRequest(did: string): Promise<{ success: boolean; er
       return { success: false, error: 'Not authenticated' };
     }
 
-    // Get the rkey from storage if available
-    const blocks = await getTempBlocks();
-    const blockData = blocks[did];
-    const rkey = blockData?.rkey;
+    // Get the rkey from storage if available (check both temp and permanent blocks)
+    const [tempBlocks, permanentBlocks] = await Promise.all([
+      getTempBlocks(),
+      getPermanentBlocks(),
+    ]);
+    const rkey = tempBlocks[did]?.rkey || permanentBlocks[did]?.rkey;
 
     await unblockUser(did, auth.accessJwt, auth.did, auth.pdsUrl, rkey);
     return { success: true };
@@ -2292,6 +2306,137 @@ async function handleUnmuteRequest(did: string): Promise<{ success: boolean; err
   } catch (error) {
     console.error('[ErgoBlock BG] Unmute failed:', error);
     return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+  }
+}
+
+/**
+ * Rectify failed amnesty unblocks
+ * Finds amnesty reviews marked as 'unblocked' where the user is still actually blocked,
+ * and performs the actual unblock. This fixes a bug where reviews were recorded before
+ * the unblock API call succeeded.
+ */
+async function rectifyFailedAmnestyUnblocks(): Promise<{
+  success: boolean;
+  checked: number;
+  fixed: number;
+  failed: number;
+  fixedHandles: string[];
+}> {
+  const result = { success: true, checked: 0, fixed: 0, failed: 0, fixedHandles: [] as string[] };
+
+  try {
+    const auth = await getAuthToken();
+    if (!auth?.accessJwt || !auth?.did || !auth?.pdsUrl) {
+      console.log('[ErgoBlock BG] Rectify: Not authenticated, skipping');
+      return result;
+    }
+
+    // Get amnesty reviews marked as 'unblocked' for blocks
+    const reviews = await getAmnestyReviews();
+    const unblockedReviews = reviews.filter(
+      (r) => r.decision === 'unblocked' && r.type === 'block'
+    );
+
+    if (unblockedReviews.length === 0) {
+      console.log('[ErgoBlock BG] Rectify: No unblocked reviews to check');
+      return result;
+    }
+
+    console.log(`[ErgoBlock BG] Rectify: Checking ${unblockedReviews.length} amnesty unblocks...`);
+
+    // Fetch all block records from Bluesky (paginated)
+    const blockedDids = new Set<string>();
+    const blockRkeys = new Map<string, string>();
+    let cursor: string | undefined;
+
+    do {
+      const url = cursor
+        ? `com.atproto.repo.listRecords?repo=${auth.did}&collection=app.bsky.graph.block&limit=100&cursor=${cursor}`
+        : `com.atproto.repo.listRecords?repo=${auth.did}&collection=app.bsky.graph.block&limit=100`;
+
+      const blocks = await bgApiRequest<ListRecordsResponse>(url, 'GET', null, auth.accessJwt, auth.pdsUrl);
+
+      for (const record of blocks?.records || []) {
+        const did = record.value.subject;
+        const rkey = record.uri.split('/').pop();
+        blockedDids.add(did);
+        if (rkey) {
+          blockRkeys.set(did, rkey);
+        }
+      }
+
+      cursor = blocks?.cursor;
+    } while (cursor);
+
+    // Find reviews marked as unblocked but user is still blocked
+    const failedUnblocks = unblockedReviews.filter((r) => blockedDids.has(r.did));
+    result.checked = unblockedReviews.length;
+
+    if (failedUnblocks.length === 0) {
+      console.log('[ErgoBlock BG] Rectify: All amnesty unblocks were successful');
+      return result;
+    }
+
+    console.log(`[ErgoBlock BG] Rectify: Found ${failedUnblocks.length} failed unblocks, fixing...`);
+
+    // Actually unblock them
+    for (const review of failedUnblocks) {
+      const rkey = blockRkeys.get(review.did);
+      if (!rkey) {
+        console.log(`[ErgoBlock BG] Rectify: No rkey for @${review.handle}, skipping`);
+        result.failed++;
+        continue;
+      }
+
+      try {
+        await bgApiRequest(
+          'com.atproto.repo.deleteRecord',
+          'POST',
+          {
+            repo: auth.did,
+            collection: 'app.bsky.graph.block',
+            rkey,
+          },
+          auth.accessJwt,
+          auth.pdsUrl
+        );
+
+        // Clean up storage
+        await Promise.all([removeTempBlock(review.did), removePermanentBlock(review.did)]);
+
+        console.log(`[ErgoBlock BG] Rectify: Unblocked @${review.handle}`);
+        result.fixed++;
+        result.fixedHandles.push(review.handle);
+      } catch (error) {
+        console.error(`[ErgoBlock BG] Rectify: Failed to unblock @${review.handle}:`, error);
+        result.failed++;
+      }
+
+      // Rate limit
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+
+    // Show notification if we fixed any
+    if (result.fixed > 0) {
+      const options = await getOptions();
+      if (options.notificationSound !== undefined) {
+        const handleList = result.fixedHandles.slice(0, 3).map((h) => `@${h}`).join(', ');
+        const suffix = result.fixed > 3 ? ` and ${result.fixed - 3} more` : '';
+        await browser.notifications.create({
+          type: 'basic',
+          iconUrl: 'icons/icon128.png',
+          title: '✓ Amnesty unblocks fixed',
+          message: `Successfully unblocked ${handleList}${suffix}`,
+          silent: !options.notificationSound,
+        } as browser.Notifications.CreateNotificationOptions & { silent?: boolean });
+      }
+    }
+
+    console.log(`[ErgoBlock BG] Rectify complete: ${result.fixed} fixed, ${result.failed} failed`);
+    return result;
+  } catch (error) {
+    console.error('[ErgoBlock BG] Rectify error:', error);
+    return result;
   }
 }
 
@@ -2979,9 +3124,9 @@ async function fetchCandidateFollowers(candidateDid: string): Promise<Set<string
 async function fetchCandidateBlocks(candidateDid: string): Promise<Set<string>> {
   try {
     const pdsUrl = await resolvePdsUrl(candidateDid);
-    console.log(`[ErgoBlock BG] Fetching CAR for ${candidateDid} to get blocks...`);
+    console.log(`[ErgoBlock BG] Fetching CAR for ${candidateDid} to get their blocks...`);
     const repoData = await fetchAndParseRepo(candidateDid, pdsUrl);
-    console.log(`[ErgoBlock BG] Candidate has ${repoData.blocks.length} blocks`);
+    console.log(`[ErgoBlock BG] Candidate ${candidateDid} blocks ${repoData.blocks.length} people:`, repoData.blocks.slice(0, 5));
     return new Set(repoData.blocks);
   } catch (error) {
     console.error(`[ErgoBlock BG] Failed to fetch candidate blocks:`, error);
@@ -3174,7 +3319,7 @@ async function handleGetFollowsTheyBlock(
       }
     }
 
-    console.log(`[ErgoBlock BG] Follows they block: ${users.length}`);
+    console.log(`[ErgoBlock BG] Follows they block: ${users.length}`, users.map(u => u.handle));
     return { success: true, users };
   } catch (error) {
     console.error('[ErgoBlock BG] Get follows they block failed:', error);
@@ -3228,7 +3373,8 @@ async function handleGetFollowsWhoBlockThem(
     }
 
     console.log(
-      `[ErgoBlock BG] Follows who block them: ${result.count} (total blockers: ${result.totalBlockers}, cached: ${result.cached})`
+      `[ErgoBlock BG] Follows who block them: ${result.count} (total blockers: ${result.totalBlockers}, cached: ${result.cached})`,
+      users.map(u => u.handle)
     );
     return {
       success: true,
@@ -4201,6 +4347,18 @@ const messageHandler = async (rawMessage: unknown): Promise<MessageResponse | un
     return await handlePrewarmClearskyCache(message.targetDids as string[]);
   }
 
+  // Clear Clearsky cache (to fix stale data from buggy endpoint)
+  if (message.type === 'CLEAR_CLEARSKY_CACHE') {
+    try {
+      await clearClearskyCache();
+      console.log('[ErgoBlock BG] Clearsky cache cleared');
+      return { success: true };
+    } catch (error) {
+      console.error('[ErgoBlock BG] Failed to clear Clearsky cache:', error);
+      return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+    }
+  }
+
   // Lookahead prefetch for next amnesty candidates (high priority, immediate processing)
   if (message.type === 'PREFETCH_CLEARSKY_LOOKAHEAD' && message.targetDids) {
     const targetDids = message.targetDids as string[];
@@ -4379,6 +4537,11 @@ const messageHandler = async (rawMessage: unknown): Promise<MessageResponse | un
     return await handleScanDuplicateFollows(message.deleteDuplicates === true);
   }
 
+  // Rectify failed amnesty unblocks (manual trigger)
+  if (message.type === 'RECTIFY_AMNESTY_UNBLOCKS') {
+    return await rectifyFailedAmnestyUnblocks();
+  }
+
   // Get PDS record counts
   if (message.type === 'GET_PDS_RECORD_COUNTS') {
     return await handleGetPdsRecordCounts();
@@ -4460,11 +4623,30 @@ async function clearBloatedStorageData(): Promise<void> {
 // Clear any stale badge from previous versions
 browser.action.setBadgeText({ text: '' });
 
+/**
+ * One-time migration to fix Clearsky cache that was using wrong endpoint
+ * The /blocklist endpoint was returning who the user blocks, not who blocks them.
+ * This clears the cache so fresh data is fetched from /single-blocklist.
+ */
+async function migrateBlockedByCache(): Promise<void> {
+  const MIGRATION_KEY = 'clearskyBlockedByMigrationV1';
+  const result = await browser.storage.local.get(MIGRATION_KEY);
+  if (result[MIGRATION_KEY]) {
+    return; // Already migrated
+  }
+
+  console.log('[ErgoBlock BG] Migrating: Clearing Clearsky blocked-by cache (wrong endpoint fix)');
+  await clearClearskyCache();
+  await browser.storage.local.set({ [MIGRATION_KEY]: true });
+  console.log('[ErgoBlock BG] Migration complete');
+}
+
 // Initialize on install/startup
 browser.runtime.onInstalled.addListener(async () => {
   console.log('[ErgoBlock BG] Extension installed');
   clearStaleSyncState();
   await clearBloatedStorageData();
+  await migrateBlockedByCache();
 
   setupAlarm();
   setupSyncAlarm();
@@ -4474,12 +4656,16 @@ browser.runtime.onInstalled.addListener(async () => {
 
   // Sync follows immediately after a short delay (for repost filter feature)
   setTimeout(() => syncFollowsOnly(), 5000);
+
+  // Rectify any failed amnesty unblocks after auth is likely available
+  setTimeout(() => rectifyFailedAmnestyUnblocks(), 10000);
 });
 
 browser.runtime.onStartup.addListener(async () => {
   console.log('[ErgoBlock BG] Extension started');
   clearStaleSyncState();
   await clearBloatedStorageData();
+  await migrateBlockedByCache();
 
   setupAlarm();
   setupSyncAlarm();
@@ -4489,11 +4675,15 @@ browser.runtime.onStartup.addListener(async () => {
 
   // Sync follows immediately after a short delay (for repost filter feature)
   setTimeout(() => syncFollowsOnly(), 5000);
+
+  // Rectify any failed amnesty unblocks after auth is likely available
+  setTimeout(() => rectifyFailedAmnestyUnblocks(), 10000);
 });
 
 // Also set up on script load (for when background restarts)
 clearStaleSyncState();
 clearBloatedStorageData();
+migrateBlockedByCache();
 
 setupAlarm();
 setupSyncAlarm();
@@ -4502,3 +4692,6 @@ setupClearskyQueueAlarm();
 
 // Sync follows on script load after a short delay (for repost filter feature)
 setTimeout(() => syncFollowsOnly(), 5000);
+
+// Rectify any failed amnesty unblocks after auth is likely available
+setTimeout(() => rectifyFailedAmnestyUnblocks(), 10000);

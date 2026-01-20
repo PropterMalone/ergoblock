@@ -17,7 +17,8 @@ import { sleep } from './utils.js';
 
 const CLEARSKY_API_BASE = 'https://public.api.clearsky.services';
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
-const REQUEST_DELAY_MS = 250; // Stay well under 5 req/sec limit
+const REQUEST_DELAY_MS = 500; // 2 req/sec to avoid rate limits
+const RATE_LIMIT_BACKOFF_MS = 5000; // Wait 5s on rate limit
 const MAX_RETRIES = 3;
 const MAX_PAGES = 100; // Safety limit to avoid infinite loops
 
@@ -59,20 +60,27 @@ export interface FollowsWhoBlockResult {
 /**
  * Fetch all accounts that block a target from Clearsky API
  * Handles pagination automatically
+ *
+ * NOTE: Uses /single-blocklist endpoint which returns WHO BLOCKS the target,
+ * not /blocklist which returns who the target blocks.
  */
 export async function fetchBlockedByFromClearsky(
   targetDidOrHandle: string,
   onProgress?: (fetched: number) => void
 ): Promise<{ blockerDids: string[]; complete: boolean }> {
   const blockerDids: string[] = [];
-  let cursor: string | undefined;
+  let offset = 0;
   let pageCount = 0;
+  const PAGE_SIZE = 100; // Clearsky returns 100 per page
 
   try {
-    do {
-      const url = cursor
-        ? `${CLEARSKY_API_BASE}/api/v1/anon/blocklist?identifier=${encodeURIComponent(targetDidOrHandle)}&cursor=${encodeURIComponent(cursor)}`
-        : `${CLEARSKY_API_BASE}/api/v1/anon/blocklist?identifier=${encodeURIComponent(targetDidOrHandle)}`;
+    let hasMore = true;
+    while (hasMore && pageCount < MAX_PAGES) {
+      // Use single-blocklist endpoint to get WHO BLOCKS the target (not who they block)
+      const url =
+        offset > 0
+          ? `${CLEARSKY_API_BASE}/api/v1/anon/single-blocklist/${encodeURIComponent(targetDidOrHandle)}?cursor=${offset}`
+          : `${CLEARSKY_API_BASE}/api/v1/anon/single-blocklist/${encodeURIComponent(targetDidOrHandle)}`;
 
       const response = await fetch(url);
 
@@ -83,9 +91,9 @@ export async function fetchBlockedByFromClearsky(
           return { blockerDids: [], complete: true };
         }
         if (response.status === 429) {
-          // Rate limited - wait and retry once
-          console.warn('[Clearsky] Rate limited, waiting 2s...');
-          await sleep(2000);
+          // Rate limited - wait longer and retry
+          console.warn(`[Clearsky] Rate limited, waiting ${RATE_LIMIT_BACKOFF_MS / 1000}s...`);
+          await sleep(RATE_LIMIT_BACKOFF_MS);
           continue;
         }
         throw new Error(`Clearsky API error: ${response.status}`);
@@ -93,6 +101,7 @@ export async function fetchBlockedByFromClearsky(
 
       const data: ClearskyBlocklistResponse = await response.json();
 
+      const entriesThisPage = data.data?.blocklist?.length || 0;
       if (data.data?.blocklist) {
         for (const entry of data.data.blocklist) {
           blockerDids.push(entry.did);
@@ -100,17 +109,22 @@ export async function fetchBlockedByFromClearsky(
         onProgress?.(blockerDids.length);
       }
 
-      cursor = data.data?.cursor;
       pageCount++;
 
-      if (cursor) {
+      // Clearsky uses offset-based pagination without returning a cursor
+      // If we got a full page (100 entries), there might be more
+      if (entriesThisPage >= PAGE_SIZE) {
+        offset = blockerDids.length;
         await sleep(REQUEST_DELAY_MS);
+      } else {
+        hasMore = false;
       }
-    } while (cursor && pageCount < MAX_PAGES);
+    }
 
-    const complete = !cursor; // Complete if we didn't hit page limit
+    const complete = !hasMore; // Complete if we didn't hit page limit
     console.log(
-      `[Clearsky] Fetched ${blockerDids.length} blockers for ${targetDidOrHandle} (${pageCount} pages, complete: ${complete})`
+      `[Clearsky] Fetched ${blockerDids.length} blockers for ${targetDidOrHandle} (${pageCount} pages, complete: ${complete})`,
+      blockerDids.slice(0, 5)
     );
 
     return { blockerDids, complete };

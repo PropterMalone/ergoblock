@@ -100,6 +100,7 @@ export interface ListRecordsResponse {
     uri: string;
     value: { subject: string };
   }>;
+  cursor?: string;
 }
 
 export interface Profile {

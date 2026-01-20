@@ -194,6 +194,15 @@ export function AmnestyTab({
     setProcessing(true);
 
     try {
+      // Perform the unblock/unmute FIRST before recording the review
+      // This ensures we don't mark something as unblocked if the API call fails
+      if (decision === 'unblocked') {
+        await onUnblock(candidate.did);
+      } else if (decision === 'unmuted') {
+        await onUnmute(candidate.did);
+      }
+
+      // Only record the review after the action succeeded
       const isBlock = candidate.type === 'block';
       const review: AmnestyReview = {
         did: candidate.did,
@@ -209,12 +218,6 @@ export function AmnestyTab({
       const newReviewedDids = new Set(amnestyReviewedDids.value);
       newReviewedDids.add(candidate.did);
       amnestyReviewedDids.value = newReviewedDids;
-
-      if (decision === 'unblocked') {
-        await onUnblock(candidate.did);
-      } else if (decision === 'unmuted') {
-        await onUnmute(candidate.did);
-      }
 
       amnestyCandidate.value = null;
       await onReload();
