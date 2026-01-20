@@ -893,20 +893,74 @@ export async function fetchAndParseRepo(
 }
 
 /**
+ * Record counts by collection type
+ */
+export interface RecordCounts {
+  'app.bsky.graph.follow': number;
+  'app.bsky.graph.block': number;
+  'app.bsky.graph.listitem': number;
+  'app.bsky.graph.list': number;
+  'app.bsky.feed.post': number;
+  'app.bsky.feed.like': number;
+  'app.bsky.feed.repost': number;
+  'app.bsky.actor.profile': number;
+  [key: string]: number;
+}
+
+/**
+ * Count all records by collection type from a CAR file
+ *
+ * @param did - User's DID
+ * @param pdsUrl - User's PDS URL (optional)
+ * @param onProgress - Progress callback for UI feedback
+ */
+export async function getRecordCountsFromCar(
+  did: string,
+  pdsUrl: string | null,
+  onProgress?: CarProgressCallback
+): Promise<RecordCounts> {
+  const carData = await downloadCarFile(did, pdsUrl, onProgress);
+
+  onProgress?.('Counting records...');
+
+  const counts: RecordCounts = {
+    'app.bsky.graph.follow': 0,
+    'app.bsky.graph.block': 0,
+    'app.bsky.graph.listitem': 0,
+    'app.bsky.graph.list': 0,
+    'app.bsky.feed.post': 0,
+    'app.bsky.feed.like': 0,
+    'app.bsky.feed.repost': 0,
+    'app.bsky.actor.profile': 0,
+  };
+
+  const repo = repoFromUint8Array(carData);
+
+  for (const entry of repo) {
+    const collection = entry.collection;
+    if (collection in counts) {
+      counts[collection]++;
+    } else {
+      // Track unknown collections too
+      counts[collection] = (counts[collection] || 0) + 1;
+    }
+  }
+
+  onProgress?.('Done');
+
+  return counts;
+}
+
+/**
  * Estimate the download size of a CAR file using HEAD request
  *
  * @param did - User's DID
  * @param pdsUrl - User's PDS URL (optional)
  * @returns Estimated size in bytes, or null if unavailable
  */
-export async function getCarFileSize(
-  did: string,
-  pdsUrl: string | null
-): Promise<number | null> {
+export async function getCarFileSize(did: string, pdsUrl: string | null): Promise<number | null> {
   const endpoints = [
-    pdsUrl
-      ? `${pdsUrl}/xrpc/com.atproto.sync.getRepo?did=${encodeURIComponent(did)}`
-      : null,
+    pdsUrl ? `${pdsUrl}/xrpc/com.atproto.sync.getRepo?did=${encodeURIComponent(did)}` : null,
     `${BSKY_RELAY}/xrpc/com.atproto.sync.getRepo?did=${encodeURIComponent(did)}`,
   ].filter(Boolean) as string[];
 

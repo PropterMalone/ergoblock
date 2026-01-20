@@ -5,9 +5,7 @@
  * Stores parsed data (not raw CAR files) since parsing is cheap but download is expensive.
  */
 
-import type {
-  GraphOperation,
-} from './types.js';
+import type { GraphOperation } from './types.js';
 import type { ParsedPost, ParsedListData } from './carRepo.js';
 
 const DB_NAME = 'ergoblock-car-cache';

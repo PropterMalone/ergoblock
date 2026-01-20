@@ -20,6 +20,11 @@ vi.mock('../storage.js', () => ({
   getPostContexts: vi.fn().mockResolvedValue([]),
   getBlocklistAuditState: vi.fn().mockResolvedValue({ syncInProgress: false, lastSyncAt: 0 }),
   updateBlocklistAuditState: vi.fn().mockResolvedValue(undefined),
+  // Pending rollback queue functions
+  getProcessableRollbacks: vi.fn().mockResolvedValue([]),
+  updatePendingRollback: vi.fn().mockResolvedValue(undefined),
+  removePendingRollback: vi.fn().mockResolvedValue(undefined),
+  cleanupOldRollbacks: vi.fn().mockResolvedValue(0),
 }));
 
 describe('Background Service Worker', () => {

@@ -1,9 +1,14 @@
 import type { JSX } from 'preact';
 import { useState, useEffect } from 'preact/hooks';
-import { Trash2, ExternalLink, Filter, RefreshCw } from 'lucide-preact';
+import { Trash2, ExternalLink, Filter, RefreshCw, Plus } from 'lucide-preact';
 import type { RepostFilteredUser } from '../../types.js';
-import { getRepostFilteredUsersArray, removeRepostFilteredUser } from '../../storage.js';
+import {
+  getRepostFilteredUsersArray,
+  removeRepostFilteredUser,
+  addRepostFilteredUser,
+} from '../../storage.js';
 import { formatDate } from './utils.js';
+import browser from '../../browser.js';
 
 interface RepostFiltersTabProps {
   onReload: () => Promise<void>;
@@ -14,6 +19,9 @@ export function RepostFiltersTab({ onReload }: RepostFiltersTabProps): JSX.Eleme
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [removing, setRemoving] = useState<string | null>(null);
+  const [addHandle, setAddHandle] = useState('');
+  const [adding, setAdding] = useState(false);
+  const [addError, setAddError] = useState<string | null>(null);
 
   const loadUsers = async () => {
     setLoading(true);
@@ -42,6 +50,71 @@ export function RepostFiltersTab({ onReload }: RepostFiltersTabProps): JSX.Eleme
       alert('Failed to remove user from filter list');
     } finally {
       setRemoving(null);
+    }
+  };
+
+  const handleAddUser = async () => {
+    if (!addHandle.trim()) {
+      setAddError('Please enter a handle');
+      return;
+    }
+
+    setAdding(true);
+    setAddError(null);
+
+    try {
+      // Strip leading @ if present
+      const normalizedHandle = addHandle.trim().startsWith('@')
+        ? addHandle.trim().slice(1)
+        : addHandle.trim();
+
+      // Check if user already exists in the list
+      const existingUser = users.find(
+        (u) => u.handle.toLowerCase() === normalizedHandle.toLowerCase()
+      );
+      if (existingUser) {
+        setAddError('User is already in your filter list');
+        return;
+      }
+
+      // Resolve handle to get profile
+      const response = (await browser.runtime.sendMessage({
+        type: 'RESOLVE_HANDLE',
+        handle: normalizedHandle,
+      })) as { success: boolean; profile?: { did: string; handle: string; displayName?: string; avatar?: string }; error?: string };
+
+      if (!response.success || !response.profile) {
+        setAddError(response.error || 'User not found');
+        return;
+      }
+
+      // Check if DID already exists (in case handle changed)
+      const existingByDid = users.find((u) => u.did === response.profile!.did);
+      if (existingByDid) {
+        setAddError('User is already in your filter list');
+        return;
+      }
+
+      // Add to repost filter list
+      const newUser: RepostFilteredUser = {
+        did: response.profile.did,
+        handle: response.profile.handle,
+        displayName: response.profile.displayName,
+        avatar: response.profile.avatar,
+        addedAt: Date.now(),
+      };
+      await addRepostFilteredUser(newUser);
+
+      // Reload the list and clear input
+      await loadUsers();
+      await onReload();
+      setAddHandle('');
+      setAddError(null);
+    } catch (error) {
+      console.error('[RepostFiltersTab] Failed to add user:', error);
+      setAddError('Failed to add user');
+    } finally {
+      setAdding(false);
     }
   };
 
@@ -78,8 +151,47 @@ export function RepostFiltersTab({ onReload }: RepostFiltersTabProps): JSX.Eleme
             <br />
             <br />
             To hide reposts from specific users while still seeing their original posts, click the
-            three-dot menu on their profile and select "Disable Reposts".
+            three-dot menu on their profile and select "Disable Reposts", or add a user by handle
+            below.
           </p>
+        </div>
+        {/* Add User Section - shown even when empty */}
+        <div class="block-rel-search-section" style={{ marginTop: '16px' }}>
+          <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
+            <div style={{ flex: 1 }}>
+              <input
+                type="text"
+                class="block-rel-search-input"
+                placeholder="Enter handle, e.g. user.bsky.social"
+                value={addHandle}
+                onInput={(e) => {
+                  setAddHandle((e.target as HTMLInputElement).value);
+                  setAddError(null);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !adding) {
+                    handleAddUser();
+                  }
+                }}
+                disabled={adding}
+                style={{ width: '100%' }}
+              />
+              {addError && (
+                <div style={{ color: 'var(--error)', fontSize: '12px', marginTop: '4px' }}>
+                  {addError}
+                </div>
+              )}
+            </div>
+            <button
+              class="blocklist-action-btn"
+              onClick={handleAddUser}
+              disabled={adding || !addHandle.trim()}
+              title="Add user to filter list"
+            >
+              {adding ? <RefreshCw size={14} class="spinner" /> : <Plus size={14} />}
+              Add
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -113,6 +225,45 @@ export function RepostFiltersTab({ onReload }: RepostFiltersTabProps): JSX.Eleme
           Reposts from these users are hidden from your feed. Their original posts will still
           appear.
         </p>
+      </div>
+
+      {/* Add User Section */}
+      <div class="block-rel-search-section" style={{ marginBottom: '16px' }}>
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
+          <div style={{ flex: 1 }}>
+            <input
+              type="text"
+              class="block-rel-search-input"
+              placeholder="Enter handle, e.g. user.bsky.social"
+              value={addHandle}
+              onInput={(e) => {
+                setAddHandle((e.target as HTMLInputElement).value);
+                setAddError(null);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !adding) {
+                  handleAddUser();
+                }
+              }}
+              disabled={adding}
+              style={{ width: '100%' }}
+            />
+            {addError && (
+              <div style={{ color: 'var(--error)', fontSize: '12px', marginTop: '4px' }}>
+                {addError}
+              </div>
+            )}
+          </div>
+          <button
+            class="blocklist-action-btn"
+            onClick={handleAddUser}
+            disabled={adding || !addHandle.trim()}
+            title="Add user to filter list"
+          >
+            {adding ? <RefreshCw size={14} class="spinner" /> : <Plus size={14} />}
+            Add
+          </button>
+        </div>
       </div>
 
       {/* User List */}

@@ -22,6 +22,7 @@ import {
   type ListAuditReview,
   type MassOpsScanResult,
   type MassOpsSettings,
+  type DelayedBlockEntry,
 } from './types.js';
 import { generateId, isValidDid, isValidDuration } from './utils.js';
 
@@ -78,6 +79,28 @@ export class StorageQuotaError extends Error {
     super(message);
     this.name = 'StorageQuotaError';
   }
+}
+
+/**
+ * Calculate the actual storage size of a temp block/mute entry
+ * This gives a more accurate estimate than a fixed value
+ */
+export function calculateEntrySize(
+  did: string,
+  handle: string,
+  durationMs: number,
+  rkey?: string
+): number {
+  // Create a representative entry to measure actual size
+  const entry = {
+    did,
+    handle,
+    blockedAt: Date.now(),
+    expiresAt: Date.now() + durationMs,
+    ...(rkey ? { rkey } : {}),
+  };
+  // Use Blob to get accurate byte size including UTF-8 encoding
+  return new Blob([JSON.stringify(entry)]).size;
 }
 
 /**
@@ -168,8 +191,11 @@ export const STORAGE_KEYS = {
   // Mass operations detection feature
   MASS_OPS_SCAN_RESULT: 'massOpsScanResult',
   MASS_OPS_SETTINGS: 'massOpsSettings',
+  MASS_OPS_DISMISSED_CLUSTERS: 'massOpsDismissedClusters',
   // CAR download progress (for UI updates)
   CAR_DOWNLOAD_PROGRESS: 'carDownloadProgress',
+  // Pending delayed blocks (Last Word feature)
+  PENDING_DELAYED_BLOCKS: 'pendingDelayedBlocks',
 };
 
 const HISTORY_MAX_ENTRIES = 100;
@@ -240,20 +266,34 @@ export async function addTempBlock(
   };
   // Use safe write with quota checking
   await safeSyncStorageWrite(STORAGE_KEYS.TEMP_BLOCKS, blocks);
-  // Notify background to set alarm
-  browser.runtime
-    .sendMessage({
-      type: 'TEMP_BLOCK_ADDED',
-      did,
-      expiresAt: blocks[did].expiresAt,
-    })
-    .catch((err) => {
-      // Background may be inactive in MV3 - alarm will be set on next wake
-      console.debug(
-        '[ErgoBlock] Background not ready for temp block notification:',
-        err?.message || err
-      );
-    });
+
+  // MEDIUM FIX #10: Notify background with retry mechanism
+  // If background is inactive in MV3, retry a few times before giving up
+  // The alarm will also be recovered on service worker startup
+  const notifyBackground = async (retries = 3): Promise<void> => {
+    for (let attempt = 0; attempt < retries; attempt++) {
+      try {
+        await browser.runtime.sendMessage({
+          type: 'TEMP_BLOCK_ADDED',
+          did,
+          expiresAt: blocks[did].expiresAt,
+        });
+        return; // Success
+      } catch (err) {
+        if (attempt === retries - 1) {
+          // Final attempt failed - log warning (alarm will be recovered on SW wake)
+          console.warn(
+            '[ErgoBlock] Could not notify background after retries, alarm will be set on next wake:',
+            err instanceof Error ? err.message : err
+          );
+        } else {
+          // Wait before retry (100ms, 200ms)
+          await new Promise((resolve) => setTimeout(resolve, (attempt + 1) * 100));
+        }
+      }
+    }
+  };
+  notifyBackground();
 }
 
 /**
@@ -1078,6 +1118,59 @@ export async function setMassOpsSettings(settings: MassOpsSettings): Promise<voi
   await browser.storage.sync.set({ [STORAGE_KEYS.MASS_OPS_SETTINGS]: settings });
 }
 
+/**
+ * Dismissed cluster - stores enough info to identify and filter out clusters
+ * We store the type, start time, end time, and count to match clusters across scans
+ */
+export interface DismissedCluster {
+  type: 'block' | 'follow' | 'listitem';
+  startTime: number;
+  endTime: number;
+  count: number;
+  dismissedAt: number;
+}
+
+/**
+ * Get dismissed mass ops clusters
+ */
+export async function getDismissedMassOpsClusters(): Promise<DismissedCluster[]> {
+  const result = await browser.storage.local.get(STORAGE_KEYS.MASS_OPS_DISMISSED_CLUSTERS);
+  return (result[STORAGE_KEYS.MASS_OPS_DISMISSED_CLUSTERS] as DismissedCluster[]) || [];
+}
+
+/**
+ * Dismiss a mass ops cluster (won't show in future scans)
+ */
+export async function dismissMassOpsCluster(cluster: DismissedCluster): Promise<void> {
+  const dismissed = await getDismissedMassOpsClusters();
+  dismissed.push(cluster);
+  await browser.storage.local.set({ [STORAGE_KEYS.MASS_OPS_DISMISSED_CLUSTERS]: dismissed });
+}
+
+/**
+ * Check if a cluster matches a dismissed cluster
+ * Matches by type, start time, end time, and count
+ */
+export function isClusterDismissed(
+  cluster: { type: string; startTime: number; endTime: number; count: number },
+  dismissedClusters: DismissedCluster[]
+): boolean {
+  return dismissedClusters.some(
+    (d) =>
+      d.type === cluster.type &&
+      d.startTime === cluster.startTime &&
+      d.endTime === cluster.endTime &&
+      d.count === cluster.count
+  );
+}
+
+/**
+ * Clear all dismissed clusters (for testing/reset)
+ */
+export async function clearDismissedMassOpsClusters(): Promise<void> {
+  await browser.storage.local.remove(STORAGE_KEYS.MASS_OPS_DISMISSED_CLUSTERS);
+}
+
 // ============================================================================
 // CAR Download Progress
 // ============================================================================
@@ -1125,4 +1218,155 @@ export async function setCarDownloadProgress(
  */
 export async function clearCarDownloadProgress(): Promise<void> {
   await browser.storage.local.remove(STORAGE_KEYS.CAR_DOWNLOAD_PROGRESS);
+}
+
+// ============================================================================
+// Pending Delayed Blocks (Last Word Feature)
+// ============================================================================
+
+interface PendingDelayedBlocksMap {
+  [did: string]: DelayedBlockEntry;
+}
+
+/**
+ * Get all pending delayed blocks from local storage
+ */
+export async function getPendingDelayedBlocks(): Promise<PendingDelayedBlocksMap> {
+  const result = await browser.storage.local.get(STORAGE_KEYS.PENDING_DELAYED_BLOCKS);
+  return (result[STORAGE_KEYS.PENDING_DELAYED_BLOCKS] as PendingDelayedBlocksMap) || {};
+}
+
+/**
+ * Set pending delayed blocks in local storage
+ */
+export async function setPendingDelayedBlocks(blocks: PendingDelayedBlocksMap): Promise<void> {
+  await browser.storage.local.set({ [STORAGE_KEYS.PENDING_DELAYED_BLOCKS]: blocks });
+}
+
+/**
+ * Add a pending delayed block
+ */
+export async function addPendingDelayedBlock(entry: DelayedBlockEntry): Promise<void> {
+  const blocks = await getPendingDelayedBlocks();
+  blocks[entry.did] = entry;
+  await browser.storage.local.set({ [STORAGE_KEYS.PENDING_DELAYED_BLOCKS]: blocks });
+}
+
+/**
+ * Remove a pending delayed block
+ */
+export async function removePendingDelayedBlock(did: string): Promise<void> {
+  const blocks = await getPendingDelayedBlocks();
+  delete blocks[did];
+  await browser.storage.local.set({ [STORAGE_KEYS.PENDING_DELAYED_BLOCKS]: blocks });
+}
+
+/**
+ * Get a specific pending delayed block by DID
+ */
+export async function getPendingDelayedBlock(did: string): Promise<DelayedBlockEntry | null> {
+  const blocks = await getPendingDelayedBlocks();
+  return blocks[did] || null;
+}
+
+// ============================================================================
+// Pending Rollback Queue
+// ============================================================================
+
+import type { PendingRollback } from './types.js';
+
+const PENDING_ROLLBACKS_KEY = 'pendingRollbacks';
+const MAX_ROLLBACK_ATTEMPTS = 5;
+
+/**
+ * Get all pending rollbacks from local storage
+ */
+export async function getPendingRollbacks(): Promise<PendingRollback[]> {
+  const result = await browser.storage.local.get(PENDING_ROLLBACKS_KEY);
+  return (result[PENDING_ROLLBACKS_KEY] as PendingRollback[]) || [];
+}
+
+/**
+ * Add a pending rollback to the queue
+ */
+export async function addPendingRollback(
+  rollback: Omit<PendingRollback, 'id' | 'createdAt' | 'attempts' | 'lastAttempt'>
+): Promise<void> {
+  const rollbacks = await getPendingRollbacks();
+  const newRollback: PendingRollback = {
+    ...rollback,
+    id: generateId('rollback'),
+    createdAt: Date.now(),
+    attempts: 0,
+    lastAttempt: 0,
+  };
+  rollbacks.push(newRollback);
+  await browser.storage.local.set({ [PENDING_ROLLBACKS_KEY]: rollbacks });
+}
+
+/**
+ * Update a pending rollback (increment attempts, update error)
+ */
+export async function updatePendingRollback(
+  id: string,
+  update: Partial<Pick<PendingRollback, 'attempts' | 'lastAttempt' | 'error'>>
+): Promise<void> {
+  const rollbacks = await getPendingRollbacks();
+  const index = rollbacks.findIndex((r) => r.id === id);
+  if (index !== -1) {
+    rollbacks[index] = { ...rollbacks[index], ...update };
+    await browser.storage.local.set({ [PENDING_ROLLBACKS_KEY]: rollbacks });
+  }
+}
+
+/**
+ * Remove a pending rollback from the queue
+ */
+export async function removePendingRollback(id: string): Promise<void> {
+  const rollbacks = await getPendingRollbacks();
+  const filtered = rollbacks.filter((r) => r.id !== id);
+  await browser.storage.local.set({ [PENDING_ROLLBACKS_KEY]: filtered });
+}
+
+/**
+ * Get rollbacks that need processing (haven't exceeded max attempts)
+ */
+export async function getProcessableRollbacks(): Promise<PendingRollback[]> {
+  const rollbacks = await getPendingRollbacks();
+  const now = Date.now();
+  const MIN_RETRY_INTERVAL = 60000; // 1 minute between retries
+
+  return rollbacks.filter((r) => {
+    // Skip if max attempts exceeded
+    if (r.attempts >= MAX_ROLLBACK_ATTEMPTS) return false;
+
+    // Skip if recently attempted (exponential backoff)
+    const backoffMs = MIN_RETRY_INTERVAL * Math.pow(2, r.attempts);
+    if (now - r.lastAttempt < backoffMs) return false;
+
+    return true;
+  });
+}
+
+/**
+ * Clean up old rollbacks that have exceeded max attempts
+ * Called periodically to prevent queue from growing indefinitely
+ */
+export async function cleanupOldRollbacks(): Promise<number> {
+  const rollbacks = await getPendingRollbacks();
+  const now = Date.now();
+  const MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+  const toKeep = rollbacks.filter((r) => {
+    // Keep if not too old
+    if (now - r.createdAt < MAX_AGE_MS) return true;
+    // Remove old ones that have exceeded attempts
+    return r.attempts < MAX_ROLLBACK_ATTEMPTS;
+  });
+
+  const removed = rollbacks.length - toKeep.length;
+  if (removed > 0) {
+    await browser.storage.local.set({ [PENDING_ROLLBACKS_KEY]: toKeep });
+  }
+  return removed;
 }

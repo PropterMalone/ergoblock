@@ -346,7 +346,13 @@ describe('clearskyService', () => {
   describe('processBlockedByQueue', () => {
     it('processes pending queue items', async () => {
       mockGetPendingQueue.mockResolvedValue([
-        { targetDid: 'did:plc:target1', priority: 10, queuedAt: Date.now(), status: 'pending', retryCount: 0 },
+        {
+          targetDid: 'did:plc:target1',
+          priority: 10,
+          queuedAt: Date.now(),
+          status: 'pending',
+          retryCount: 0,
+        },
       ]);
       mockGetBlockedByCache.mockResolvedValue(null);
       mockUpdateQueueStatus.mockResolvedValue();
@@ -379,7 +385,13 @@ describe('clearskyService', () => {
 
     it('skips items that were fetched on-demand', async () => {
       mockGetPendingQueue.mockResolvedValue([
-        { targetDid: 'did:plc:target1', priority: 10, queuedAt: Date.now(), status: 'pending', retryCount: 0 },
+        {
+          targetDid: 'did:plc:target1',
+          priority: 10,
+          queuedAt: Date.now(),
+          status: 'pending',
+          retryCount: 0,
+        },
       ]);
       // Return fresh cache (as if fetched on-demand while queued)
       mockGetBlockedByCache.mockResolvedValue({
@@ -402,7 +414,8 @@ describe('clearskyService', () => {
     it('queues uncached targets and reports counts', async () => {
       mockGetBlockedByCache
         .mockResolvedValueOnce(null) // First target not cached
-        .mockResolvedValueOnce({ // Second target cached
+        .mockResolvedValueOnce({
+          // Second target cached
           targetDid: 'did:plc:target2',
           blockerDids: [],
           totalCount: 0,
@@ -432,7 +445,10 @@ describe('clearskyService', () => {
         })
         .mockResolvedValueOnce(null); // target2 not cached
 
-      const results = await getBatchBlockedByCounts(['did:plc:target1', 'did:plc:target2'], myFollows);
+      const results = await getBatchBlockedByCounts(
+        ['did:plc:target1', 'did:plc:target2'],
+        myFollows
+      );
 
       expect(results.get('did:plc:target1')).toEqual({ count: 1, cached: true });
       expect(results.get('did:plc:target2')).toEqual({ count: -1, cached: false });

@@ -26,8 +26,19 @@ import {
   getMassOpsSettings,
   setMassOpsSettings,
   saveMassOpsScanResult,
+  getDismissedMassOpsClusters,
+  dismissMassOpsCluster,
+  isClusterDismissed,
   setCarDownloadProgress,
   clearCarDownloadProgress,
+  addTempBlock,
+  addPendingDelayedBlock,
+  removePendingDelayedBlock,
+  getPendingDelayedBlock,
+  getProcessableRollbacks,
+  updatePendingRollback,
+  removePendingRollback,
+  cleanupOldRollbacks,
 } from './storage.js';
 import {
   ListRecordsResponse,
@@ -57,6 +68,7 @@ import {
   ListMember,
   GraphOperation,
   MassOpsSettings,
+  DelayedBlockEntry,
 } from './types.js';
 import {
   fetchAndParseRepo,
@@ -66,6 +78,7 @@ import {
   detectMassOperations,
   getCarFileSize,
   fetchExternalUserGraph,
+  getRecordCountsFromCar,
 } from './carRepo.js';
 import {
   getGraphOperationsSmart,
@@ -73,7 +86,14 @@ import {
   type CarDownloadProgress,
 } from './carService.js';
 import { invalidateCarCache } from './carCache.js';
-import { sleep, generateId } from './utils.js';
+import {
+  sleep,
+  generateId,
+  logger,
+  Mutex,
+  LRUCache,
+  textContainsMention,
+} from './utils.js';
 import {
   getFollowsWhoBlock,
   getFollowsWhoBlockCached,
@@ -91,11 +111,12 @@ const FOLLOWS_SYNC_INTERVAL_MINUTES = 120; // Sync follows every 2 hours
 const CLEARSKY_QUEUE_INTERVAL_MINUTES = 2; // Process Clearsky queue every 2 minutes
 const PAGINATION_DELAY = 100; // ms between paginated requests (was 500ms)
 
-// In-memory sync locks (atomic, no race window)
-let syncLockActive = false;
-let blocklistAuditLockActive = false;
-let followsSyncLockActive = false;
-let clearskyQueueLockActive = false;
+// CRITICAL FIX #1: Use Mutex for true mutual exclusion instead of boolean flags
+// Boolean flags have TOCTOU race conditions; Mutex uses promise queues for safe locking
+const syncMutex = new Mutex();
+const blocklistAuditMutex = new Mutex();
+const followsSyncMutex = new Mutex();
+const clearskyQueueMutex = new Mutex();
 
 interface AuthData {
   accessJwt: string;
@@ -165,57 +186,16 @@ function isExpiredTokenError(error: Error): boolean {
 }
 
 /**
- * Refresh the access token using the refresh token
- * Returns the new auth data if successful, null otherwise
+ * Get fresh auth tokens when the current access token is expired.
+ * Always delegates to requestFreshAuth() to get tokens from the Bluesky webapp.
+ *
+ * IMPORTANT: We intentionally do NOT call com.atproto.server.refreshSession directly,
+ * because that rotates the refresh token server-side, which would invalidate the
+ * webapp's copy of the refresh token and log the user out of Bluesky.
  */
-async function refreshSession(auth: AuthData): Promise<AuthData | null> {
-  if (!auth.refreshJwt) {
-    console.log('[ErgoBlock BG] No refresh token available, requesting fresh auth from tab');
-    return requestFreshAuth();
-  }
-
-  try {
-    console.log('[ErgoBlock BG] Attempting to refresh access token...');
-
-    const response = await fetch(`${auth.pdsUrl}/xrpc/com.atproto.server.refreshSession`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${auth.refreshJwt}`,
-        'Content-Type': 'application/json',
-      },
-    });
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error('[ErgoBlock BG] Token refresh failed:', response.status, errorText);
-      // Refresh token might also be expired, try getting fresh auth from tab
-      return requestFreshAuth();
-    }
-
-    const data = (await response.json()) as {
-      accessJwt: string;
-      refreshJwt: string;
-      did: string;
-      handle: string;
-    };
-
-    const newAuth: AuthData = {
-      accessJwt: data.accessJwt,
-      refreshJwt: data.refreshJwt,
-      did: data.did,
-      pdsUrl: auth.pdsUrl,
-    };
-
-    // Store the refreshed tokens
-    await browser.storage.local.set({ authToken: newAuth, authStatus: 'valid' });
-    console.log('[ErgoBlock BG] Token refreshed successfully');
-
-    return newAuth;
-  } catch (error) {
-    console.error('[ErgoBlock BG] Error refreshing token:', error);
-    // Fall back to requesting fresh auth from tab
-    return requestFreshAuth();
-  }
+async function refreshSession(_auth: AuthData): Promise<AuthData | null> {
+  console.log('[ErgoBlock BG] Access token expired, requesting fresh auth from tab');
+  return requestFreshAuth();
 }
 
 /**
@@ -821,15 +801,16 @@ async function syncMutes(auth: AuthData): Promise<{ added: number; removed: numb
 // PLC directory URL for resolving DIDs
 const PLC_DIRECTORY = 'https://plc.directory';
 
-// Cache for resolved PDS URLs (DID -> PDS URL)
-const pdsCache = new Map<string, string>();
+// CRITICAL FIX #2: Use LRU cache with TTL to prevent unbounded memory growth
+// Max 1000 entries, 4 hour TTL (PDS URLs rarely change but can migrate)
+const pdsCache = new LRUCache<string, string>(1000, 4 * 60 * 60 * 1000);
 
 /**
  * Resolve a DID to its PDS URL by looking up the DID document
  * @see https://atproto.com/guides/identity
  */
 async function resolvePdsUrl(did: string): Promise<string | null> {
-  // Check cache first
+  // Check cache first (LRU cache handles TTL automatically)
   const cached = pdsCache.get(did);
   if (cached) {
     return cached;
@@ -839,7 +820,7 @@ async function resolvePdsUrl(did: string): Promise<string | null> {
     // Resolve DID document from PLC directory
     const response = await fetch(`${PLC_DIRECTORY}/${did}`);
     if (!response.ok) {
-      console.error(`[ErgoBlock BG] Failed to resolve DID ${did}: ${response.status}`);
+      logger.error(`Failed to resolve DID ${did}: ${response.status}`);
       return null;
     }
 
@@ -851,15 +832,15 @@ async function resolvePdsUrl(did: string): Promise<string | null> {
     );
 
     if (!pdsService?.serviceEndpoint) {
-      console.error(`[ErgoBlock BG] No PDS service found for ${did}`);
+      logger.error(`No PDS service found for ${did}`);
       return null;
     }
 
-    // Cache the result
+    // Cache the result (LRU cache handles eviction automatically)
     pdsCache.set(did, pdsService.serviceEndpoint);
     return pdsService.serviceEndpoint;
   } catch (error) {
-    console.error(`[ErgoBlock BG] Error resolving PDS for ${did}:`, error);
+    logger.error(`Error resolving PDS for ${did}:`, error);
     return null;
   }
 }
@@ -912,6 +893,9 @@ interface InteractionResult {
  * - Reply to the user
  * - Quote of the user's post
  * - Mentions the user directly (contains their DID or handle in text)
+ *
+ * HIGH FIX #7: Use textContainsMention for secure handle matching
+ * (prevents false positives like @alice.bsky.social matching @alice.bsky.social-fake)
  */
 function isInteractionWithUser(
   record: RawPostRecord,
@@ -933,8 +917,8 @@ function isInteractionWithUser(
     return true;
   }
 
-  // Check if text mentions the user (by handle)
-  if (loggedInHandle && value.text.toLowerCase().includes(`@${loggedInHandle.toLowerCase()}`)) {
+  // HIGH FIX #7: Use secure mention matching with word boundaries
+  if (loggedInHandle && textContainsMention(value.text, loggedInHandle)) {
     return true;
   }
 
@@ -944,6 +928,8 @@ function isInteractionWithUser(
 /**
  * Check if a SearchPostView is an interaction with the logged-in user
  * (quote post or reply that the text search might have caught)
+ *
+ * HIGH FIX #7: Use textContainsMention for secure handle matching
  */
 export function isSearchPostInteraction(
   post: SearchPostView,
@@ -965,8 +951,8 @@ export function isSearchPostInteraction(
     return true;
   }
 
-  // Check if text mentions the user (by handle)
-  if (loggedInHandle && record.text.toLowerCase().includes(`@${loggedInHandle.toLowerCase()}`)) {
+  // HIGH FIX #7: Use secure mention matching with word boundaries
+  if (loggedInHandle && textContainsMention(record.text, loggedInHandle)) {
     return true;
   }
 
@@ -1098,6 +1084,7 @@ async function getLoggedInHandle(auth: AuthData): Promise<string | undefined> {
 
 /**
  * Perform full sync with Bluesky
+ * CRITICAL FIX #1: Uses Mutex for true mutual exclusion instead of boolean flags
  */
 export async function performFullSync(): Promise<{
   success: boolean;
@@ -1105,86 +1092,85 @@ export async function performFullSync(): Promise<{
   blocks?: { added: number; removed: number };
   mutes?: { added: number; removed: number };
 }> {
-  // Use atomic in-memory lock to prevent concurrent syncs (no TOCTOU race)
-  if (syncLockActive) {
-    console.log('[ErgoBlock BG] Sync already in progress, skipping');
+  // Check if already locked without waiting (for quick rejection)
+  if (syncMutex.isLocked) {
+    logger.info('Sync already in progress, skipping');
     return { success: false, error: 'Sync already in progress' };
   }
-  syncLockActive = true;
 
-  const auth = await getAuthToken();
-  if (!auth?.accessJwt || !auth?.did || !auth?.pdsUrl) {
-    syncLockActive = false;
-    console.log('[ErgoBlock BG] No auth token available, skipping sync');
-    return { success: false, error: 'Not authenticated' };
-  }
-
-  console.log('[ErgoBlock BG] Starting full sync with Bluesky...');
-  await updateSyncState({ syncInProgress: true, lastError: undefined });
-
-  try {
-    // Use Promise.allSettled to handle partial failures gracefully
-    const results = await Promise.allSettled([syncBlocks(auth), syncMutes(auth)]);
-
-    const blockSettled = results[0];
-    const muteSettled = results[1];
-
-    const blockResult =
-      blockSettled.status === 'fulfilled'
-        ? blockSettled.value
-        : { added: 0, removed: 0, newBlocks: [] };
-    const muteResult =
-      muteSettled.status === 'fulfilled' ? muteSettled.value : { added: 0, removed: 0 };
-
-    // Log any partial failures
-    if (blockSettled.status === 'rejected') {
-      console.error('[ErgoBlock BG] Block sync failed:', blockSettled.reason);
-    }
-    if (muteSettled.status === 'rejected') {
-      console.error('[ErgoBlock BG] Mute sync failed:', muteSettled.reason);
+  // Use mutex.runExclusive for true mutual exclusion
+  return syncMutex.runExclusive(async () => {
+    const auth = await getAuthToken();
+    if (!auth?.accessJwt || !auth?.did || !auth?.pdsUrl) {
+      logger.info('No auth token available, skipping sync');
+      return { success: false, error: 'Not authenticated' };
     }
 
-    // NOTE: Context searching is now on-demand only.
-    // Users can search for context via the "Find" button in All Blocks or through Amnesty.
-    // This keeps sync fast - we only fetch block/mute lists, not search for interactions.
+    logger.info('Starting full sync with Bluesky...');
+    await updateSyncState({ syncInProgress: true, lastError: undefined });
 
-    await updateSyncState({
-      syncInProgress: false,
-      lastBlockSync: Date.now(),
-      lastMuteSync: Date.now(),
-      lastError:
-        blockSettled.status === 'rejected' || muteSettled.status === 'rejected'
-          ? 'Partial sync failure'
-          : undefined,
-    });
+    try {
+      // Use Promise.allSettled to handle partial failures gracefully
+      const results = await Promise.allSettled([syncBlocks(auth), syncMutes(auth)]);
 
-    console.log('[ErgoBlock BG] Sync complete:', {
-      blocks: { added: blockResult.added, removed: blockResult.removed },
-      mutes: muteResult,
-    });
+      const blockSettled = results[0];
+      const muteSettled = results[1];
 
-    syncLockActive = false;
-    return {
-      success: blockSettled.status === 'fulfilled' && muteSettled.status === 'fulfilled',
-      blocks: { added: blockResult.added, removed: blockResult.removed },
-      mutes: muteResult,
-      error:
-        blockSettled.status === 'rejected' || muteSettled.status === 'rejected'
-          ? 'Partial sync failure - check console for details'
-          : undefined,
-    };
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    console.error('[ErgoBlock BG] Sync failed:', errorMessage);
+      const blockResult =
+        blockSettled.status === 'fulfilled'
+          ? blockSettled.value
+          : { added: 0, removed: 0, newBlocks: [] };
+      const muteResult =
+        muteSettled.status === 'fulfilled' ? muteSettled.value : { added: 0, removed: 0 };
 
-    await updateSyncState({
-      syncInProgress: false,
-      lastError: errorMessage,
-    });
+      // Log any partial failures
+      if (blockSettled.status === 'rejected') {
+        logger.error('Block sync failed:', blockSettled.reason);
+      }
+      if (muteSettled.status === 'rejected') {
+        logger.error('Mute sync failed:', muteSettled.reason);
+      }
 
-    syncLockActive = false;
-    return { success: false, error: errorMessage };
-  }
+      // NOTE: Context searching is now on-demand only.
+      // Users can search for context via the "Find" button in All Blocks or through Amnesty.
+      // This keeps sync fast - we only fetch block/mute lists, not search for interactions.
+
+      await updateSyncState({
+        syncInProgress: false,
+        lastBlockSync: Date.now(),
+        lastMuteSync: Date.now(),
+        lastError:
+          blockSettled.status === 'rejected' || muteSettled.status === 'rejected'
+            ? 'Partial sync failure'
+            : undefined,
+      });
+
+      logger.info('Sync complete:', {
+        blocks: { added: blockResult.added, removed: blockResult.removed },
+        mutes: muteResult,
+      });
+
+      return {
+        success: blockSettled.status === 'fulfilled' && muteSettled.status === 'fulfilled',
+        blocks: { added: blockResult.added, removed: blockResult.removed },
+        mutes: muteResult,
+        error:
+          blockSettled.status === 'rejected' || muteSettled.status === 'rejected'
+            ? 'Partial sync failure - check console for details'
+            : undefined,
+      };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      logger.error('Sync failed:', errorMessage);
+
+      await updateSyncState({
+        syncInProgress: false,
+        lastError: errorMessage,
+      });
+
+      return { success: false, error: errorMessage };
+    }
+  });
 }
 
 /**
@@ -1315,52 +1301,52 @@ async function fetchAllFollowers(auth: AuthData): Promise<ProfileView[]> {
  * Sync follows only (lightweight sync for repost filter feature)
  * This runs on startup and periodically to keep the follows list fresh
  * Uses lightweight storage (just handles) to avoid quota issues
+ * CRITICAL FIX #1: Uses Mutex for true mutual exclusion
  */
 async function syncFollowsOnly(): Promise<void> {
-  // Prevent concurrent syncs
-  if (followsSyncLockActive) {
-    console.log('[ErgoBlock BG] Follows sync already in progress');
+  // Check if already locked without waiting (for quick rejection)
+  if (followsSyncMutex.isLocked) {
+    logger.info('Follows sync already in progress');
     return;
   }
-  followsSyncLockActive = true;
 
-  try {
-    const auth = await getAuthToken();
-    if (!auth?.accessJwt || !auth?.did || !auth?.pdsUrl) {
-      console.log('[ErgoBlock BG] Not authenticated, skipping follows sync');
-      return;
+  await followsSyncMutex.runExclusive(async () => {
+    try {
+      const auth = await getAuthToken();
+      if (!auth?.accessJwt || !auth?.did || !auth?.pdsUrl) {
+        logger.info('Not authenticated, skipping follows sync');
+        return;
+      }
+
+      // Check if we already have recent follows data (within last hour)
+      const existingData = await getFollowsHandles();
+      const oneHourAgo = Date.now() - 60 * 60 * 1000;
+      if (existingData.syncedAt > oneHourAgo && existingData.handles.length > 0) {
+        logger.info('Follows data is fresh, skipping sync');
+        return;
+      }
+
+      // Proactively clear old bloated socialGraph data to free up space
+      // The full socialGraph (with avatars) was used by blocklist audit but is too large
+      // We now use lightweight followsHandles instead
+      const existingGraph = await getSocialGraph();
+      if (existingGraph.follows.length > 0 || existingGraph.followers.length > 0) {
+        logger.info('Clearing old socialGraph to free storage space...');
+        await browser.storage.local.remove('socialGraph');
+      }
+
+      logger.info('Syncing follows for repost filter...');
+      const follows = await fetchAllFollows(auth);
+      logger.info(`Fetched ${follows.length} follows`);
+
+      // Store just the handles (lightweight - avoids quota issues)
+      const handles = follows.map((f) => f.handle);
+      await setFollowsHandles(handles, Date.now());
+      logger.info('Follows sync complete');
+    } catch (error) {
+      logger.error('Follows sync failed:', error);
     }
-
-    // Check if we already have recent follows data (within last hour)
-    const existingData = await getFollowsHandles();
-    const oneHourAgo = Date.now() - 60 * 60 * 1000;
-    if (existingData.syncedAt > oneHourAgo && existingData.handles.length > 0) {
-      console.log('[ErgoBlock BG] Follows data is fresh, skipping sync');
-      return;
-    }
-
-    // Proactively clear old bloated socialGraph data to free up space
-    // The full socialGraph (with avatars) was used by blocklist audit but is too large
-    // We now use lightweight followsHandles instead
-    const existingGraph = await getSocialGraph();
-    if (existingGraph.follows.length > 0 || existingGraph.followers.length > 0) {
-      console.log('[ErgoBlock BG] Clearing old socialGraph to free storage space...');
-      await browser.storage.local.remove('socialGraph');
-    }
-
-    console.log('[ErgoBlock BG] Syncing follows for repost filter...');
-    const follows = await fetchAllFollows(auth);
-    console.log(`[ErgoBlock BG] Fetched ${follows.length} follows`);
-
-    // Store just the handles (lightweight - avoids quota issues)
-    const handles = follows.map((f) => f.handle);
-    await setFollowsHandles(handles, Date.now());
-    console.log('[ErgoBlock BG] Follows sync complete');
-  } catch (error) {
-    console.error('[ErgoBlock BG] Follows sync failed:', error);
-  } finally {
-    followsSyncLockActive = false;
-  }
+  });
 }
 
 /**
@@ -1380,10 +1366,12 @@ function setupFollowsSyncAlarm(): void {
 /**
  * Process the Clearsky blocked-by queue
  * Fetches "who blocks this person" data in the background
+ * CRITICAL FIX #1: Uses Mutex for true mutual exclusion
  */
 async function processClearskyQueue(): Promise<void> {
-  if (clearskyQueueLockActive) {
-    console.log('[ErgoBlock BG] Clearsky queue processing already in progress');
+  // Check if already locked without waiting (for quick rejection)
+  if (clearskyQueueMutex.isLocked) {
+    logger.debug('Clearsky queue processing already in progress');
     return;
   }
 
@@ -1393,18 +1381,17 @@ async function processClearskyQueue(): Promise<void> {
     return; // Nothing to do, skip silently
   }
 
-  clearskyQueueLockActive = true;
-  try {
-    console.log('[ErgoBlock BG] Processing Clearsky blocked-by queue...');
-    const processed = await processBlockedByQueue(3); // Process 3 items per run
-    if (processed > 0) {
-      console.log(`[ErgoBlock BG] Processed ${processed} Clearsky queue items`);
+  await clearskyQueueMutex.runExclusive(async () => {
+    try {
+      logger.info('Processing Clearsky blocked-by queue...');
+      const processed = await processBlockedByQueue(3); // Process 3 items per run
+      if (processed > 0) {
+        logger.info(`Processed ${processed} Clearsky queue items`);
+      }
+    } catch (error) {
+      logger.error('Clearsky queue processing failed:', error);
     }
-  } catch (error) {
-    console.error('[ErgoBlock BG] Clearsky queue processing failed:', error);
-  } finally {
-    clearskyQueueLockActive = false;
-  }
+  });
 }
 
 /**
@@ -1524,166 +1511,165 @@ export async function performBlocklistAuditSync(): Promise<{
   error?: string;
   conflictCount?: number;
 }> {
-  // Use atomic in-memory lock to prevent concurrent syncs (no TOCTOU race)
-  if (blocklistAuditLockActive) {
-    console.log('[ErgoBlock BG] Blocklist audit sync already in progress');
+  // CRITICAL FIX #1: Check if already locked without waiting (for quick rejection)
+  if (blocklistAuditMutex.isLocked) {
+    logger.info('Blocklist audit sync already in progress');
     return { success: false, error: 'Sync already in progress' };
   }
-  blocklistAuditLockActive = true;
 
-  const auth = await getAuthToken();
-  if (!auth?.accessJwt || !auth?.did || !auth?.pdsUrl) {
-    blocklistAuditLockActive = false;
-    return { success: false, error: 'Not authenticated' };
-  }
-
-  console.log('[ErgoBlock BG] Starting blocklist audit sync...');
-  await updateBlocklistAuditState({ syncInProgress: true, lastError: undefined });
-
-  try {
-    // Fetch all data in parallel where possible
-    console.log('[ErgoBlock BG] Fetching follows, followers, and blocklists...');
-    const [follows, followers, blocklists] = await Promise.all([
-      fetchAllFollows(auth),
-      fetchAllFollowers(auth),
-      fetchSubscribedBlocklists(auth),
-    ]);
-
-    console.log(
-      `[ErgoBlock BG] Found ${follows.length} follows, ${followers.length} followers, ${blocklists.length} blocklists`
-    );
-
-    // Build social graph (in-memory only for conflict detection)
-    // We don't persist the full graph - it's too large with avatars
-    const followerDids = new Set(followers.map((f) => f.did));
-
-    // Combine into FollowRelation[] (in-memory for conflict detection)
-    // Store without avatars to reduce memory usage
-    const allRelations: Map<string, FollowRelation> = new Map();
-
-    for (const f of follows) {
-      allRelations.set(f.did, {
-        did: f.did,
-        handle: f.handle,
-        displayName: f.displayName,
-        // avatar intentionally omitted - fetched on-demand in UI
-        relationship: followerDids.has(f.did) ? 'mutual' : 'following',
-      });
+  // Use mutex.runExclusive for true mutual exclusion
+  return blocklistAuditMutex.runExclusive(async () => {
+    const auth = await getAuthToken();
+    if (!auth?.accessJwt || !auth?.did || !auth?.pdsUrl) {
+      return { success: false, error: 'Not authenticated' };
     }
 
-    for (const f of followers) {
-      if (!allRelations.has(f.did)) {
+    logger.info('Starting blocklist audit sync...');
+    await updateBlocklistAuditState({ syncInProgress: true, lastError: undefined });
+
+    try {
+      // Fetch all data in parallel where possible
+      logger.info('Fetching follows, followers, and blocklists...');
+      const [follows, followers, blocklists] = await Promise.all([
+        fetchAllFollows(auth),
+        fetchAllFollowers(auth),
+        fetchSubscribedBlocklists(auth),
+      ]);
+
+      logger.info(
+        `Found ${follows.length} follows, ${followers.length} followers, ${blocklists.length} blocklists`
+      );
+
+      // Build social graph (in-memory only for conflict detection)
+      // We don't persist the full graph - it's too large with avatars
+      const followerDids = new Set(followers.map((f) => f.did));
+
+      // Combine into FollowRelation[] (in-memory for conflict detection)
+      // Store without avatars to reduce memory usage
+      const allRelations: Map<string, FollowRelation> = new Map();
+
+      for (const f of follows) {
         allRelations.set(f.did, {
           did: f.did,
           handle: f.handle,
           displayName: f.displayName,
           // avatar intentionally omitted - fetched on-demand in UI
-          relationship: 'follower',
+          relationship: followerDids.has(f.did) ? 'mutual' : 'following',
         });
       }
-    }
 
-    // Save lightweight follows handles (for repost filter feature)
-    // This replaces the bloated socialGraph storage
-    const followHandles = follows.map((f) => f.handle);
-    await setFollowsHandles(followHandles, Date.now());
-    console.log(`[ErgoBlock BG] Saved ${followHandles.length} follow handles`);
-
-    // Note: We no longer persist the full socialGraph - it was too large
-    // The UI can fetch profile details on-demand when needed
-
-    // Save blocklists (without avatars to reduce storage)
-    const storedBlocklists: SubscribedBlocklist[] = blocklists.map((l) => ({
-      uri: l.uri,
-      name: l.name,
-      description: l.description,
-      // avatar intentionally omitted - fetched on-demand in UI
-      creator: {
-        did: l.creator.did,
-        handle: l.creator.handle,
-        displayName: l.creator.displayName,
-      },
-      listItemCount: l.listItemCount,
-      syncedAt: Date.now(),
-    }));
-    await setSubscribedBlocklists(storedBlocklists);
-
-    // Now find conflicts: for each blocklist, check if any members are in our social graph
-    console.log('[ErgoBlock BG] Checking blocklists for conflicts...');
-    const conflictGroups: BlocklistConflictGroup[] = [];
-    const dismissedLists = await getDismissedConflicts();
-
-    for (const list of blocklists) {
-      console.log(`[ErgoBlock BG] Checking list: ${list.name} (${list.uri})`);
-      const members = await fetchListMembers(auth, list.uri);
-
-      const conflicts: BlocklistConflict[] = [];
-      for (const member of members) {
-        const relation = allRelations.get(member.did);
-        if (relation) {
-          conflicts.push({
-            user: relation,
-            listUri: list.uri,
-            listName: list.name,
-            listCreatorHandle: list.creator.handle,
+      for (const f of followers) {
+        if (!allRelations.has(f.did)) {
+          allRelations.set(f.did, {
+            did: f.did,
+            handle: f.handle,
+            displayName: f.displayName,
+            // avatar intentionally omitted - fetched on-demand in UI
+            relationship: 'follower',
           });
         }
       }
 
-      if (conflicts.length > 0) {
-        conflictGroups.push({
-          list: {
-            uri: list.uri,
-            name: list.name,
-            description: list.description,
-            // avatar intentionally omitted - fetched on-demand in UI
-            creator: {
-              did: list.creator.did,
-              handle: list.creator.handle,
-              displayName: list.creator.displayName,
+      // Save lightweight follows handles (for repost filter feature)
+      // This replaces the bloated socialGraph storage
+      const followHandles = follows.map((f) => f.handle);
+      await setFollowsHandles(followHandles, Date.now());
+      logger.info(`Saved ${followHandles.length} follow handles`);
+
+      // Note: We no longer persist the full socialGraph - it was too large
+      // The UI can fetch profile details on-demand when needed
+
+      // Save blocklists (without avatars to reduce storage)
+      const storedBlocklists: SubscribedBlocklist[] = blocklists.map((l) => ({
+        uri: l.uri,
+        name: l.name,
+        description: l.description,
+        // avatar intentionally omitted - fetched on-demand in UI
+        creator: {
+          did: l.creator.did,
+          handle: l.creator.handle,
+          displayName: l.creator.displayName,
+        },
+        listItemCount: l.listItemCount,
+        syncedAt: Date.now(),
+      }));
+      await setSubscribedBlocklists(storedBlocklists);
+
+      // Now find conflicts: for each blocklist, check if any members are in our social graph
+      logger.info('Checking blocklists for conflicts...');
+      const conflictGroups: BlocklistConflictGroup[] = [];
+      const dismissedLists = await getDismissedConflicts();
+
+      for (const list of blocklists) {
+        logger.debug(`Checking list: ${list.name}`);
+        const members = await fetchListMembers(auth, list.uri);
+
+        const conflicts: BlocklistConflict[] = [];
+        for (const member of members) {
+          const relation = allRelations.get(member.did);
+          if (relation) {
+            conflicts.push({
+              user: relation,
+              listUri: list.uri,
+              listName: list.name,
+              listCreatorHandle: list.creator.handle,
+            });
+          }
+        }
+
+        if (conflicts.length > 0) {
+          conflictGroups.push({
+            list: {
+              uri: list.uri,
+              name: list.name,
+              description: list.description,
+              // avatar intentionally omitted - fetched on-demand in UI
+              creator: {
+                did: list.creator.did,
+                handle: list.creator.handle,
+                displayName: list.creator.displayName,
+              },
+              listItemCount: list.listItemCount,
+              syncedAt: Date.now(),
             },
-            listItemCount: list.listItemCount,
-            syncedAt: Date.now(),
-          },
-          conflicts,
-          dismissed: dismissedLists.has(list.uri),
-        });
-        console.log(`[ErgoBlock BG] Found ${conflicts.length} conflicts in ${list.name}`);
+            conflicts,
+            dismissed: dismissedLists.has(list.uri),
+          });
+          logger.info(`Found ${conflicts.length} conflicts in ${list.name}`);
+        }
+
+        // Rate limit between lists
+        await sleep(PAGINATION_DELAY);
       }
 
-      // Rate limit between lists
-      await sleep(PAGINATION_DELAY);
+      // Save conflicts
+      await setBlocklistConflicts(conflictGroups);
+
+      const totalConflicts = conflictGroups.reduce((sum, g) => sum + g.conflicts.length, 0);
+
+      await updateBlocklistAuditState({
+        syncInProgress: false,
+        lastSyncAt: Date.now(),
+        followCount: follows.length,
+        followerCount: followers.length,
+        blocklistCount: blocklists.length,
+        conflictCount: totalConflicts,
+      });
+
+      logger.info(`Blocklist audit complete: ${totalConflicts} conflicts found`);
+      return { success: true, conflictCount: totalConflicts };
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      logger.error('Blocklist audit sync failed:', errorMessage);
+
+      await updateBlocklistAuditState({
+        syncInProgress: false,
+        lastError: errorMessage,
+      });
+
+      return { success: false, error: errorMessage };
     }
-
-    // Save conflicts
-    await setBlocklistConflicts(conflictGroups);
-
-    const totalConflicts = conflictGroups.reduce((sum, g) => sum + g.conflicts.length, 0);
-
-    await updateBlocklistAuditState({
-      syncInProgress: false,
-      lastSyncAt: Date.now(),
-      followCount: follows.length,
-      followerCount: followers.length,
-      blocklistCount: blocklists.length,
-      conflictCount: totalConflicts,
-    });
-
-    console.log(`[ErgoBlock BG] Blocklist audit complete: ${totalConflicts} conflicts found`);
-    blocklistAuditLockActive = false;
-    return { success: true, conflictCount: totalConflicts };
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    console.error('[ErgoBlock BG] Blocklist audit sync failed:', errorMessage);
-
-    await updateBlocklistAuditState({
-      syncInProgress: false,
-      lastError: errorMessage,
-    });
-
-    blocklistAuditLockActive = false;
-    return { success: false, error: errorMessage };
-  }
+  });
 }
 
 /**
@@ -1765,6 +1751,115 @@ async function handleUnsubscribeFromBlocklist(
     return { success: true };
   } catch (error) {
     console.error('[ErgoBlock BG] Unsubscribe failed:', error);
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+  }
+}
+
+/**
+ * Copy all members of a blocklist as individual permanent blocks
+ * Excludes users the authenticated user follows
+ */
+async function handleCopyBlocklistAsIndividualBlocks(
+  listUri: string
+): Promise<{ success: boolean; blocked?: number; skipped?: number; error?: string }> {
+  try {
+    const auth = await getAuthToken();
+    if (!auth?.accessJwt || !auth?.did || !auth?.pdsUrl) {
+      return { success: false, error: 'Not authenticated' };
+    }
+
+    console.log('[ErgoBlock BG] Copying blocklist as individual blocks:', listUri);
+
+    // Fetch all list members
+    const members = await fetchListMembers(auth, listUri);
+    console.log(`[ErgoBlock BG] Found ${members.length} members in blocklist`);
+
+    if (members.length === 0) {
+      return { success: true, blocked: 0, skipped: 0 };
+    }
+
+    // Get user's follows to filter out
+    const socialGraph = await getSocialGraph();
+    const followDids = new Set(socialGraph.follows.map((f) => f.did));
+    console.log(`[ErgoBlock BG] User follows ${followDids.size} accounts`);
+
+    // Get existing blocks to avoid duplicates
+    const permanentBlocks = await getPermanentBlocks();
+    const tempBlocks = await getTempBlocks();
+    const existingBlockDids = new Set([
+      ...Object.keys(permanentBlocks),
+      ...Object.keys(tempBlocks),
+    ]);
+    console.log(`[ErgoBlock BG] User has ${existingBlockDids.size} existing blocks`);
+
+    let blocked = 0;
+    let skipped = 0;
+
+    for (const member of members) {
+      // Skip if user follows this person
+      if (followDids.has(member.did)) {
+        console.log(`[ErgoBlock BG] Skipping ${member.handle} (followed)`);
+        skipped++;
+        continue;
+      }
+
+      // Skip if already blocked
+      if (existingBlockDids.has(member.did)) {
+        console.log(`[ErgoBlock BG] Skipping ${member.did} (already blocked)`);
+        skipped++;
+        continue;
+      }
+
+      try {
+        const record = {
+          $type: 'app.bsky.graph.block',
+          subject: member.did,
+          createdAt: new Date().toISOString(),
+        };
+
+        const response = await bgApiRequest<{ uri: string; cid: string }>(
+          'com.atproto.repo.createRecord',
+          'POST',
+          {
+            repo: auth.did,
+            collection: 'app.bsky.graph.block',
+            record,
+          },
+          auth.accessJwt,
+          auth.pdsUrl
+        );
+
+        if (response) {
+          blocked++;
+
+          // Add history entry
+          await addHistoryEntry({
+            did: member.did,
+            handle: member.handle || member.did,
+            action: 'blocked',
+            timestamp: Date.now(),
+            trigger: 'manual',
+            success: true,
+          });
+        } else {
+          skipped++;
+        }
+
+        // Rate limit: 100ms between operations (as specified in task)
+        await sleep(100);
+      } catch (error) {
+        console.error(`[ErgoBlock BG] Failed to block ${member.did}:`, error);
+        skipped++;
+      }
+    }
+
+    console.log(
+      `[ErgoBlock BG] Copy blocklist complete: ${blocked} blocked, ${skipped} skipped`
+    );
+
+    return { success: true, blocked, skipped };
+  } catch (error) {
+    console.error('[ErgoBlock BG] Copy blocklist as blocks failed:', error);
     return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
   }
 }
@@ -2016,7 +2111,77 @@ export async function checkExpirations(): Promise<void> {
     }
   }
 
-  console.log('[ErgoBlock BG] Expiration check complete');
+  logger.info('Expiration check complete');
+
+  // Also process any pending rollbacks (from failed storage operations)
+  await processPendingRollbacks();
+}
+
+/**
+ * Process pending rollbacks from the queue
+ * These are unblock/unmute operations that failed after a block/mute API call succeeded
+ * but local storage failed, requiring the API action to be undone
+ */
+async function processPendingRollbacks(): Promise<void> {
+  const rollbacks = await getProcessableRollbacks();
+  if (rollbacks.length === 0) return;
+
+  logger.info(`Processing ${rollbacks.length} pending rollbacks`);
+
+  // Get auth for API calls
+  const authResult = await browser.storage.local.get(['authToken']);
+  const auth = authResult.authToken as { accessJwt: string; pdsUrl: string } | undefined;
+
+  if (!auth?.accessJwt) {
+    logger.warn('No auth token available for rollback processing');
+    return;
+  }
+
+  for (const rollback of rollbacks) {
+    try {
+      logger.info(`Processing rollback: ${rollback.type} for ${rollback.handle}`);
+
+      if (rollback.type === 'unblock') {
+        // Unblock the user
+        await executeApiRequest(
+          `com.atproto.repo.deleteRecord`,
+          'POST',
+          {
+            repo: auth.pdsUrl ? undefined : rollback.did, // Will be set by executeApiRequest
+            collection: 'app.bsky.graph.block',
+            rkey: rollback.rkey,
+          },
+          auth
+        );
+      } else if (rollback.type === 'unmute') {
+        // Unmute the user
+        await executeApiRequest(
+          'app.bsky.graph.unmuteActor',
+          'POST',
+          { actor: rollback.did },
+          auth
+        );
+      }
+
+      // Success - remove from queue
+      await removePendingRollback(rollback.id);
+      logger.info(`Rollback successful for ${rollback.handle}`);
+    } catch (error) {
+      // Update attempt count
+      await updatePendingRollback(rollback.id, {
+        attempts: rollback.attempts + 1,
+        lastAttempt: Date.now(),
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+      logger.error(`Rollback failed for ${rollback.handle}:`, error);
+    }
+  }
+
+  // Periodically clean up old rollbacks that have exceeded max attempts
+  const cleaned = await cleanupOldRollbacks();
+  if (cleaned > 0) {
+    logger.info(`Cleaned up ${cleaned} old rollbacks`);
+  }
 }
 
 export async function setupAlarm(): Promise<void> {
@@ -2029,6 +2194,9 @@ export async function setupAlarm(): Promise<void> {
   });
   console.log('[ErgoBlock BG] Alarm set up with interval:', intervalMinutes, 'minutes');
 }
+
+// Prefix for delayed block alarms (defined early for use in alarm listener)
+const DELAYED_BLOCK_ALARM_PREFIX = 'delayed_block_';
 
 // Listen for alarm events
 // Note: Return promises to keep Service Worker alive during async operations
@@ -2045,6 +2213,11 @@ browser.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === CLEARSKY_QUEUE_ALARM_NAME) {
     return processClearskyQueue();
   }
+  // Handle delayed block alarms (Last Word feature)
+  if (alarm.name.startsWith(DELAYED_BLOCK_ALARM_PREFIX)) {
+    const did = alarm.name.slice(DELAYED_BLOCK_ALARM_PREFIX.length);
+    return executeDelayedBlock(did);
+  }
 });
 
 // Listen for messages from content script and popup
@@ -2052,12 +2225,31 @@ interface ExtensionMessage {
   type: string;
   auth?: AuthData;
   did?: string;
+  dids?: string[];
   handle?: string;
   listUri?: string;
   rkey?: string;
   targetDid?: string;
   targetDids?: string[];
   beforeTimestamp?: number;
+  // Last Word delayed block fields
+  blockDurationMs?: number;
+  permanent?: boolean;
+  delaySeconds?: number;
+  mutedFirst?: boolean;
+  // Mass ops fields
+  settings?: unknown;
+  operations?: unknown;
+  forceRefresh?: boolean;
+  // Mass ops cluster dismiss/restore
+  cluster?: {
+    type: 'block' | 'follow' | 'listitem';
+    startTime: number;
+    endTime: number;
+    count: number;
+  };
+  // Duplicate scan fields
+  deleteDuplicates?: boolean;
 }
 
 type MessageResponse = { success: boolean; error?: string; [key: string]: unknown };
@@ -2231,6 +2423,126 @@ async function handleFindContext(
   } catch (error) {
     console.error('[ErgoBlock BG] Find context failed:', error);
     return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+  }
+}
+
+// ============================================================================
+// Last Word Delayed Block Handlers
+// ============================================================================
+
+/**
+ * Handle scheduling a delayed block (Last Word feature)
+ * Creates an alarm and stores the pending block
+ */
+async function handleScheduleDelayedBlock(
+  did: string,
+  handle: string,
+  blockDurationMs: number,
+  permanent: boolean,
+  delaySeconds: number,
+  mutedFirst: boolean
+): Promise<{ success: boolean; error?: string; delaySeconds?: number }> {
+  try {
+    // Validate delay is within bounds (10 seconds to 1 hour)
+    const clampedDelay = Math.max(10, Math.min(3600, delaySeconds));
+
+    // Store the pending block entry
+    const entry: DelayedBlockEntry = {
+      did,
+      handle,
+      blockDurationMs,
+      executeAt: Date.now() + clampedDelay * 1000,
+      permanent,
+      mutedFirst,
+    };
+    await addPendingDelayedBlock(entry);
+
+    // Create an alarm to execute the block
+    const alarmName = `${DELAYED_BLOCK_ALARM_PREFIX}${did}`;
+    await browser.alarms.create(alarmName, {
+      when: entry.executeAt,
+    });
+
+    console.log(
+      `[ErgoBlock BG] Scheduled delayed block for @${handle} in ${clampedDelay}s (permanent: ${permanent})`
+    );
+    return { success: true, delaySeconds: clampedDelay };
+  } catch (error) {
+    console.error('[ErgoBlock BG] Failed to schedule delayed block:', error);
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+  }
+}
+
+/**
+ * Execute a delayed block when the alarm fires
+ */
+async function executeDelayedBlock(did: string): Promise<void> {
+  try {
+    const entry = await getPendingDelayedBlock(did);
+    if (!entry) {
+      console.log('[ErgoBlock BG] No pending delayed block found for:', did);
+      return;
+    }
+
+    const auth = await getAuthToken();
+    if (!auth?.accessJwt || !auth?.did || !auth?.pdsUrl) {
+      console.error('[ErgoBlock BG] Not authenticated for delayed block execution');
+      // Keep the pending entry for retry later
+      return;
+    }
+
+    // Get options to check if we should unmute first
+    const options = await getOptions();
+
+    // If user was muted first, unmute them before blocking
+    if (entry.mutedFirst && options.lastWordMuteEnabled) {
+      try {
+        await unmuteUser(did, auth.accessJwt, auth.pdsUrl);
+        console.log('[ErgoBlock BG] Last Word: Unmuted user before block:', entry.handle);
+      } catch (unmuteErr) {
+        console.error('[ErgoBlock BG] Failed to unmute before block:', unmuteErr);
+        // Continue with blocking anyway
+      }
+    }
+
+    // Execute the block
+    const blockResult = await blockUser(did, auth.accessJwt, auth.did, auth.pdsUrl);
+    console.log('[ErgoBlock BG] Last Word: Blocked user:', entry.handle, 'result:', blockResult);
+
+    // If it's a temp block, store it in temp blocks storage
+    if (!entry.permanent && entry.blockDurationMs > 0) {
+      let rkey: string | undefined;
+      if (blockResult?.uri) {
+        const parts = blockResult.uri.split('/');
+        rkey = parts[parts.length - 1];
+      }
+      await addTempBlock(did, entry.handle, entry.blockDurationMs, rkey);
+      console.log(
+        '[ErgoBlock BG] Last Word: Added temp block for',
+        entry.handle,
+        'duration:',
+        entry.blockDurationMs
+      );
+    }
+
+    // Add to history
+    await addHistoryEntry({
+      did,
+      handle: entry.handle,
+      action: 'blocked',
+      timestamp: Date.now(),
+      trigger: 'manual', // It was initiated manually, just delayed
+      success: true,
+      duration: entry.permanent ? undefined : entry.blockDurationMs,
+    });
+
+    // Remove from pending storage
+    await removePendingDelayedBlock(did);
+    console.log('[ErgoBlock BG] Last Word: Block executed successfully for:', entry.handle);
+  } catch (error) {
+    console.error('[ErgoBlock BG] Failed to execute delayed block:', error);
+    // Remove from pending to prevent retries on permanent failures
+    await removePendingDelayedBlock(did);
   }
 }
 
@@ -2622,6 +2934,7 @@ interface FollowRelationshipsResponse {
   followersWhoFollowThem?: RelationshipUser[];
   followsTheyBlock?: RelationshipUser[];
   error?: string;
+  [key: string]: unknown; // Index signature for MessageResponse compatibility
 }
 
 /**
@@ -2879,7 +3192,14 @@ async function handleGetFollowsTheyBlock(
  */
 async function handleGetFollowsWhoBlockThem(
   candidateDid: string
-): Promise<{ success: boolean; count?: number; users?: RelationshipUser[]; totalBlockers?: number; cached?: boolean; error?: string }> {
+): Promise<{
+  success: boolean;
+  count?: number;
+  users?: RelationshipUser[];
+  totalBlockers?: number;
+  cached?: boolean;
+  error?: string;
+}> {
   try {
     const auth = await getAuthToken();
     if (!auth?.accessJwt || !auth?.did || !auth?.pdsUrl) {
@@ -2907,7 +3227,9 @@ async function handleGetFollowsWhoBlockThem(
       }
     }
 
-    console.log(`[ErgoBlock BG] Follows who block them: ${result.count} (total blockers: ${result.totalBlockers}, cached: ${result.cached})`);
+    console.log(
+      `[ErgoBlock BG] Follows who block them: ${result.count} (total blockers: ${result.totalBlockers}, cached: ${result.cached})`
+    );
     return {
       success: true,
       count: result.count,
@@ -2948,7 +3270,11 @@ async function handleGetFollowsWhoBlockThemCached(
     };
   } catch (error) {
     console.error('[ErgoBlock BG] Get cached follows who block failed:', error);
-    return { success: false, cached: false, error: error instanceof Error ? error.message : 'Unknown error' };
+    return {
+      success: false,
+      cached: false,
+      error: error instanceof Error ? error.message : 'Unknown error',
+    };
   }
 }
 
@@ -2960,7 +3286,9 @@ async function handlePrewarmClearskyCache(
 ): Promise<{ success: boolean; queued?: number; alreadyCached?: number; error?: string }> {
   try {
     const result = await prewarmBlockedByCache(targetDids);
-    console.log(`[ErgoBlock BG] Prewarm Clearsky: ${result.queued} queued, ${result.alreadyCached} cached`);
+    console.log(
+      `[ErgoBlock BG] Prewarm Clearsky: ${result.queued} queued, ${result.alreadyCached} cached`
+    );
 
     // Start processing immediately instead of waiting for the 2-minute alarm
     if (result.queued > 0) {
@@ -2984,6 +3312,7 @@ async function handlePrewarmClearskyCache(
 interface MassOpsScanResponse {
   success: boolean;
   error?: string;
+  [key: string]: unknown; // Index signature for MessageResponse compatibility
 }
 
 interface MassOpsUndoResponse {
@@ -2991,6 +3320,7 @@ interface MassOpsUndoResponse {
   undone: number;
   failed: number;
   errors: string[];
+  [key: string]: unknown; // Index signature for MessageResponse compatibility
 }
 
 /**
@@ -3034,13 +3364,19 @@ async function handleScanMassOps(
     });
 
     // Detect mass operations from the cached/downloaded data
-    const clusters = detectMassOperations(
+    const allClusters = detectMassOperations(
       {
         blocks: result.blocks,
         follows: result.follows,
         listitems: result.listitems,
       },
       settings
+    );
+
+    // Filter out dismissed clusters
+    const dismissedClusters = await getDismissedMassOpsClusters();
+    const clusters = allClusters.filter(
+      (cluster) => !isClusterDismissed(cluster, dismissedClusters)
     );
 
     // Save the scan result
@@ -3201,6 +3537,7 @@ async function handleFetchCopyUserData(handle: string): Promise<MessageResponse>
 
 /**
  * Execute batch follow operations for Copy User
+ * Checks existing follows from PDS to avoid duplicate follow notifications
  */
 async function handleExecuteCopyUserFollows(dids: string[]): Promise<MessageResponse> {
   const auth = await getAuthToken();
@@ -3210,17 +3547,40 @@ async function handleExecuteCopyUserFollows(dids: string[]): Promise<MessageResp
 
   console.log(`[ErgoBlock BG] Executing Copy User follows for ${dids.length} users`);
 
+  // Fetch existing follows from PDS to avoid re-following (which sends notifications)
+  console.log('[ErgoBlock BG] Fetching existing follows to avoid duplicates...');
+  const existingFollows = await fetchAllFollows(auth);
+  const existingFollowDids = new Set(existingFollows.map((f) => f.did));
+  console.log(`[ErgoBlock BG] Found ${existingFollowDids.size} existing follows`);
+
+  // Filter out DIDs we already follow
+  const didsToFollow = dids.filter((did) => !existingFollowDids.has(did));
+  const alreadyFollowing = dids.length - didsToFollow.length;
+
+  if (alreadyFollowing > 0) {
+    console.log(`[ErgoBlock BG] Skipping ${alreadyFollowing} users already followed`);
+  }
+
+  if (didsToFollow.length === 0) {
+    console.log('[ErgoBlock BG] All selected users are already followed');
+    return { success: true, succeeded: 0, failed: 0, errors: [], skipped: alreadyFollowing };
+  }
+
+  console.log(`[ErgoBlock BG] Will follow ${didsToFollow.length} new users`);
+
   let succeeded = 0;
   let failed = 0;
   const errors: string[] = [];
 
-  for (const did of dids) {
+  for (const did of didsToFollow) {
     try {
       const record = {
         $type: 'app.bsky.graph.follow',
         subject: did,
         createdAt: new Date().toISOString(),
       };
+
+      console.log(`[ErgoBlock BG] Following ${did} (${succeeded + failed + 1}/${didsToFollow.length})...`);
 
       const response = await bgApiRequest<{ uri: string; cid: string }>(
         'com.atproto.repo.createRecord',
@@ -3236,13 +3596,15 @@ async function handleExecuteCopyUserFollows(dids: string[]): Promise<MessageResp
 
       if (response) {
         succeeded++;
+        console.log(`[ErgoBlock BG] Followed ${did} successfully: ${response.uri}`);
       } else {
         failed++;
+        console.error(`[ErgoBlock BG] Follow returned null for ${did}`);
         errors.push(`Failed to follow ${did}`);
       }
 
-      // Rate limit: 350ms between operations
-      await sleep(350);
+      // Small delay between operations to avoid overwhelming the server
+      await sleep(100);
     } catch (error) {
       failed++;
       const errorMsg = error instanceof Error ? error.message : 'Unknown error';
@@ -3251,9 +3613,15 @@ async function handleExecuteCopyUserFollows(dids: string[]): Promise<MessageResp
     }
   }
 
-  console.log(`[ErgoBlock BG] Copy User follows complete: ${succeeded} succeeded, ${failed} failed`);
+  // Invalidate the follows cache since we just modified it
+  followsCache.data = null;
+  followsCache.fetchedAt = 0;
 
-  return { success: failed === 0, succeeded, failed, errors };
+  console.log(
+    `[ErgoBlock BG] Copy User follows complete: ${succeeded} succeeded, ${failed} failed, ${alreadyFollowing} skipped (already following)`
+  );
+
+  return { success: failed === 0, succeeded, failed, errors, skipped: alreadyFollowing };
 }
 
 /**
@@ -3279,6 +3647,8 @@ async function handleExecuteCopyUserBlocks(dids: string[]): Promise<MessageRespo
         createdAt: new Date().toISOString(),
       };
 
+      console.log(`[ErgoBlock BG] Blocking ${did} (${succeeded + failed + 1}/${dids.length})...`);
+
       const response = await bgApiRequest<{ uri: string; cid: string }>(
         'com.atproto.repo.createRecord',
         'POST',
@@ -3293,6 +3663,7 @@ async function handleExecuteCopyUserBlocks(dids: string[]): Promise<MessageRespo
 
       if (response) {
         succeeded++;
+        console.log(`[ErgoBlock BG] Blocked ${did} successfully: ${response.uri}`);
 
         // Add history entry for the block
         await addHistoryEntry({
@@ -3305,11 +3676,12 @@ async function handleExecuteCopyUserBlocks(dids: string[]): Promise<MessageRespo
         });
       } else {
         failed++;
+        console.error(`[ErgoBlock BG] Block returned null for ${did}`);
         errors.push(`Failed to block ${did}`);
       }
 
-      // Rate limit: 350ms between operations
-      await sleep(350);
+      // Small delay between operations to avoid overwhelming the server
+      await sleep(100);
     } catch (error) {
       failed++;
       const errorMsg = error instanceof Error ? error.message : 'Unknown error';
@@ -3321,6 +3693,322 @@ async function handleExecuteCopyUserBlocks(dids: string[]): Promise<MessageRespo
   console.log(`[ErgoBlock BG] Copy User blocks complete: ${succeeded} succeeded, ${failed} failed`);
 
   return { success: failed === 0, succeeded, failed, errors };
+}
+
+/**
+ * Scan for duplicate follow records in user's PDS
+ * Returns info about duplicates found, optionally deletes them
+ */
+async function handleScanDuplicateFollows(deleteDuplicates: boolean): Promise<MessageResponse> {
+  const auth = await getAuthToken();
+  if (!auth?.accessJwt || !auth?.did || !auth?.pdsUrl) {
+    return { success: false, error: 'Not authenticated' };
+  }
+
+  console.log('[ErgoBlock BG] Scanning for duplicate follow records...');
+
+  // Fetch all follow records from PDS (not the API, but the actual records)
+  interface FollowRecordFull {
+    uri: string;
+    cid: string;
+    value: {
+      $type: string;
+      subject: string;
+      createdAt: string;
+    };
+  }
+
+  interface ListFollowsRecordsResponse {
+    records: FollowRecordFull[];
+    cursor?: string;
+  }
+
+  const allRecords: FollowRecordFull[] = [];
+  let cursor: string | undefined;
+
+  do {
+    let endpoint = `com.atproto.repo.listRecords?repo=${auth.did}&collection=app.bsky.graph.follow&limit=100`;
+    if (cursor) {
+      endpoint += `&cursor=${encodeURIComponent(cursor)}`;
+    }
+
+    const response = await bgApiRequest<ListFollowsRecordsResponse>(
+      endpoint,
+      'GET',
+      null,
+      auth.accessJwt,
+      auth.pdsUrl
+    );
+
+    if (response?.records) {
+      allRecords.push(...response.records);
+    }
+    cursor = response?.cursor;
+
+    if (cursor) {
+      await sleep(PAGINATION_DELAY);
+    }
+  } while (cursor);
+
+  console.log(`[ErgoBlock BG] Found ${allRecords.length} total follow records`);
+
+  // Group records by subject DID to find duplicates
+  const recordsBySubject = new Map<string, FollowRecordFull[]>();
+  for (const record of allRecords) {
+    const subject = record.value.subject;
+    const existing = recordsBySubject.get(subject) || [];
+    existing.push(record);
+    recordsBySubject.set(subject, existing);
+  }
+
+  // Find duplicates (subjects with more than one record)
+  const duplicates: Array<{ did: string; records: FollowRecordFull[] }> = [];
+  for (const [did, records] of recordsBySubject.entries()) {
+    if (records.length > 1) {
+      // Sort by createdAt, keep the oldest
+      records.sort((a, b) => new Date(a.value.createdAt).getTime() - new Date(b.value.createdAt).getTime());
+      duplicates.push({ did, records });
+    }
+  }
+
+  const totalDuplicateRecords = duplicates.reduce((sum, d) => sum + d.records.length - 1, 0);
+  console.log(`[ErgoBlock BG] Found ${duplicates.length} DIDs with duplicates (${totalDuplicateRecords} extra records)`);
+
+  if (!deleteDuplicates) {
+    // Just return the scan results
+    return {
+      success: true,
+      totalRecords: allRecords.length,
+      uniqueFollows: recordsBySubject.size,
+      duplicateDids: duplicates.length,
+      duplicateRecords: totalDuplicateRecords,
+      duplicateDetails: duplicates.map((d) => ({
+        did: d.did,
+        count: d.records.length,
+        uris: d.records.map((r) => r.uri),
+      })),
+    };
+  }
+
+  // Delete duplicates (keep the oldest record for each DID)
+  console.log('[ErgoBlock BG] Deleting duplicate follow records...');
+  let deleted = 0;
+  let deleteFailed = 0;
+  const deleteErrors: string[] = [];
+
+  for (const { did, records } of duplicates) {
+    // Skip the first (oldest) record, delete the rest
+    for (let i = 1; i < records.length; i++) {
+      const record = records[i];
+      const rkey = record.uri.split('/').pop();
+      if (!rkey) {
+        deleteErrors.push(`Invalid URI for ${did}: ${record.uri}`);
+        deleteFailed++;
+        continue;
+      }
+
+      try {
+        console.log(`[ErgoBlock BG] Deleting duplicate follow for ${did}: ${record.uri}`);
+        await bgApiRequest<{ success?: boolean }>(
+          'com.atproto.repo.deleteRecord',
+          'POST',
+          {
+            repo: auth.did,
+            collection: 'app.bsky.graph.follow',
+            rkey,
+          },
+          auth.accessJwt,
+          auth.pdsUrl
+        );
+        deleted++;
+        await sleep(100);
+      } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : 'Unknown error';
+        deleteErrors.push(`Failed to delete ${record.uri}: ${errorMsg}`);
+        deleteFailed++;
+        console.error(`[ErgoBlock BG] Failed to delete duplicate:`, error);
+      }
+    }
+  }
+
+  // Invalidate follows cache
+  followsCache.data = null;
+  followsCache.fetchedAt = 0;
+
+  console.log(`[ErgoBlock BG] Duplicate cleanup complete: ${deleted} deleted, ${deleteFailed} failed`);
+
+  return {
+    success: deleteFailed === 0,
+    totalRecords: allRecords.length,
+    uniqueFollows: recordsBySubject.size,
+    duplicateDids: duplicates.length,
+    duplicateRecords: totalDuplicateRecords,
+    deleted,
+    deleteFailed,
+    deleteErrors,
+  };
+}
+
+/**
+ * Get record counts for various collections in user's PDS
+ * Uses CAR file for fast single-request counting
+ */
+async function handleGetPdsRecordCounts(): Promise<MessageResponse> {
+  const auth = await getAuthToken();
+  if (!auth?.did || !auth?.pdsUrl) {
+    return { success: false, error: 'Not authenticated' };
+  }
+
+  console.log('[ErgoBlock BG] Fetching PDS record counts via CAR...');
+
+  try {
+    const counts = await getRecordCountsFromCar(auth.did, auth.pdsUrl);
+
+    const collections = [
+      { id: 'app.bsky.graph.follow', label: 'Follows' },
+      { id: 'app.bsky.graph.block', label: 'Blocks' },
+      { id: 'app.bsky.graph.listitem', label: 'List Items' },
+      { id: 'app.bsky.graph.list', label: 'Lists' },
+      { id: 'app.bsky.feed.post', label: 'Posts' },
+      { id: 'app.bsky.feed.like', label: 'Likes' },
+      { id: 'app.bsky.feed.repost', label: 'Reposts' },
+      { id: 'app.bsky.actor.profile', label: 'Profile' },
+    ];
+
+    console.log('[ErgoBlock BG] Record counts:', counts);
+
+    return {
+      success: true,
+      counts,
+      collections: collections.map((c) => ({ id: c.id, label: c.label, count: counts[c.id] || 0 })),
+    };
+  } catch (error) {
+    console.error('[ErgoBlock BG] Failed to get record counts:', error);
+    return { success: false, error: error instanceof Error ? error.message : 'Failed to fetch CAR' };
+  }
+}
+
+/**
+ * Debug: Find orphan block records that exist in CAR but not in API
+ * This helps diagnose repo inconsistencies
+ */
+async function handleDebugFindOrphanBlocks(): Promise<MessageResponse> {
+  const auth = await getAuthToken();
+  if (!auth?.accessJwt || !auth?.did || !auth?.pdsUrl) {
+    return { success: false, error: 'Not authenticated' };
+  }
+
+  console.log('[ErgoBlock BG] DEBUG: Finding orphan block records...');
+
+  try {
+    // Get blocks from CAR
+    console.log('[ErgoBlock BG] Fetching CAR data...');
+    const carResult = await getGraphOperationsSmart({
+      did: auth.did,
+      pdsUrl: auth.pdsUrl,
+      forceRefresh: true,
+      onProgress: (p) => console.log(`[ErgoBlock BG] CAR: ${p.message}`),
+    });
+    const carBlockDids = new Set(carResult.blocks.map((b) => b.did));
+    const carBlocksByDid = new Map(carResult.blocks.map((b) => [b.did, b]));
+    console.log(`[ErgoBlock BG] CAR has ${carBlockDids.size} block records`);
+
+    // Get blocks from API
+    console.log('[ErgoBlock BG] Fetching API blocks...');
+    const apiBlocks: string[] = [];
+    let cursor: string | undefined;
+    do {
+      const response = await bgApiRequest<{ blocks: Array<{ did: string }>; cursor?: string }>(
+        `app.bsky.graph.getBlocks?limit=100${cursor ? `&cursor=${cursor}` : ''}`,
+        'GET',
+        null,
+        auth.accessJwt,
+        auth.pdsUrl
+      );
+      if (response?.blocks) {
+        apiBlocks.push(...response.blocks.map((b) => b.did));
+        cursor = response.cursor;
+      } else {
+        break;
+      }
+    } while (cursor);
+
+    const apiBlockDids = new Set(apiBlocks);
+    console.log(`[ErgoBlock BG] API reports ${apiBlockDids.size} active blocks`);
+
+    // Find orphans (in CAR but not in API)
+    const orphanDids = [...carBlockDids].filter((did) => !apiBlockDids.has(did));
+    console.log(`[ErgoBlock BG] Found ${orphanDids.length} orphan block records`);
+
+    // Get details on orphans
+    const orphanDetails = orphanDids.map((did) => {
+      const record = carBlocksByDid.get(did)!;
+      return {
+        did,
+        rkey: record.rkey,
+        createdAt: new Date(record.createdAt).toISOString(),
+      };
+    });
+
+    // Sort by createdAt to see patterns
+    orphanDetails.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+
+    // Log first 20 and last 20
+    console.log('[ErgoBlock BG] First 20 orphans (oldest):');
+    orphanDetails.slice(0, 20).forEach((o, i) => {
+      console.log(`  ${i + 1}. ${o.did} (rkey: ${o.rkey}, created: ${o.createdAt})`);
+    });
+
+    if (orphanDetails.length > 40) {
+      console.log(`[ErgoBlock BG] ... ${orphanDetails.length - 40} more ...`);
+    }
+
+    console.log('[ErgoBlock BG] Last 20 orphans (newest):');
+    orphanDetails.slice(-20).forEach((o, i) => {
+      console.log(`  ${orphanDetails.length - 20 + i + 1}. ${o.did} (rkey: ${o.rkey}, created: ${o.createdAt})`);
+    });
+
+    // Check if there's a time cluster
+    if (orphanDetails.length > 0) {
+      const firstDate = orphanDetails[0].createdAt;
+      const lastDate = orphanDetails[orphanDetails.length - 1].createdAt;
+      console.log(`[ErgoBlock BG] Orphan date range: ${firstDate} to ${lastDate}`);
+    }
+
+    // Check if orphans are deleted/deactivated accounts
+    console.log('[ErgoBlock BG] Checking if orphans are deleted accounts (sampling first 10)...');
+    const sampleOrphans = orphanDetails.slice(0, 10);
+    for (const orphan of sampleOrphans) {
+      try {
+        const response = await fetch(
+          `https://public.api.bsky.app/xrpc/app.bsky.actor.getProfile?actor=${encodeURIComponent(orphan.did)}`
+        );
+        if (response.ok) {
+          const profile = (await response.json()) as { handle?: string };
+          console.log(`  ${orphan.did}: ACTIVE - @${profile.handle}`);
+        } else if (response.status === 400) {
+          const error = (await response.json()) as { message?: string };
+          console.log(`  ${orphan.did}: ${error.message || 'Invalid/deleted'}`);
+        } else {
+          console.log(`  ${orphan.did}: HTTP ${response.status}`);
+        }
+      } catch (e) {
+        console.log(`  ${orphan.did}: Error - ${e}`);
+      }
+      await sleep(100); // Rate limit
+    }
+
+    return {
+      success: true,
+      carCount: carBlockDids.size,
+      apiCount: apiBlockDids.size,
+      orphanCount: orphanDids.length,
+      orphans: orphanDetails,
+    };
+  } catch (error) {
+    console.error('[ErgoBlock BG] Failed to find orphan blocks:', error);
+    return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+  }
 }
 
 /**
@@ -3338,6 +4026,45 @@ async function bgApiRequestPublic<T>(endpoint: string): Promise<T | null> {
   } catch (error) {
     console.error(`[ErgoBlock BG] Public API request error:`, error);
     return null;
+  }
+}
+
+/**
+ * Resolve a handle to get profile info for repost filters
+ * Uses getProfiles() which returns ProfileWithViewer including viewer state
+ */
+async function handleResolveHandle(handle: string): Promise<MessageResponse> {
+  try {
+    const auth = await getAuthToken();
+    if (!auth?.accessJwt || !auth?.pdsUrl) {
+      return { success: false, error: 'Not authenticated' };
+    }
+
+    // Normalize handle - strip @ prefix if present
+    const normalizedHandle = handle.startsWith('@') ? handle.slice(1) : handle;
+
+    const profiles = await fetchProfiles([normalizedHandle], auth.accessJwt, auth.pdsUrl);
+    const profile = profiles[0];
+
+    if (!profile || !profile.did) {
+      return { success: false, error: 'User not found' };
+    }
+
+    return {
+      success: true,
+      profile: {
+        did: profile.did,
+        handle: profile.handle,
+        displayName: profile.displayName,
+        avatar: profile.avatar,
+      },
+    };
+  } catch (error) {
+    console.error('[ErgoBlock BG] Failed to resolve handle:', error);
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to resolve handle',
+    };
   }
 }
 
@@ -3391,6 +4118,23 @@ const messageHandler = async (rawMessage: unknown): Promise<MessageResponse | un
     return await handleFindContext(message.did, message.handle);
   }
 
+  // Last Word delayed block handler
+  if (
+    message.type === 'SCHEDULE_DELAYED_BLOCK' &&
+    message.did &&
+    message.handle &&
+    message.delaySeconds !== undefined
+  ) {
+    return await handleScheduleDelayedBlock(
+      message.did,
+      message.handle,
+      message.blockDurationMs ?? -1,
+      message.permanent ?? true,
+      message.delaySeconds,
+      message.mutedFirst ?? false
+    );
+  }
+
   if (message.type === 'FETCH_ALL_INTERACTIONS' && message.did && message.handle) {
     return await handleFetchAllInteractions(message.did, message.handle);
   }
@@ -3401,6 +4145,10 @@ const messageHandler = async (rawMessage: unknown): Promise<MessageResponse | un
 
   if (message.type === 'UNSUBSCRIBE_BLOCKLIST' && message.listUri) {
     return await handleUnsubscribeFromBlocklist(message.listUri as string);
+  }
+
+  if (message.type === 'COPY_BLOCKLIST_AS_INDIVIDUAL_BLOCKS' && message.listUri) {
+    return await handleCopyBlocklistAsIndividualBlocks(message.listUri as string);
   }
 
   // List Audit handlers
@@ -3458,7 +4206,9 @@ const messageHandler = async (rawMessage: unknown): Promise<MessageResponse | un
     const targetDids = message.targetDids as string[];
     // Queue with high priority (1) so these process before regular prewarm items
     const result = await prewarmBlockedByCache(targetDids, true);
-    console.log(`[ErgoBlock BG] Lookahead prefetch: ${result.queued} queued, ${result.alreadyCached} cached`);
+    console.log(
+      `[ErgoBlock BG] Lookahead prefetch: ${result.queued} queued, ${result.alreadyCached} cached`
+    );
     // Process immediately in background
     if (result.queued > 0) {
       processBlockedByQueue(result.queued).catch((err) => {
@@ -3486,6 +4236,64 @@ const messageHandler = async (rawMessage: unknown): Promise<MessageResponse | un
   if (message.type === 'SET_MASS_OPS_SETTINGS' && message.settings) {
     await setMassOpsSettings(message.settings as MassOpsSettings);
     return { success: true };
+  }
+
+  // Dismiss a mass ops cluster
+  if (message.type === 'DISMISS_MASS_OPS_CLUSTER' && message.cluster) {
+    try {
+      const cluster = message.cluster as {
+        type: 'block' | 'follow' | 'listitem';
+        startTime: number;
+        endTime: number;
+        count: number;
+      };
+      await dismissMassOpsCluster({
+        type: cluster.type,
+        startTime: cluster.startTime,
+        endTime: cluster.endTime,
+        count: cluster.count,
+        dismissedAt: Date.now(),
+      });
+      return { success: true };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+    }
+  }
+
+  // Get dismissed mass ops clusters
+  if (message.type === 'GET_DISMISSED_MASS_OPS_CLUSTERS') {
+    try {
+      const dismissed = await getDismissedMassOpsClusters();
+      return { success: true, dismissed };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+    }
+  }
+
+  // Restore a dismissed cluster (remove from dismissed list)
+  if (message.type === 'RESTORE_MASS_OPS_CLUSTER' && message.cluster) {
+    try {
+      const cluster = message.cluster as {
+        type: string;
+        startTime: number;
+        endTime: number;
+        count: number;
+      };
+      const dismissed = await getDismissedMassOpsClusters();
+      const filtered = dismissed.filter(
+        (d) =>
+          !(
+            d.type === cluster.type &&
+            d.startTime === cluster.startTime &&
+            d.endTime === cluster.endTime &&
+            d.count === cluster.count
+          )
+      );
+      await browser.storage.local.set({ massOpsDismissedClusters: filtered });
+      return { success: true };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+    }
   }
 
   // CAR cache status and size estimation
@@ -3538,11 +4346,7 @@ const messageHandler = async (rawMessage: unknown): Promise<MessageResponse | un
       if (!auth) {
         return { success: false, error: 'Not authenticated' };
       }
-      const profiles = await fetchProfiles(
-        message.dids as string[],
-        auth.accessJwt,
-        auth.pdsUrl
-      );
+      const profiles = await fetchProfiles(message.dids as string[], auth.accessJwt, auth.pdsUrl);
       // Convert to Map-like object for JSON serialization
       const profileMap: Record<string, ProfileWithViewer> = {};
       for (const profile of profiles) {
@@ -3570,6 +4374,26 @@ const messageHandler = async (rawMessage: unknown): Promise<MessageResponse | un
     return await handleExecuteCopyUserBlocks(message.dids as string[]);
   }
 
+  // Scan for duplicate follow records
+  if (message.type === 'SCAN_DUPLICATE_FOLLOWS') {
+    return await handleScanDuplicateFollows(message.deleteDuplicates === true);
+  }
+
+  // Get PDS record counts
+  if (message.type === 'GET_PDS_RECORD_COUNTS') {
+    return await handleGetPdsRecordCounts();
+  }
+
+  // Resolve handle to profile for repost filters
+  if (message.type === 'RESOLVE_HANDLE' && message.handle) {
+    return await handleResolveHandle(message.handle as string);
+  }
+
+  // Debug: Find orphan block records (in CAR but not in API)
+  if (message.type === 'DEBUG_FIND_ORPHAN_BLOCKS') {
+    return await handleDebugFindOrphanBlocks();
+  }
+
   return undefined;
 };
 
@@ -3582,13 +4406,13 @@ const MAX_SYNC_DURATION_MS = 10 * 60 * 1000;
  * Clear any stale sync state on startup
  * This handles the case where the extension was closed mid-sync
  * or the service worker was terminated during a sync operation
+ *
+ * Note: With Mutex implementation, the locks are automatically cleared
+ * when the service worker restarts (new Mutex instances are created).
  */
 async function clearStaleSyncState(): Promise<void> {
-  // Clear in-memory locks (lost on worker restart)
-  syncLockActive = false;
-  blocklistAuditLockActive = false;
-  followsSyncLockActive = false;
-  clearskyQueueLockActive = false;
+  // Note: Mutex locks are automatically cleared on worker restart
+  // (new Mutex instances start unlocked)
 
   // Clear main sync state
   const state = await getSyncState();

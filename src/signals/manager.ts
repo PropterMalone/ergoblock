@@ -88,20 +88,21 @@ export const blocklistConflicts = signal<BlocklistConflictGroup[]>([]);
 
 // UI state
 export type TabType =
-  | 'blocks'
-  | 'mutes'
-  | 'history'
+  | 'actions'
   | 'amnesty'
   | 'blocklist-audit'
   | 'repost-filters'
   | 'mass-ops'
-  | 'copy-user';
-export type SortColumn = 'user' | 'source' | 'status' | 'amnesty' | 'expires' | 'date';
+  | 'copy-user'
+  | 'settings';
+export type SortColumn = 'user' | 'type' | 'source' | 'status' | 'amnesty' | 'expires' | 'date';
 export type SortDirection = 'asc' | 'desc';
+export type FilterType = 'all' | 'block' | 'mute' | 'both';
 
-export const currentTab = signal<TabType>('blocks');
+export const currentTab = signal<TabType>('actions');
 export const searchQuery = signal('');
 export const filterSource = signal('all');
+export const filterType = signal<FilterType>('all');
 export const sortColumn = signal<SortColumn>('date');
 export const sortDirection = signal<SortDirection>('desc');
 export const selectedItems = signal<Set<string>>(new Set());
@@ -175,6 +176,40 @@ export const stats = computed(() => ({
   tempBlocks: blocks.value.filter((b) => b.source === 'ergoblock_temp').length,
   tempMutes: mutes.value.filter((m) => m.source === 'ergoblock_temp').length,
 }));
+
+// Combined blocks and mutes for unified table
+// Users who are both blocked and muted will appear once with both actions available
+export const allEntries = computed(() => {
+  const blockDids = new Set(blocks.value.map((b) => b.did));
+  const muteDids = new Set(mutes.value.map((m) => m.did));
+
+  // Find users who are both blocked and muted
+  const bothDids = new Set([...blockDids].filter((did) => muteDids.has(did)));
+
+  // For users with both, combine into a single entry with type 'both'
+  const combinedEntries: ManagedEntry[] = [];
+
+  for (const block of blocks.value) {
+    if (bothDids.has(block.did)) {
+      // Create combined entry - use block data but mark as 'both'
+      combinedEntries.push({
+        ...block,
+        type: 'both' as ManagedEntry['type'],
+      });
+    } else {
+      combinedEntries.push(block);
+    }
+  }
+
+  // Add mutes that are not also blocked
+  for (const mute of mutes.value) {
+    if (!bothDids.has(mute.did)) {
+      combinedEntries.push(mute);
+    }
+  }
+
+  return combinedEntries;
+});
 
 // Sorting toggle helper
 export function toggleSort(column: SortColumn): void {

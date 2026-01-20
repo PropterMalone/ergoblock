@@ -121,12 +121,14 @@ export function AmnestyTab({
   useEffect(() => {
     if (candidates.length > 0) {
       const candidateDids = candidates.map((c) => c.did);
-      browser.runtime.sendMessage({
-        type: 'PREWARM_CLEARSKY_CACHE',
-        targetDids: candidateDids,
-      }).catch(() => {
-        // Ignore errors - prewarming is best-effort
-      });
+      browser.runtime
+        .sendMessage({
+          type: 'PREWARM_CLEARSKY_CACHE',
+          targetDids: candidateDids,
+        })
+        .catch(() => {
+          // Ignore errors - prewarming is best-effort
+        });
     }
   }, [candidates.length]); // Only trigger when candidate count changes
 
@@ -481,7 +483,12 @@ function AmnestyCard({
         const response = (await browser.runtime.sendMessage({
           type: 'GET_FOLLOWS_WHO_BLOCK_THEM',
           did: candidate.did,
-        })) as { success: boolean; users?: RelationshipUser[]; count?: number; totalBlockers?: number };
+        })) as {
+          success: boolean;
+          users?: RelationshipUser[];
+          count?: number;
+          totalBlockers?: number;
+        };
 
         if (!cancelled && response.success) {
           setFollowsWhoBlockThem({
@@ -807,7 +814,8 @@ function AmnestyCard({
                     {followsWhoBlockThem.count === 1 ? 'blocks' : 'block'} them
                     {followsWhoBlockThem.totalBlockers > 0 && (
                       <span class="amnesty-total-blockers">
-                        {' '}({followsWhoBlockThem.totalBlockers.toLocaleString()} total)
+                        {' '}
+                        ({followsWhoBlockThem.totalBlockers.toLocaleString()} total)
                       </span>
                     )}
                   </span>
@@ -865,8 +873,8 @@ function AmnestyCard({
                   <strong>@{candidate.handle}</strong>
                 ) : ctx.engagementType ? (
                   <>
-                    <strong>@{candidate.handle}</strong>
-                    {' '}{ctx.engagementType === 'like' ? 'liked' : 'reposted'} your post:
+                    <strong>@{candidate.handle}</strong>{' '}
+                    {ctx.engagementType === 'like' ? 'liked' : 'reposted'} your post:
                   </>
                 ) : (
                   <strong>@{ctx.postAuthorHandle || 'unknown'}</strong>

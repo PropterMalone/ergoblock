@@ -1,6 +1,6 @@
 import type { JSX } from 'preact';
 import { useState } from 'preact/hooks';
-import { RefreshCw, Eye, EyeOff, UserX, ExternalLink } from 'lucide-preact';
+import { RefreshCw, Eye, EyeOff, UserX, ExternalLink, Copy } from 'lucide-preact';
 import type { BlocklistConflictGroup } from '../../types.js';
 import { blocklistAuditState, blocklistConflicts } from '../../signals/manager.js';
 import { formatDate } from './utils.js';
@@ -13,6 +13,7 @@ interface BlocklistAuditTabProps {
 
 export function BlocklistAuditTab({ onReload }: BlocklistAuditTabProps): JSX.Element {
   const [syncing, setSyncing] = useState(false);
+  const [copyingListUri, setCopyingListUri] = useState<string | null>(null);
 
   const state = blocklistAuditState.value;
   const conflicts = blocklistConflicts.value;
@@ -84,6 +85,43 @@ export function BlocklistAuditTab({ onReload }: BlocklistAuditTabProps): JSX.Ele
     }
   };
 
+  const handleCopyAsBlocks = async (listUri: string) => {
+    const group = conflicts.find((g) => g.list.uri === listUri);
+    if (!group) return;
+
+    const confirmed = confirm(
+      `Copy "${group.list.name}" as individual blocks?\n\n` +
+        `This will block all members of this list as permanent individual blocks, ` +
+        `EXCLUDING anyone you follow.\n\n` +
+        `This is reversible via Mass Ops (all blocks will appear as a cluster since they happen rapidly).`
+    );
+
+    if (!confirmed) return;
+
+    setCopyingListUri(listUri);
+    try {
+      const result = (await browser.runtime.sendMessage({
+        type: 'COPY_BLOCKLIST_AS_INDIVIDUAL_BLOCKS',
+        listUri,
+      })) as { success: boolean; blocked?: number; skipped?: number; error?: string };
+
+      if (result.success) {
+        alert(
+          `Successfully blocked ${result.blocked} users.\n` +
+            `Skipped ${result.skipped} (already blocked or you follow them).`
+        );
+        await onReload();
+      } else {
+        alert(`Failed to copy blocklist: ${result.error || 'Unknown error'}`);
+      }
+    } catch (error) {
+      console.error('[BlocklistAuditTab] Copy as blocks failed:', error);
+      alert('Failed to copy blocklist as individual blocks');
+    } finally {
+      setCopyingListUri(null);
+    }
+  };
+
   if (conflicts.length === 0) {
     return (
       <div class="blocklist-audit-container">
@@ -146,6 +184,8 @@ export function BlocklistAuditTab({ onReload }: BlocklistAuditTabProps): JSX.Ele
           onDismiss={handleDismiss}
           onUndismiss={handleUndismiss}
           onUnsubscribe={handleUnsubscribe}
+          onCopyAsBlocks={handleCopyAsBlocks}
+          copyingListUri={copyingListUri}
         />
       ))}
 
@@ -161,6 +201,8 @@ export function BlocklistAuditTab({ onReload }: BlocklistAuditTabProps): JSX.Ele
               onDismiss={handleDismiss}
               onUndismiss={handleUndismiss}
               onUnsubscribe={handleUnsubscribe}
+              onCopyAsBlocks={handleCopyAsBlocks}
+              copyingListUri={copyingListUri}
             />
           ))}
         </>
@@ -174,6 +216,8 @@ interface BlocklistGroupProps {
   onDismiss: (listUri: string) => void;
   onUndismiss: (listUri: string) => void;
   onUnsubscribe: (listUri: string) => void;
+  onCopyAsBlocks: (listUri: string) => void;
+  copyingListUri: string | null;
 }
 
 function BlocklistGroup({
@@ -181,7 +225,10 @@ function BlocklistGroup({
   onDismiss,
   onUndismiss,
   onUnsubscribe,
+  onCopyAsBlocks,
+  copyingListUri,
 }: BlocklistGroupProps): JSX.Element {
+  const isCopying = copyingListUri === group.list.uri;
   const list = group.list;
   const defaultAvatar =
     'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="%23666"><path d="M3 4h18v16H3V4zm2 2v12h14V6H5z"/></svg>';
@@ -221,6 +268,13 @@ function BlocklistGroup({
             onClick={() => onUnsubscribe(list.uri)}
           >
             <UserX size={14} /> Unsubscribe
+          </button>
+          <button
+            class="blocklist-action-btn blocklist-copy-blocks"
+            onClick={() => onCopyAsBlocks(list.uri)}
+            disabled={isCopying}
+          >
+            <Copy size={14} /> {isCopying ? 'Copying...' : 'Copy as Blocks'}
           </button>
         </div>
       </div>

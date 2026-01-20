@@ -40,9 +40,7 @@ import browser from '../../browser.js';
 /**
  * Fetch profiles via background worker (has access to auth)
  */
-async function fetchProfilesViaBackground(
-  dids: string[]
-): Promise<Map<string, ProfileWithViewer>> {
+async function fetchProfilesViaBackground(dids: string[]): Promise<Map<string, ProfileWithViewer>> {
   const response = (await browser.runtime.sendMessage({
     type: 'GET_PROFILES_BATCHED',
     dids,
@@ -250,7 +248,7 @@ export function CopyUserTab({ onReload }: CopyUserTabProps): JSX.Element {
       const result = (await browser.runtime.sendMessage({
         type: 'EXECUTE_COPY_USER_FOLLOWS',
         dids,
-      })) as { success: boolean; succeeded?: number; failed?: number; errors?: string[] };
+      })) as { success: boolean; succeeded?: number; failed?: number; errors?: string[]; skipped?: number };
 
       if (result.succeeded) {
         copyUserExecuteProgress.value = {
@@ -331,7 +329,11 @@ export function CopyUserTab({ onReload }: CopyUserTabProps): JSX.Element {
               disabled={loading}
               class="copy-user-handle-input"
             />
-            <button class="copy-user-fetch-btn" onClick={handleFetch} disabled={loading || !handleInput.trim()}>
+            <button
+              class="copy-user-fetch-btn"
+              onClick={handleFetch}
+              disabled={loading || !handleInput.trim()}
+            >
               <Search size={16} class={loading ? 'spinner' : ''} />
               {loading ? 'Fetching...' : 'Fetch'}
             </button>
@@ -353,8 +355,10 @@ export function CopyUserTab({ onReload }: CopyUserTabProps): JSX.Element {
   // Data loaded - show results
   const selectableFollows = getSelectableFollows();
   const selectableBlocks = getSelectableBlocks();
-  const allFollowsSelected = selectedFollows.size === selectableFollows.length && selectableFollows.length > 0;
-  const allBlocksSelected = selectedBlocks.size === selectableBlocks.length && selectableBlocks.length > 0;
+  const allFollowsSelected =
+    selectedFollows.size === selectableFollows.length && selectableFollows.length > 0;
+  const allBlocksSelected =
+    selectedBlocks.size === selectableBlocks.length && selectableBlocks.length > 0;
 
   return (
     <div class="copy-user-container">
@@ -410,7 +414,8 @@ export function CopyUserTab({ onReload }: CopyUserTabProps): JSX.Element {
       {executing && (
         <div class="copy-user-execute-progress">
           <Loader2 size={16} class="spinner" />
-          {executeProgress.type === 'follows' ? 'Following' : 'Blocking'}: {executeProgress.done} / {executeProgress.total}
+          {executeProgress.type === 'follows' ? 'Following' : 'Blocking'}: {executeProgress.done} /{' '}
+          {executeProgress.total}
         </div>
       )}
 
@@ -442,9 +447,7 @@ export function CopyUserTab({ onReload }: CopyUserTabProps): JSX.Element {
                 disabled={executing}
               />
             ))}
-            {follows.length === 0 && (
-              <div class="copy-user-empty">No follows found</div>
-            )}
+            {follows.length === 0 && <div class="copy-user-empty">No follows found</div>}
           </div>
           <div class="copy-user-list-actions">
             <button
@@ -484,9 +487,7 @@ export function CopyUserTab({ onReload }: CopyUserTabProps): JSX.Element {
                 disabled={executing}
               />
             ))}
-            {blocks.length === 0 && (
-              <div class="copy-user-empty">No blocks found</div>
-            )}
+            {blocks.length === 0 && <div class="copy-user-empty">No blocks found</div>}
           </div>
           <div class="copy-user-list-actions">
             <button
@@ -584,7 +585,7 @@ function UserRow({
         onClick={(e) => e.stopPropagation()}
       >
         {profile?.avatar ? (
-          <img src={profile.avatar} alt="" class="copy-user-row-avatar" />
+          <img src={profile.avatar} alt="" class="copy-user-row-avatar" loading="lazy" />
         ) : (
           <span class="copy-user-row-avatar-placeholder" />
         )}

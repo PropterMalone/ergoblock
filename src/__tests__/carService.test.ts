@@ -42,7 +42,7 @@ describe('carService', () => {
     });
 
     it('returns isStale=false when cache is within 24 hours', async () => {
-      const recentDownload = Date.now() - (12 * 60 * 60 * 1000); // 12 hours ago
+      const recentDownload = Date.now() - 12 * 60 * 60 * 1000; // 12 hours ago
       mockGetCarCacheMetadata.mockResolvedValue({
         did: 'did:plc:user',
         rev: 'abc123',
@@ -59,7 +59,7 @@ describe('carService', () => {
     });
 
     it('returns isStale=true when cache is older than 24 hours', async () => {
-      const oldDownload = Date.now() - (25 * 60 * 60 * 1000); // 25 hours ago
+      const oldDownload = Date.now() - 25 * 60 * 60 * 1000; // 25 hours ago
       mockGetCarCacheMetadata.mockResolvedValue({
         did: 'did:plc:user',
         rev: 'abc123',
@@ -107,7 +107,7 @@ describe('carService', () => {
     const mockCacheMeta = {
       did: 'did:plc:user',
       rev: 'abc123',
-      downloadedAt: Date.now() - (12 * 60 * 60 * 1000), // 12 hours ago
+      downloadedAt: Date.now() - 12 * 60 * 60 * 1000, // 12 hours ago
       sizeBytes: 1000,
       collections: { posts: 0, blocks: 0, follows: 0, listitems: 0, lists: 0 },
     };
@@ -130,7 +130,7 @@ describe('carService', () => {
     it('checks revision and downloads when cache is expired (>24h)', async () => {
       const expiredMeta = {
         ...mockCacheMeta,
-        downloadedAt: Date.now() - (25 * 60 * 60 * 1000), // 25 hours ago
+        downloadedAt: Date.now() - 25 * 60 * 60 * 1000, // 25 hours ago
       };
       mockGetCachedCarData.mockResolvedValue(mockCachedData);
       mockGetCarCacheMetadata.mockResolvedValue(expiredMeta);
@@ -155,9 +155,9 @@ describe('carService', () => {
         },
       });
 
-      mockParseCarForPosts.mockReturnValue({ posts: [], fetchedAt: Date.now() });
+      mockParseCarForPosts.mockReturnValue({ posts: [], creatorDid: 'did:plc:user' });
       mockParseCarForAllGraphOperations.mockReturnValue({ blocks: [], follows: [], listitems: [] });
-      mockParseCarForLists.mockReturnValue({ lists: {} });
+      mockParseCarForLists.mockReturnValue({ lists: {}, creatorDid: 'did:plc:user' });
       mockSaveCarData.mockResolvedValue();
 
       const result = await getCarDataSmart({
@@ -172,7 +172,7 @@ describe('carService', () => {
     it('refreshes timestamp when expired cache matches current revision', async () => {
       const expiredMeta = {
         ...mockCacheMeta,
-        downloadedAt: Date.now() - (25 * 60 * 60 * 1000), // 25 hours ago
+        downloadedAt: Date.now() - 25 * 60 * 60 * 1000, // 25 hours ago
       };
       mockGetCachedCarData.mockResolvedValue(mockCachedData);
       mockGetCarCacheMetadata.mockResolvedValue(expiredMeta);
@@ -212,9 +212,9 @@ describe('carService', () => {
         },
       });
 
-      mockParseCarForPosts.mockReturnValue({ posts: [], fetchedAt: Date.now() });
+      mockParseCarForPosts.mockReturnValue({ posts: [], creatorDid: 'did:plc:user' });
       mockParseCarForAllGraphOperations.mockReturnValue({ blocks: [], follows: [], listitems: [] });
-      mockParseCarForLists.mockReturnValue({ lists: {} });
+      mockParseCarForLists.mockReturnValue({ lists: {}, creatorDid: 'did:plc:user' });
       mockSaveCarData.mockResolvedValue();
 
       const result = await getCarDataSmart({

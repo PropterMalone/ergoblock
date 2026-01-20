@@ -14,6 +14,9 @@ export interface ExtensionOptions {
   postContextRetentionDays: number; // 0 = never delete
   // Amnesty settings
   forgivenessPeriodDays: number; // How old a block must be to be eligible for amnesty
+  // Last Word settings
+  lastWordMuteEnabled: boolean; // Whether to mute the user during Last Word delay (default true)
+  lastWordDelaySeconds: number; // Default delay in seconds (default 60)
 }
 
 export const DEFAULT_OPTIONS: ExtensionOptions = {
@@ -25,9 +28,12 @@ export const DEFAULT_OPTIONS: ExtensionOptions = {
   theme: 'auto',
   // Post context defaults
   savePostContext: true,
-  postContextRetentionDays: 90,
+  postContextRetentionDays: 0, // 0 = forever
   // Amnesty defaults
   forgivenessPeriodDays: 90, // 3 months
+  // Last Word defaults
+  lastWordMuteEnabled: true, // Mute during delay by default
+  lastWordDelaySeconds: 60, // 60 second delay by default
 };
 
 export interface HistoryEntry {
@@ -174,7 +180,7 @@ export interface ManagedEntry {
   displayName?: string;
   avatar?: string;
   source: 'ergoblock_temp' | 'ergoblock_permanent' | 'bluesky';
-  type: 'block' | 'mute';
+  type: 'block' | 'mute' | 'both';
   expiresAt?: number;
   createdAt?: number;
   syncedAt?: number;
@@ -716,3 +722,48 @@ export const DEFAULT_MASS_OPS_SETTINGS: MassOpsSettings = {
   timeWindowMinutes: 5,
   minOperationCount: 10,
 };
+
+// ============================================================================
+// Last Word Delayed Block Types
+// ============================================================================
+
+/**
+ * Options for the "Last Word" feature - mute first, block after delay
+ */
+export interface LastWordOptions {
+  enabled: boolean;
+  delaySeconds: number;
+}
+
+/**
+ * A pending delayed block entry waiting to be executed
+ */
+export interface DelayedBlockEntry {
+  did: string;
+  handle: string;
+  blockDurationMs: number; // -1 for permanent, positive for temp block duration
+  executeAt: number; // Unix timestamp (ms) when to execute the block
+  permanent: boolean;
+  mutedFirst: boolean; // Whether the user was muted before the delay
+}
+
+// ============================================================================
+// Pending Rollback Queue Types
+// ============================================================================
+
+/**
+ * Entry in the pending rollback queue
+ * Used when an API action succeeded but local storage failed,
+ * requiring the API action to be undone
+ */
+export interface PendingRollback {
+  id: string;
+  type: 'unblock' | 'unmute';
+  did: string;
+  handle: string;
+  rkey?: string; // For direct unblock
+  createdAt: number;
+  attempts: number;
+  lastAttempt: number;
+  error?: string;
+}

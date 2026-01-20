@@ -79,6 +79,8 @@ describe('types module', () => {
         savePostContext: true,
         postContextRetentionDays: 60,
         forgivenessPeriodDays: 90,
+        lastWordMuteEnabled: true,
+        lastWordDelaySeconds: 60,
       };
 
       expect(options.defaultDuration).toBe(3600000);

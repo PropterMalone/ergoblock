@@ -36,6 +36,8 @@ async function loadFilteredHandles(): Promise<void> {
 /**
  * Extract reposter handle from a feed item
  * Returns null if the item is not a repost
+ *
+ * FIX: Now always returns lowercase handle for consistent comparison
  */
 function extractReposterHandle(feedItem: Element): string | null {
   // Look for repost indicator
@@ -47,7 +49,8 @@ function extractReposterHandle(feedItem: Element): string | null {
   if (profileLink) {
     const match = profileLink.href.match(/\/profile\/([^/?#]+)/);
     if (match) {
-      return match[1];
+      // FIX: Normalize to lowercase for consistent comparison
+      return match[1].toLowerCase();
     }
   }
 
@@ -56,7 +59,8 @@ function extractReposterHandle(feedItem: Element): string | null {
   // Pattern: "Reposted by @handle" or just the handle
   const textMatch = text.match(/@?([a-zA-Z0-9._-]+(?:\.[a-zA-Z0-9._-]+)*)/);
   if (textMatch) {
-    return textMatch[1];
+    // FIX: Normalize to lowercase for consistent comparison
+    return textMatch[1].toLowerCase();
   }
 
   return null;
@@ -69,7 +73,8 @@ function filterFeedItem(feedItem: Element): boolean {
   const reposterHandle = extractReposterHandle(feedItem);
   if (!reposterHandle) return false;
 
-  if (filteredHandles.has(reposterHandle.toLowerCase())) {
+  // reposterHandle is already lowercase from extractReposterHandle
+  if (filteredHandles.has(reposterHandle)) {
     (feedItem as HTMLElement).style.display = 'none';
     feedItem.setAttribute('data-ergoblock-filtered', 'repost');
     return true;

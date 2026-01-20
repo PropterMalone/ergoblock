@@ -24,7 +24,16 @@ import {
   GetActorLikesResponse,
   OwnedList,
 } from './types.js';
-import { sleep, withRetry, isRetryableError } from './utils.js';
+import {
+  sleep,
+  withRetry,
+  isRetryableError,
+  validatePdsUrl,
+  apiCircuitBreaker,
+  logger,
+  extractRkeyFromUri,
+  isValidRkey,
+} from './utils.js';
 
 // AT Protocol API helpers for Bluesky
 // Handles block/mute/unblock/unmute operations
@@ -59,7 +68,8 @@ export function getSession(): BskySession | null {
       (k) => k.includes('BSKY') || k.includes('bsky') || k.includes('session')
     );
 
-    console.log('[TempBlock] Found storage keys:', possibleKeys);
+    // CRITICAL FIX #3: Don't log storage keys - could aid attackers in understanding storage structure
+    logger.debug(`Found ${possibleKeys.length} potential session storage keys`);
 
     for (const storageKey of possibleKeys) {
       try {
@@ -67,7 +77,6 @@ export function getSession(): BskySession | null {
         if (!raw) continue;
 
         const parsed = JSON.parse(raw) as StorageStructure;
-        console.log('[TempBlock] Checking storage key:', storageKey);
 
         // Try different possible structures
         let account: BskyAccount | null = null;
@@ -85,28 +94,37 @@ export function getSession(): BskySession | null {
         }
 
         // Structure 3: Direct account object
+        // MEDIUM FIX #9: Use proper type guard instead of unsafe double cast
         if (!account && parsed?.accessJwt && parsed?.did) {
-          account = parsed as unknown as BskyAccount;
+          account = {
+            did: parsed.did,
+            handle: parsed.handle,
+            accessJwt: parsed.accessJwt,
+            refreshJwt: undefined, // May not be present in this structure
+            service: parsed.service,
+            pdsUrl: parsed.pdsUrl,
+          };
         }
 
         if (account && account.accessJwt && account.did) {
-          console.log('[TempBlock] Found session for:', account.handle || account.did);
-          // Normalize the PDS URL
-          let pdsUrl = account.pdsUrl || account.service || BSKY_PDS_DEFAULT;
-          // Remove trailing slashes
-          pdsUrl = pdsUrl.replace(/\/+$/, '');
-          // Ensure https:// prefix
-          if (!pdsUrl.startsWith('http://') && !pdsUrl.startsWith('https://')) {
-            pdsUrl = 'https://' + pdsUrl;
+          // CRITICAL FIX #3: Only log handle (public info), not DID or token-related info
+          logger.debug('Found valid session', account.handle ? `for @${account.handle}` : '');
+          // Validate and normalize the PDS URL
+          const rawPdsUrl = account.pdsUrl || account.service || BSKY_PDS_DEFAULT;
+          const pdsUrl = validatePdsUrl(rawPdsUrl);
+          if (!pdsUrl) {
+            logger.error('Invalid PDS URL, using default:', rawPdsUrl);
+            // Fall back to default PDS for safety
           }
-          console.log('[TempBlock] Using PDS URL:', pdsUrl);
+          const finalPdsUrl = pdsUrl || BSKY_PDS_DEFAULT;
+          logger.debug('Using PDS URL:', finalPdsUrl);
 
           return {
             accessJwt: account.accessJwt,
             refreshJwt: account.refreshJwt,
             did: account.did,
             handle: account.handle || '',
-            pdsUrl,
+            pdsUrl: finalPdsUrl,
           };
         }
       } catch (_e) {
@@ -114,10 +132,10 @@ export function getSession(): BskySession | null {
       }
     }
 
-    console.error('[TempBlock] No valid session found in localStorage');
+    logger.error('No valid session found in localStorage');
     return null;
   } catch (e) {
-    console.error('[TempBlock] Failed to get session:', e);
+    logger.error('Failed to get session:', e);
     return null;
   }
 }
@@ -137,7 +155,7 @@ export interface ApiRequestOptions {
 /**
  * Execute an authenticated API request
  * Shared logic for both content script (localStorage) and background (chrome.storage)
- * Includes timeout and optional retry with exponential backoff
+ * Includes timeout, circuit breaker, and optional retry with exponential backoff
  */
 export async function executeApiRequest<T>(
   endpoint: string,
@@ -153,6 +171,13 @@ export async function executeApiRequest<T>(
     retry = method === 'GET',
     maxRetries = 3,
   } = options;
+
+  // Check circuit breaker before making request
+  if (!apiCircuitBreaker.isAllowed()) {
+    const state = apiCircuitBreaker.getState();
+    logger.warn(`Circuit breaker is ${state}, rejecting request to ${endpoint}`);
+    throw new Error(`API circuit breaker is open. Service may be unavailable. Please try again later.`);
+  }
 
   // Determine correct base URL:
   // - com.atproto.repo.* endpoints go to user's PDS
@@ -177,7 +202,7 @@ export async function executeApiRequest<T>(
   const url = `${base}/xrpc/${endpoint}`;
 
   const doRequest = async (): Promise<T | null> => {
-    console.log('[TempBlock] API request:', method, url);
+    logger.debug('API request:', method, url);
 
     // Create AbortController for timeout
     const controller = new AbortController();
@@ -214,7 +239,12 @@ export async function executeApiRequest<T>(
           errorMessage.includes('blocked');
 
         if (!isBlockError) {
-          console.error('[TempBlock] API error:', response.status, JSON.stringify(error));
+          logger.error('API error:', response.status, JSON.stringify(error));
+        }
+
+        // Record failure for circuit breaker (5xx errors indicate service issues)
+        if (response.status >= 500) {
+          apiCircuitBreaker.recordFailure();
         }
 
         // Throw specific error for 401 to help background worker detect auth failure
@@ -226,14 +256,20 @@ export async function executeApiRequest<T>(
         throw new Error(`${response.status}: ${errorMessage}`);
       }
 
+      // Record success for circuit breaker
+      apiCircuitBreaker.recordSuccess();
+
       // Some endpoints return empty responses
       const text = await response.text();
       return text ? (JSON.parse(text) as T) : null;
     } catch (error) {
       // Convert abort to timeout error
       if (error instanceof Error && error.name === 'AbortError') {
+        apiCircuitBreaker.recordFailure();
         throw new Error(`Request timeout after ${timeoutMs}ms: ${url}`);
       }
+      // Network errors also count as failures
+      apiCircuitBreaker.recordFailure();
       throw error;
     } finally {
       clearTimeout(timeoutId);
@@ -306,14 +342,22 @@ export async function blockUser(did: string): Promise<{ uri: string; cid: string
  * Unblock a user
  * @param {string} did - DID of user to unblock
  * @param {string} [rkey] - Optional record key for direct deletion
+ *
+ * HIGH FIX #4: Added full pagination support for users with >100 blocks
+ * HIGH FIX #5: Added rkey validation before using
  */
 export async function unblockUser(did: string, rkey?: string): Promise<unknown> {
   const session = getSession();
   if (!session) throw new Error('Not logged in');
 
-  // If we have the rkey, delete directly (O(1))
+  // If we have the rkey, validate and delete directly (O(1))
   if (rkey) {
-    console.log('[TempBlock] Unblocking using direct rkey:', rkey);
+    // HIGH FIX #5: Validate rkey format before using
+    if (!isValidRkey(rkey)) {
+      logger.error('Invalid rkey format provided for unblock:', rkey);
+      throw new Error('Invalid rkey format');
+    }
+    logger.info('Unblocking using direct rkey');
     return apiRequest('com.atproto.repo.deleteRecord', 'POST', {
       repo: session.did,
       collection: 'app.bsky.graph.block',
@@ -321,22 +365,42 @@ export async function unblockUser(did: string, rkey?: string): Promise<unknown> 
     });
   }
 
-  // Fallback: find the block record (legacy method, O(N))
-  console.log('[TempBlock] Unblocking using list scan (legacy)...');
-  const blocks = await apiRequest<{ records?: Array<{ value: { subject: string }; uri: string }> }>(
-    `com.atproto.repo.listRecords?repo=${session.did}&collection=app.bsky.graph.block&limit=100`
-  );
+  // HIGH FIX #4: Paginate through ALL blocks to find the record
+  // Previously only checked first 100, causing orphaned storage for users with >100 blocks
+  logger.info('Unblocking using list scan (legacy, paginated)...');
 
-  const blockRecord = blocks?.records?.find((r) => r.value.subject === did);
-  if (!blockRecord) {
-    console.log('[TempBlock] No block record found for', did);
-    return null;
-  }
+  let cursor: string | undefined;
+  let foundRkey: string | null = null;
 
-  // Delete the block record
-  const foundRkey = blockRecord.uri.split('/').pop();
+  do {
+    let endpoint = `com.atproto.repo.listRecords?repo=${session.did}&collection=app.bsky.graph.block&limit=100`;
+    if (cursor) {
+      endpoint += `&cursor=${encodeURIComponent(cursor)}`;
+    }
+
+    const response = await apiRequest<{
+      records?: Array<{ value: { subject: string }; uri: string }>;
+      cursor?: string;
+    }>(endpoint);
+
+    // Search for the block record in this page
+    const blockRecord = response?.records?.find((r) => r.value.subject === did);
+    if (blockRecord) {
+      // HIGH FIX #5: Use extractRkeyFromUri for safe extraction with validation
+      foundRkey = extractRkeyFromUri(blockRecord.uri);
+      break;
+    }
+
+    cursor = response?.cursor;
+
+    // Rate limit between pages
+    if (cursor) {
+      await sleep(100);
+    }
+  } while (cursor);
+
   if (!foundRkey) {
-    console.log('[TempBlock] Block record URI missing rkey for', did, 'URI:', blockRecord.uri);
+    logger.info('No block record found for DID');
     return null;
   }
 
@@ -939,36 +1003,53 @@ export async function getActorLists(actor: string): Promise<OwnedList[]> {
 /**
  * Unsubscribe from a blocklist
  * @param listUri - AT Protocol URI of the list to unsubscribe from
+ *
+ * HIGH FIX #5: Added rkey validation
  */
 export async function unsubscribeFromBlocklist(listUri: string): Promise<void> {
   const session = getSession();
   if (!session) throw new Error('Not logged in');
 
-  // Find the listblock record for this list
-  const records = await apiRequest<{
-    records: Array<{ uri: string; value: { subject: string } }>;
-  }>(
-    `com.atproto.repo.listRecords?repo=${session.did}&collection=app.bsky.graph.listblock&limit=100`
-  );
+  // Find the listblock record for this list (paginated)
+  let cursor: string | undefined;
+  let foundRkey: string | null = null;
 
-  const record = records?.records?.find((r) => r.value.subject === listUri);
-  if (!record) {
-    console.log('[ErgoBlock] No listblock record found for', listUri);
+  do {
+    let endpoint = `com.atproto.repo.listRecords?repo=${session.did}&collection=app.bsky.graph.listblock&limit=100`;
+    if (cursor) {
+      endpoint += `&cursor=${encodeURIComponent(cursor)}`;
+    }
+
+    const response = await apiRequest<{
+      records: Array<{ uri: string; value: { subject: string } }>;
+      cursor?: string;
+    }>(endpoint);
+
+    const record = response?.records?.find((r) => r.value.subject === listUri);
+    if (record) {
+      // HIGH FIX #5: Use extractRkeyFromUri for safe extraction with validation
+      foundRkey = extractRkeyFromUri(record.uri);
+      break;
+    }
+
+    cursor = response?.cursor;
+    if (cursor) {
+      await sleep(100);
+    }
+  } while (cursor);
+
+  if (!foundRkey) {
+    logger.info('No listblock record found for list');
     return;
-  }
-
-  const rkey = record.uri.split('/').pop();
-  if (!rkey) {
-    throw new Error('Could not extract rkey from listblock record URI');
   }
 
   await apiRequest('com.atproto.repo.deleteRecord', 'POST', {
     repo: session.did,
     collection: 'app.bsky.graph.listblock',
-    rkey,
+    rkey: foundRkey,
   });
 
-  console.log('[ErgoBlock] Unsubscribed from blocklist:', listUri);
+  logger.info('Unsubscribed from blocklist');
 }
 
 // ============================================================================

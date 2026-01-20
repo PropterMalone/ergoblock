@@ -159,10 +159,7 @@ export async function getAllBlockedByCache(): Promise<BlockedByData[]> {
 /**
  * Add a target to the fetch queue
  */
-export async function queueForFetch(
-  targetDid: string,
-  priority: number = 10
-): Promise<void> {
+export async function queueForFetch(targetDid: string, priority: number = 10): Promise<void> {
   try {
     const db = await openDatabase();
     const existing = await getQueueEntry(targetDid);
@@ -380,8 +377,8 @@ export async function getClearskyStats(): Promise<{
     return {
       cachedTargets: blockedByEntries.length,
       totalBlockers: blockedByEntries.reduce((sum, e) => sum + e.blockerDids.length, 0),
-      queuedPending: queueEntries.filter(e => e.status === 'pending').length,
-      queuedFailed: queueEntries.filter(e => e.status === 'failed').length,
+      queuedPending: queueEntries.filter((e) => e.status === 'pending').length,
+      queuedFailed: queueEntries.filter((e) => e.status === 'failed').length,
     };
   } catch (error) {
     console.error('[ClearskyCache] Failed to get stats:', error);

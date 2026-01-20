@@ -3,21 +3,33 @@
   "name": "ErgoBlock for Bluesky",
   "version": "1.13.1",
   "description": "Temporary block and mute for Bluesky - auto-expires after your chosen duration",
-  "permissions": ["storage", "alarms", "notifications", "unlimitedStorage"],
+  "permissions": [
+    "storage",
+    "alarms",
+    "notifications",
+    "unlimitedStorage"
+  ],
   "host_permissions": [
     "https://*.bsky.app/*",
     "https://*.bsky.social/*",
     "https://*.bsky.network/*",
     "https://*.clearsky.services/*"
   ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; style-src 'self' 'unsafe-inline'"
+  },
   "background": {
     "service_worker": "background.js",
     "type": "module"
   },
   "content_scripts": [
     {
-      "matches": ["https://bsky.app/*"],
-      "js": ["content.js"],
+      "matches": [
+        "https://bsky.app/*"
+      ],
+      "js": [
+        "content.js"
+      ],
       "run_at": "document_idle"
     }
   ],

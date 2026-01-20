@@ -31,20 +31,14 @@ import {
   type CarCacheStatusInfo,
   type CarProgressInfo,
 } from '../../signals/manager.js';
-import {
-  getMassOpsScanResult,
-  setMassOpsSettings,
-  STORAGE_KEYS,
-} from '../../storage.js';
+import { getMassOpsScanResult, setMassOpsSettings, STORAGE_KEYS } from '../../storage.js';
 import { formatDate } from './utils.js';
 import browser from '../../browser.js';
 
 /**
  * Fetch profiles via background worker (has access to auth)
  */
-async function fetchProfilesViaBackground(
-  dids: string[]
-): Promise<Map<string, ProfileWithViewer>> {
+async function fetchProfilesViaBackground(dids: string[]): Promise<Map<string, ProfileWithViewer>> {
   const response = (await browser.runtime.sendMessage({
     type: 'GET_PROFILES_BATCHED',
     dids,
@@ -91,6 +85,11 @@ export function MassOpsTab({ onReload: _onReload }: MassOpsTabProps): JSX.Elemen
   const [undoing, setUndoing] = useState<string | null>(null);
   const [showConfirm, setShowConfirm] = useState<string | null>(null);
   const [checkingCache, setCheckingCache] = useState(false);
+  const [dismissing, setDismissing] = useState<string | null>(null);
+  const [showDismissed, setShowDismissed] = useState(false);
+  const [dismissedClusters, setDismissedClusters] = useState<
+    Array<{ type: string; startTime: number; endTime: number; count: number; dismissedAt: number }>
+  >([]);
 
   const loading = massOpsLoading.value;
   const progress = massOpsProgress.value;
@@ -245,6 +244,96 @@ export function MassOpsTab({ onReload: _onReload }: MassOpsTabProps): JSX.Elemen
     }
   };
 
+  const handleDismissCluster = async (cluster: MassOperationCluster) => {
+    setDismissing(cluster.id);
+    try {
+      const result = (await browser.runtime.sendMessage({
+        type: 'DISMISS_MASS_OPS_CLUSTER',
+        cluster: {
+          type: cluster.type,
+          startTime: cluster.startTime,
+          endTime: cluster.endTime,
+          count: cluster.count,
+        },
+      })) as { success: boolean; error?: string };
+
+      if (result.success) {
+        // Remove cluster from current scan result
+        if (scanResult) {
+          massOpsScanResult.value = {
+            ...scanResult,
+            clusters: scanResult.clusters.filter((c) => c.id !== cluster.id),
+          };
+        }
+        // Refresh dismissed list if showing
+        if (showDismissed) {
+          await loadDismissedClusters();
+        }
+      } else {
+        alert(`Failed to dismiss: ${result.error || 'Unknown error'}`);
+      }
+    } catch (error) {
+      console.error('[MassOpsTab] Dismiss failed:', error);
+      alert(`Failed to dismiss: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    } finally {
+      setDismissing(null);
+    }
+  };
+
+  const loadDismissedClusters = async () => {
+    try {
+      const result = (await browser.runtime.sendMessage({
+        type: 'GET_DISMISSED_MASS_OPS_CLUSTERS',
+      })) as { success: boolean; dismissed?: typeof dismissedClusters; error?: string };
+
+      if (result.success && result.dismissed) {
+        setDismissedClusters(result.dismissed);
+      }
+    } catch (error) {
+      console.error('[MassOpsTab] Failed to load dismissed clusters:', error);
+    }
+  };
+
+  const handleRestoreCluster = async (cluster: (typeof dismissedClusters)[0]) => {
+    try {
+      const result = (await browser.runtime.sendMessage({
+        type: 'RESTORE_MASS_OPS_CLUSTER',
+        cluster: {
+          type: cluster.type,
+          startTime: cluster.startTime,
+          endTime: cluster.endTime,
+          count: cluster.count,
+        },
+      })) as { success: boolean; error?: string };
+
+      if (result.success) {
+        // Remove from local list
+        setDismissedClusters((prev) =>
+          prev.filter(
+            (c) =>
+              !(
+                c.type === cluster.type &&
+                c.startTime === cluster.startTime &&
+                c.endTime === cluster.endTime &&
+                c.count === cluster.count
+              )
+          )
+        );
+      } else {
+        alert(`Failed to restore: ${result.error || 'Unknown error'}`);
+      }
+    } catch (error) {
+      console.error('[MassOpsTab] Restore failed:', error);
+    }
+  };
+
+  const handleToggleShowDismissed = async () => {
+    if (!showDismissed) {
+      await loadDismissedClusters();
+    }
+    setShowDismissed(!showDismissed);
+  };
+
   // Render cache status info
   const renderCacheStatus = () => {
     if (checkingCache) {
@@ -378,7 +467,11 @@ export function MassOpsTab({ onReload: _onReload }: MassOpsTabProps): JSX.Elemen
 
           <button class="mass-ops-scan-btn" onClick={() => handleScan(false)} disabled={loading}>
             <Search size={16} class={loading ? 'spinner' : ''} />
-            {loading ? 'Scanning...' : cacheStatus?.hasCached ? 'Scan Cached Data' : 'Download & Scan'}
+            {loading
+              ? 'Scanning...'
+              : cacheStatus?.hasCached
+                ? 'Scan Cached Data'
+                : 'Download & Scan'}
           </button>
 
           {loading && renderProgressBar()}
@@ -395,13 +488,13 @@ export function MassOpsTab({ onReload: _onReload }: MassOpsTabProps): JSX.Elemen
     <div class="mass-ops-container">
       <div class="mass-ops-header">
         <div class="mass-ops-stats">
-          <div class="mass-ops-stat">
+          <div class="mass-ops-stat" title="Records in your repo (may include deleted/suspended accounts)">
             <div class="stat-value">{operationCounts.blocks}</div>
-            <div class="stat-label">Blocks</div>
+            <div class="stat-label">Blocks*</div>
           </div>
-          <div class="mass-ops-stat">
+          <div class="mass-ops-stat" title="Records in your repo (may include deleted/suspended accounts)">
             <div class="stat-value">{operationCounts.follows}</div>
-            <div class="stat-label">Follows</div>
+            <div class="stat-label">Follows*</div>
           </div>
           <div class="mass-ops-stat">
             <div class="stat-value">{operationCounts.listitems}</div>
@@ -413,6 +506,9 @@ export function MassOpsTab({ onReload: _onReload }: MassOpsTabProps): JSX.Elemen
             </div>
             <div class="stat-label">Clusters</div>
           </div>
+        </div>
+        <div class="mass-ops-repo-note">
+          *Counts from your repository data. May be higher than active counts if you've blocked/followed accounts that were later deleted or suspended.
         </div>
 
         <div class="mass-ops-actions">
@@ -435,7 +531,8 @@ export function MassOpsTab({ onReload: _onReload }: MassOpsTabProps): JSX.Elemen
         Last scanned: {formatDate(scannedAt)}
         {cacheStatus?.hasCached && (
           <span class="mass-ops-cache-indicator">
-            {' '}(data from {formatRelativeTime(cacheStatus.cachedAt || 0)})
+            {' '}
+            (data from {formatRelativeTime(cacheStatus.cachedAt || 0)})
           </span>
         )}
       </div>
@@ -457,7 +554,9 @@ export function MassOpsTab({ onReload: _onReload }: MassOpsTabProps): JSX.Elemen
               key={cluster.id}
               cluster={cluster}
               onUndo={handleUndoCluster}
+              onDismiss={handleDismissCluster}
               undoing={undoing === cluster.id}
+              dismissing={dismissing === cluster.id}
               showConfirm={showConfirm === cluster.id}
               onConfirmUndo={confirmUndo}
               onCancelUndo={() => setShowConfirm(null)}
@@ -501,6 +600,46 @@ export function MassOpsTab({ onReload: _onReload }: MassOpsTabProps): JSX.Elemen
           />
         </label>
       </div>
+
+      {/* Dismissed clusters section */}
+      <div class="mass-ops-dismissed-section">
+        <button class="mass-ops-show-dismissed-btn" onClick={handleToggleShowDismissed}>
+          {showDismissed ? 'Hide' : 'Show'} Dismissed Clusters
+          {dismissedClusters.length > 0 && ` (${dismissedClusters.length})`}
+        </button>
+
+        {showDismissed && (
+          <div class="mass-ops-dismissed-list">
+            {dismissedClusters.length === 0 ? (
+              <p class="mass-ops-no-dismissed">No dismissed clusters.</p>
+            ) : (
+              dismissedClusters.map((cluster, index) => {
+                const typeLabel =
+                  cluster.type === 'block'
+                    ? 'Blocks'
+                    : cluster.type === 'follow'
+                      ? 'Follows'
+                      : 'List Adds';
+                const timeRange = formatTimeRange(cluster.startTime, cluster.endTime);
+                return (
+                  <div key={index} class="mass-ops-dismissed-item">
+                    <span class="dismissed-type">{typeLabel}</span>
+                    <span class="dismissed-count">{cluster.count} ops</span>
+                    <span class="dismissed-time">{timeRange}</span>
+                    <button
+                      class="dismissed-restore-btn"
+                      onClick={() => handleRestoreCluster(cluster)}
+                      title="Restore this cluster to show in future scans"
+                    >
+                      Restore
+                    </button>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -508,7 +647,9 @@ export function MassOpsTab({ onReload: _onReload }: MassOpsTabProps): JSX.Elemen
 interface ClusterCardProps {
   cluster: MassOperationCluster;
   onUndo: (cluster: MassOperationCluster) => void;
+  onDismiss: (cluster: MassOperationCluster) => void;
   undoing: boolean;
+  dismissing: boolean;
   showConfirm: boolean;
   onConfirmUndo: (cluster: MassOperationCluster) => void;
   onCancelUndo: () => void;
@@ -517,7 +658,9 @@ interface ClusterCardProps {
 function ClusterCard({
   cluster,
   onUndo,
+  onDismiss,
   undoing,
+  dismissing,
   showConfirm,
   onConfirmUndo,
   onCancelUndo,
@@ -620,6 +763,17 @@ function ClusterCard({
           <Trash2 size={14} />
           {undoing ? 'Undoing...' : `Undo ${selectedRkeys.size}`}
         </button>
+        <button
+          class="cluster-dismiss-btn"
+          onClick={(e) => {
+            e.stopPropagation();
+            onDismiss(cluster);
+          }}
+          disabled={dismissing}
+          title="Hide this cluster from future scans"
+        >
+          {dismissing ? '...' : 'Dismiss'}
+        </button>
       </div>
 
       {showConfirm && (
@@ -682,11 +836,11 @@ function OperationRow({ operation, clusterId, profile }: OperationRowProps): JSX
 
   // Use profile info if available, otherwise fall back to truncated DID
   const displayName = profile?.displayName || profile?.handle;
-  const displayIdentifier = displayName || (
-    operation.did.length > 40
+  const displayIdentifier =
+    displayName ||
+    (operation.did.length > 40
       ? `${operation.did.slice(0, 20)}...${operation.did.slice(-15)}`
-      : operation.did
-  );
+      : operation.did);
 
   return (
     <div
@@ -705,11 +859,7 @@ function OperationRow({ operation, clusterId, profile }: OperationRowProps): JSX
         onClick={(e) => e.stopPropagation()}
       >
         {profile?.avatar ? (
-          <img
-            src={profile.avatar}
-            alt=""
-            class="operation-avatar"
-          />
+          <img src={profile.avatar} alt="" class="operation-avatar" />
         ) : (
           <span class="operation-avatar-placeholder" />
         )}

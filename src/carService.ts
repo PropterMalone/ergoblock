@@ -24,10 +24,14 @@ import {
   type ParsedListData,
 } from './carRepo.js';
 import type { GraphOperation } from './types.js';
+import { RequestCoalescer } from './utils.js';
 
 const BSKY_RELAY = 'https://bsky.network';
 const CAR_DOWNLOAD_TIMEOUT_MS = 120000;
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+// MEDIUM FIX #13: Request deduplication to prevent concurrent downloads of the same DID
+const carFetchCoalescer = new RequestCoalescer<string, CarFetchResult>();
 
 /**
  * Progress state for CAR downloads
@@ -99,9 +103,8 @@ function createProgress(
 ): CarDownloadProgress {
   const bytesDownloaded = options?.bytesDownloaded || 0;
   const bytesTotal = options?.bytesTotal ?? null;
-  const percentComplete = bytesTotal && bytesTotal > 0
-    ? Math.round((bytesDownloaded / bytesTotal) * 100)
-    : null;
+  const percentComplete =
+    bytesTotal && bytesTotal > 0 ? Math.round((bytesDownloaded / bytesTotal) * 100) : null;
 
   return {
     did,
@@ -189,12 +192,14 @@ async function downloadCarWithProgress(
   const isIncremental = !!since;
   const sinceParam = since ? `&since=${encodeURIComponent(since)}` : '';
 
-  onProgress(createProgress(
-    did,
-    'downloading',
-    isIncremental ? 'Downloading changes...' : 'Downloading repository...',
-    { isIncremental }
-  ));
+  onProgress(
+    createProgress(
+      did,
+      'downloading',
+      isIncremental ? 'Downloading changes...' : 'Downloading repository...',
+      { isIncremental }
+    )
+  );
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), CAR_DOWNLOAD_TIMEOUT_MS);
@@ -266,11 +271,13 @@ async function downloadCarWithProgress(
           ? `Downloading... ${formatBytes(receivedBytes)} / ${formatBytes(totalBytes)}`
           : `Downloading... ${formatBytes(receivedBytes)}`;
 
-        onProgress(createProgress(did, 'downloading', message, {
-          bytesDownloaded: receivedBytes,
-          bytesTotal: totalBytes,
-          isIncremental,
-        }));
+        onProgress(
+          createProgress(did, 'downloading', message, {
+            bytesDownloaded: receivedBytes,
+            bytesTotal: totalBytes,
+            isIncremental,
+          })
+        );
       }
     } catch (error) {
       reader.cancel();
@@ -334,8 +341,23 @@ function parseCarData(
  * 4. If have cache but revision differs -> try incremental sync
  * 5. If no cache or incremental fails -> full download
  * 6. Save to cache and return
+ *
+ * MEDIUM FIX #13: Uses request coalescing to prevent duplicate concurrent downloads
  */
 export async function getCarDataSmart(options: CarFetchOptions): Promise<CarFetchResult> {
+  const { did } = options;
+
+  // MEDIUM FIX #13: Deduplicate concurrent requests for the same DID
+  // If a download is already in progress for this DID, wait for it instead of starting another
+  return carFetchCoalescer.execute(did, async () => {
+    return getCarDataSmartInternal(options);
+  });
+}
+
+/**
+ * Internal implementation of getCarDataSmart (called via coalescer)
+ */
+async function getCarDataSmartInternal(options: CarFetchOptions): Promise<CarFetchResult> {
   const { did, pdsUrl, forceRefresh = false, preferCache = false, onProgress } = options;
 
   const reportProgress = onProgress || (() => {});
@@ -353,7 +375,9 @@ export async function getCarDataSmart(options: CarFetchOptions): Promise<CarFetc
 
     if (isFresh || preferCache) {
       const reason = isFresh ? 'within 24h TTL' : 'preferCache=true';
-      console.log(`[CarService] Using cached data for ${did} (${reason}, rev: ${cachedMeta.rev.slice(0, 8)}...)`);
+      console.log(
+        `[CarService] Using cached data for ${did} (${reason}, rev: ${cachedMeta.rev.slice(0, 8)}...)`
+      );
       reportProgress(createProgress(did, 'complete', 'Using cached data'));
       return {
         data: cached,
@@ -422,12 +446,15 @@ export async function getCarDataSmart(options: CarFetchOptions): Promise<CarFetc
   } catch (parseError) {
     const errorMessage = parseError instanceof Error ? parseError.message : String(parseError);
     // Check for CID-related errors from @atcute/repo (incomplete block map)
-    if (wasIncremental && (
-      errorMessage.includes('cid not found') ||
-      errorMessage.includes('blockmap') ||
-      errorMessage.includes('block not found')
-    )) {
-      console.warn('[CarService] Incremental CAR has incomplete block map, falling back to full download');
+    if (
+      wasIncremental &&
+      (errorMessage.includes('cid not found') ||
+        errorMessage.includes('blockmap') ||
+        errorMessage.includes('block not found'))
+    ) {
+      console.warn(
+        '[CarService] Incremental CAR has incomplete block map, falling back to full download'
+      );
       downloadResult = await downloadCarWithProgress(did, pdsUrl, null, reportProgress);
       wasIncremental = false;
       parsedData = parseCarData(downloadResult.data, did, reportProgress);

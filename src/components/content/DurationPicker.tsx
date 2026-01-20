@@ -1,5 +1,6 @@
 import type { JSX } from 'preact';
-import { useCallback, useEffect } from 'preact/hooks';
+import { useCallback, useEffect, useState } from 'preact/hooks';
+import type { LastWordOptions } from '../../types.js';
 
 export interface DurationOption {
   label: string;
@@ -11,8 +12,9 @@ export interface DurationPickerProps {
   handle: string;
   did?: string;
   options: DurationOption[];
-  onSelect: (durationMs: number, label: string) => void;
+  onSelect: (durationMs: number, label: string, lastWordOptions?: LastWordOptions) => void;
   onCancel: () => void;
+  defaultLastWordDelaySeconds?: number; // From settings, defaults to 60
 }
 
 const styles = `
@@ -102,6 +104,62 @@ const styles = `
   .ergo-duration-cancel:hover {
     background: #f5f5f5;
   }
+
+  .ergo-lastword-section {
+    margin-top: 16px;
+    padding-top: 16px;
+    border-top: 1px solid #e5e5e5;
+  }
+
+  .ergo-lastword-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    font-size: 14px;
+    color: #1a1a1a;
+    user-select: none;
+  }
+
+  .ergo-lastword-checkbox {
+    width: 16px;
+    height: 16px;
+    cursor: pointer;
+    accent-color: #0085ff;
+  }
+
+  .ergo-lastword-delay {
+    margin-top: 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .ergo-lastword-delay-label {
+    font-size: 13px;
+    color: #666;
+  }
+
+  .ergo-lastword-delay-input {
+    width: 70px;
+    padding: 6px 8px;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    font-size: 14px;
+    text-align: center;
+  }
+
+  .ergo-lastword-delay-input:focus {
+    outline: none;
+    border-color: #0085ff;
+  }
+
+  .ergo-lastword-hint {
+    margin-top: 8px;
+    font-size: 12px;
+    color: #888;
+    line-height: 1.4;
+  }
 `;
 
 export function DurationPicker({
@@ -110,7 +168,12 @@ export function DurationPicker({
   options,
   onSelect,
   onCancel,
+  defaultLastWordDelaySeconds = 60,
 }: DurationPickerProps): JSX.Element {
+  // Last Word state (only for blocks)
+  const [lastWordEnabled, setLastWordEnabled] = useState(false);
+  const [lastWordDelay, setLastWordDelay] = useState(defaultLastWordDelaySeconds);
+
   const handleOverlayClick = useCallback(
     (e: MouseEvent) => {
       if ((e.target as HTMLElement).classList.contains('ergo-duration-overlay')) {
@@ -136,10 +199,25 @@ export function DurationPicker({
 
   const handleSelect = useCallback(
     (option: DurationOption) => {
-      onSelect(option.ms, option.label);
+      if (lastWordEnabled && actionType === 'block') {
+        onSelect(option.ms, option.label, {
+          enabled: true,
+          delaySeconds: lastWordDelay,
+        });
+      } else {
+        onSelect(option.ms, option.label);
+      }
     },
-    [onSelect]
+    [onSelect, lastWordEnabled, lastWordDelay, actionType]
   );
+
+  const handleDelayChange = useCallback((e: Event) => {
+    const value = parseInt((e.target as HTMLInputElement).value, 10);
+    // Clamp between 10 and 3600 seconds
+    if (!isNaN(value)) {
+      setLastWordDelay(Math.max(10, Math.min(3600, value)));
+    }
+  }, []);
 
   return (
     <>
@@ -162,6 +240,38 @@ export function DurationPicker({
               </button>
             ))}
           </div>
+          {actionType === 'block' && (
+            <div class="ergo-lastword-section">
+              <label class="ergo-lastword-label">
+                <input
+                  type="checkbox"
+                  class="ergo-lastword-checkbox"
+                  checked={lastWordEnabled}
+                  onChange={(e) => setLastWordEnabled((e.target as HTMLInputElement).checked)}
+                />
+                Last Word (delay block)
+              </label>
+              {lastWordEnabled && (
+                <>
+                  <div class="ergo-lastword-delay">
+                    <span class="ergo-lastword-delay-label">Block after</span>
+                    <input
+                      type="number"
+                      class="ergo-lastword-delay-input"
+                      value={lastWordDelay}
+                      min={10}
+                      max={3600}
+                      onChange={handleDelayChange}
+                    />
+                    <span class="ergo-lastword-delay-label">seconds</span>
+                  </div>
+                  <p class="ergo-lastword-hint">
+                    Block on a delay to get in the last word.
+                  </p>
+                </>
+              )}
+            </div>
+          )}
           <button type="button" class="ergo-duration-cancel" onClick={onCancel}>
             Cancel
           </button>

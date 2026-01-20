@@ -2,7 +2,7 @@
  * Utility functions for Manager page
  */
 import type { ManagedEntry, HistoryEntry, PostContext, ListMember } from '../../types.js';
-import type { SortColumn, SortDirection } from '../../signals/manager.js';
+import type { SortColumn, SortDirection, FilterType } from '../../signals/manager.js';
 
 export function formatTimeAgo(timestamp: number): string {
   const diff = Date.now() - timestamp;
@@ -93,7 +93,8 @@ export function filterAndSort<T extends ManagedEntry | HistoryEntry | PostContex
   sourceFilter: string,
   column: SortColumn,
   direction: SortDirection,
-  amnestyMap?: Map<string, 'denied'>
+  amnestyMap?: Map<string, 'denied'>,
+  typeFilter?: FilterType
 ): T[] {
   let filtered = items.filter((item) => {
     if (search) {
@@ -103,6 +104,11 @@ export function filterAndSort<T extends ManagedEntry | HistoryEntry | PostContex
 
     if (sourceFilter !== 'all' && 'source' in item) {
       if ((item as ManagedEntry).source !== sourceFilter) return false;
+    }
+
+    // Type filter (block/mute)
+    if (typeFilter && typeFilter !== 'all' && 'type' in item) {
+      if ((item as ManagedEntry).type !== typeFilter) return false;
     }
 
     return true;
@@ -118,6 +124,12 @@ export function filterAndSort<T extends ManagedEntry | HistoryEntry | PostContex
         const handleA = getItemHandle(a);
         const handleB = getItemHandle(b);
         cmp = handleA.localeCompare(handleB);
+        break;
+      }
+      case 'type': {
+        const typeA = 'type' in a ? (a as ManagedEntry).type : '';
+        const typeB = 'type' in b ? (b as ManagedEntry).type : '';
+        cmp = typeA.localeCompare(typeB);
         break;
       }
       case 'source': {

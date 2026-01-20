@@ -1,5 +1,11 @@
 import type { JSX } from 'preact';
-import { searchQuery, filterSource, selectedItems, currentTab } from '../../signals/manager.js';
+import {
+  searchQuery,
+  filterSource,
+  filterType,
+  selectedItems,
+  currentTab,
+} from '../../signals/manager.js';
 
 interface ToolbarProps {
   onBulkRemove: () => void;
@@ -24,6 +30,23 @@ export function Toolbar({ onBulkRemove }: ToolbarProps): JSX.Element {
           searchQuery.value = (e.target as HTMLInputElement).value;
         }}
       />
+      {tab === 'actions' && (
+        <select
+          value={filterType.value}
+          onChange={(e) => {
+            filterType.value = (e.target as HTMLSelectElement).value as
+              | 'all'
+              | 'block'
+              | 'mute'
+              | 'both';
+          }}
+        >
+          <option value="all">All Types</option>
+          <option value="block">Blocks Only</option>
+          <option value="mute">Mutes Only</option>
+          <option value="both">Both Block & Mute</option>
+        </select>
+      )}
       <select
         value={filterSource.value}
         onChange={(e) => {

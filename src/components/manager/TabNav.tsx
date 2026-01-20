@@ -7,14 +7,13 @@ interface Tab {
 }
 
 const TABS: Tab[] = [
-  { id: 'blocks', label: 'All Blocks' },
-  { id: 'mutes', label: 'All Mutes' },
-  { id: 'history', label: 'History' },
+  { id: 'actions', label: 'Blocks & Mutes' },
   { id: 'amnesty', label: 'Amnesty' },
   { id: 'blocklist-audit', label: 'Blocklist Audit' },
   { id: 'repost-filters', label: 'Repost Filters' },
   { id: 'mass-ops', label: 'Mass Ops' },
   { id: 'copy-user', label: 'Copy User' },
+  { id: 'settings', label: 'Settings' },
 ];
 
 export function TabNav(): JSX.Element {

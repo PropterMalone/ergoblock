@@ -1,9 +1,10 @@
 import type { JSX } from 'preact';
 import { Fragment } from 'preact';
 import {
-  mutes,
+  allEntries,
   searchQuery,
   filterSource,
+  filterType,
   sortColumn,
   sortDirection,
   selectedItems,
@@ -22,38 +23,41 @@ import { ContextCell } from './ContextCell.js';
 import { StatusIndicators } from './StatusIndicators.js';
 import { InteractionsList } from './InteractionsList.js';
 
-interface MutesTableProps {
+interface ActionsTableProps {
+  onUnblock: (did: string, handle: string) => void;
   onUnmute: (did: string, handle: string) => void;
   onFindContext: (did: string, handle: string) => void;
   onViewPost: (did: string, handle: string, url: string) => void;
   onFetchInteractions: (did: string, handle: string) => Promise<void>;
 }
 
-export function MutesTable({
+export function ActionsTable({
+  onUnblock,
   onUnmute,
   onFindContext,
   onViewPost,
   onFetchInteractions,
-}: MutesTableProps): JSX.Element {
+}: ActionsTableProps): JSX.Element {
   const filtered = filterAndSort(
-    mutes.value,
+    allEntries.value,
     searchQuery.value,
     filterSource.value,
     sortColumn.value,
     sortDirection.value,
-    amnestyStatusMap.value
+    amnestyStatusMap.value,
+    filterType.value
   );
 
   if (filtered.length === 0) {
     return (
       <div class="empty-state">
-        <h3>No mutes found</h3>
-        <p>You haven't muted anyone yet, or try adjusting your filters.</p>
+        <h3>No blocks or mutes found</h3>
+        <p>You haven't blocked or muted anyone yet, or try adjusting your filters.</p>
       </div>
     );
   }
 
-  const allDids = filtered.map((m) => m.did);
+  const allDids = filtered.map((entry) => entry.did);
   const allSelected = allDids.every((did) => selectedItems.value.has(did));
 
   const handleSelectAll = (e: Event) => {
@@ -73,6 +77,7 @@ export function MutesTable({
             <input type="checkbox" checked={allSelected} onChange={handleSelectAll} />
           </th>
           <SortableHeader column="user" label="User" />
+          <SortableHeader column="type" label="Type" />
           <th>Context</th>
           <SortableHeader column="source" label="Source" />
           <th>Status</th>
@@ -83,48 +88,57 @@ export function MutesTable({
         </tr>
       </thead>
       <tbody>
-        {filtered.map((mute) => {
-          const isTemp = mute.source === 'ergoblock_temp';
+        {filtered.map((entry) => {
+          const isBlock = entry.type === 'block';
+          const isBoth = entry.type === 'both';
+          const isTemp = entry.source === 'ergoblock_temp';
           const isExpiringSoon =
-            isTemp && mute.expiresAt && mute.expiresAt - Date.now() < 24 * 60 * 60 * 1000;
-          const weBlockThem = !!mute.viewer?.blocking;
-          const theyBlockUs = !!mute.viewer?.blockedBy;
-          const rowClass =
-            weBlockThem && theyBlockUs
-              ? 'mutual-block'
-              : theyBlockUs
-                ? 'blocked-by'
-                : weBlockThem
-                  ? 'mutual-block'
-                  : '';
-          const isSelected = selectedItems.value.has(mute.did);
-          const amnestyStatus = amnestyStatusMap.value.get(mute.did);
-          const isExpanded = expandedRows.value.has(mute.did);
-          const hasInteractions = (expandedInteractions.value.get(mute.did)?.length ?? 0) > 0;
+            isTemp && entry.expiresAt && entry.expiresAt - Date.now() < 24 * 60 * 60 * 1000;
+
+          // Row styling based on relationship
+          const theyBlockUs = !!entry.viewer?.blockedBy;
+          const rowClass = theyBlockUs ? 'mutual-block' : '';
+
+          const isSelected = selectedItems.value.has(entry.did);
+          const amnestyStatus = amnestyStatusMap.value.get(entry.did);
+          const isExpanded = expandedRows.value.has(entry.did);
+          const hasInteractions = (expandedInteractions.value.get(entry.did)?.length ?? 0) > 0;
 
           return (
-            <Fragment key={mute.did}>
+            <Fragment key={entry.did}>
               <tr class={`${rowClass} ${isExpanded ? 'row-expanded' : ''}`}>
                 <td>
                   <input
                     type="checkbox"
                     checked={isSelected}
-                    onChange={() => toggleSelection(mute.did)}
+                    onChange={() => toggleSelection(entry.did)}
                   />
                 </td>
                 <UserCell
-                  handle={mute.handle}
-                  displayName={mute.displayName}
-                  avatar={mute.avatar}
+                  handle={entry.handle}
+                  displayName={entry.displayName}
+                  avatar={entry.avatar}
                 />
+                <td>
+                  {isBoth ? (
+                    <div class="badge-group">
+                      <span class="badge badge-block">Block</span>
+                      <span class="badge badge-mute">Mute</span>
+                    </div>
+                  ) : (
+                    <span class={`badge ${isBlock ? 'badge-block' : 'badge-mute'}`}>
+                      {isBlock ? 'Block' : 'Mute'}
+                    </span>
+                  )}
+                </td>
                 <ContextCell
-                  did={mute.did}
-                  handle={mute.handle}
-                  isBlocked={false}
+                  did={entry.did}
+                  handle={entry.handle}
+                  isBlocked={isBlock || isBoth}
                   isExpanded={isExpanded}
                   onFindContext={onFindContext}
                   onViewPost={onViewPost}
-                  onToggleExpand={() => toggleExpanded(mute.did)}
+                  onToggleExpand={() => toggleExpanded(entry.did)}
                   showExpandButton={hasInteractions}
                 />
                 <td>
@@ -132,7 +146,7 @@ export function MutesTable({
                     {isTemp ? 'Temp' : 'Perm'}
                   </span>
                 </td>
-                <StatusIndicators viewer={mute.viewer} isBlocksTab={false} />
+                <StatusIndicators viewer={entry.viewer} isBlocksTab={isBlock || isBoth} />
                 <td>
                   <span
                     class={`badge ${amnestyStatus === 'denied' ? 'badge-denied' : 'badge-unreviewed'}`}
@@ -141,37 +155,58 @@ export function MutesTable({
                   </span>
                 </td>
                 <td>
-                  {isTemp && mute.expiresAt ? (
+                  {isTemp && entry.expiresAt ? (
                     <span class={`badge ${isExpiringSoon ? 'badge-expiring' : ''}`}>
-                      {formatTimeRemaining(mute.expiresAt)}
+                      {formatTimeRemaining(entry.expiresAt)}
                     </span>
                   ) : (
                     '-'
                   )}
                 </td>
                 <td>
-                  {mute.createdAt
-                    ? formatDate(mute.createdAt)
-                    : mute.syncedAt
-                      ? formatDate(mute.syncedAt)
+                  {entry.createdAt
+                    ? formatDate(entry.createdAt)
+                    : entry.syncedAt
+                      ? formatDate(entry.syncedAt)
                       : '-'}
                 </td>
                 <td>
-                  <button
-                    class="action-btn danger unmute-btn"
-                    onClick={() => onUnmute(mute.did, mute.handle)}
-                  >
-                    Unmute
-                  </button>
+                  {isBoth ? (
+                    <div class="action-group">
+                      <button
+                        class="action-btn danger unblock-btn"
+                        onClick={() => onUnblock(entry.did, entry.handle)}
+                      >
+                        Unblock
+                      </button>
+                      <button
+                        class="action-btn danger unmute-btn"
+                        onClick={() => onUnmute(entry.did, entry.handle)}
+                      >
+                        Unmute
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      class={`action-btn danger ${isBlock ? 'unblock-btn' : 'unmute-btn'}`}
+                      onClick={() =>
+                        isBlock
+                          ? onUnblock(entry.did, entry.handle)
+                          : onUnmute(entry.did, entry.handle)
+                      }
+                    >
+                      {isBlock ? 'Unblock' : 'Unmute'}
+                    </button>
+                  )}
                 </td>
               </tr>
               {isExpanded && (
                 <tr class="expanded-row">
-                  <td colSpan={9}>
+                  <td colSpan={10}>
                     <InteractionsList
-                      did={mute.did}
-                      handle={mute.handle}
-                      isBlocked={false}
+                      did={entry.did}
+                      handle={entry.handle}
+                      isBlocked={isBlock || isBoth}
                       onFetchInteractions={onFetchInteractions}
                       onViewPost={onViewPost}
                     />

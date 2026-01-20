@@ -4,18 +4,28 @@
 
 import { render } from 'preact';
 import browser from './browser.js';
-import { getSession, getProfile, blockUser, muteUser, unblockUser, unmuteUser } from './api.js';
+import {
+  getSession,
+  getProfile,
+  getProfiles,
+  blockUser,
+  muteUser,
+  unblockUser,
+  unmuteUser,
+} from './api.js';
 import {
   addTempBlock,
   addTempMute,
   isRepostFiltered,
   addRepostFilteredUser,
   removeRepostFilteredUser,
-  isHandleFollowed,
   preCheckStorageQuota,
+  calculateEntrySize,
   StorageQuotaError,
+  getOptions,
+  addPendingRollback,
 } from './storage.js';
-import type { RepostFilteredUser } from './types.js';
+import type { RepostFilteredUser, LastWordOptions } from './types.js';
 import {
   capturePostContext,
   findPostContainer,
@@ -27,6 +37,7 @@ import { DurationPicker, type DurationOption } from './components/content/Durati
 import { ContentToast } from './components/content/ContentToast.js';
 import { NotificationMenu } from './components/content/NotificationMenu.js';
 import { initFeedFilter } from './feed-filter.js';
+import { actionRateLimiter, logger, normalizeAtUri } from './utils.js';
 
 // Configuration for DOM selectors and magic strings
 const CONFIG = {
@@ -77,16 +88,24 @@ let lastClickedPostContainer: HTMLElement | null = null;
 
 // Timestamp when DOM references were last captured (for staleness checking)
 let lastDomRefTimestamp = 0;
-const DOM_REF_MAX_AGE_MS = 30000; // Clear DOM refs after 30 seconds of inactivity
+const DOM_REF_MAX_AGE_MS = 5000; // Clear DOM refs after 5 seconds (reduced from 30s to prevent stale refs during SPA navigation)
 
 // Shadow DOM containers for isolated UI
 let pickerHost: HTMLElement | null = null;
 let toastHost: HTMLElement | null = null;
 
+// AbortController for cancelling in-flight profile fetches when picker is closed
+let profileFetchAbortController: AbortController | null = null;
+
+// Picker session ID to prevent stale profile fetches from updating wrong picker
+let currentPickerSessionId = 0;
+
 // Engagement context tracking (liked-by/reposted-by pages)
 let currentEngagementContext: EngagementContext | null = null;
 
 // Captured notification info when clicking block/mute in a notification menu
+// NOTE: This is a race condition risk - should be passed as parameters instead
+// TODO: Refactor to pass notification info through the call chain
 let capturedNotificationInfo: {
   notificationType: NotificationReason | null;
   subjectUri: string | null;
@@ -95,21 +114,43 @@ let capturedNotificationInfo: {
 /**
  * Clear stale DOM references to prevent memory leaks
  * Called periodically and after operations complete
+ *
+ * IMPORTANT: We now always check if DOM refs are still connected,
+ * not just based on timestamp. This prevents issues with SPA navigation
+ * where the DOM can change rapidly.
  */
 function clearStaleDomRefs(): void {
   const now = Date.now();
-  if (lastDomRefTimestamp > 0 && now - lastDomRefTimestamp > DOM_REF_MAX_AGE_MS) {
-    // Clear old references that may point to removed DOM nodes
-    if (lastClickedElement && !document.body.contains(lastClickedElement)) {
-      lastClickedElement = null;
-    }
-    if (capturedPostContainer && !document.body.contains(capturedPostContainer)) {
-      capturedPostContainer = null;
-    }
-    if (lastClickedPostContainer && !document.body.contains(lastClickedPostContainer)) {
-      lastClickedPostContainer = null;
-    }
-    console.debug('[ErgoBlock] Cleared stale DOM references');
+  const isStaleByTime = lastDomRefTimestamp > 0 && now - lastDomRefTimestamp > DOM_REF_MAX_AGE_MS;
+
+  // Always check DOM connectivity, regardless of timestamp
+  // This catches elements removed by SPA navigation
+  let cleared = false;
+
+  if (lastClickedElement && !document.body.contains(lastClickedElement)) {
+    lastClickedElement = null;
+    cleared = true;
+  }
+  if (capturedPostContainer && !document.body.contains(capturedPostContainer)) {
+    capturedPostContainer = null;
+    cleared = true;
+  }
+  if (lastClickedPostContainer && !document.body.contains(lastClickedPostContainer)) {
+    lastClickedPostContainer = null;
+    cleared = true;
+  }
+
+  // Also clear if timestamp is stale (even if still connected - could be wrong element after navigation)
+  if (isStaleByTime) {
+    lastClickedElement = null;
+    capturedPostContainer = null;
+    lastClickedPostContainer = null;
+    cleared = true;
+    lastDomRefTimestamp = 0;
+  }
+
+  if (cleared) {
+    logger.debug('Cleared stale DOM references');
   }
 }
 
@@ -162,6 +203,8 @@ function getEngagementContextFromUrl(url: string): EngagementContext | null {
 /**
  * Check if current URL should preserve engagement context
  * Context is preserved on: engagement pages, profile pages, and the original post
+ *
+ * FIX: Now normalizes AT URIs before comparison to handle case differences
  */
 function shouldPreserveEngagementContext(url: string, context: EngagementContext | null): boolean {
   if (!context) return false;
@@ -171,9 +214,13 @@ function shouldPreserveEngagementContext(url: string, context: EngagementContext
 
   // On the original engagement page type (liked-by or reposted-by)
   if (url.match(CONFIG.REGEX.LIKED_BY) || url.match(CONFIG.REGEX.REPOSTED_BY)) {
-    // Check if it's for the same post
+    // Check if it's for the same post - normalize URIs for comparison
     const newContext = getEngagementContextFromUrl(url);
-    if (newContext && newContext.postUri === context.postUri) return true;
+    if (newContext) {
+      const normalizedNew = normalizeAtUri(newContext.postUri);
+      const normalizedContext = normalizeAtUri(context.postUri);
+      if (normalizedNew === normalizedContext) return true;
+    }
     // Different engagement page - will get new context
     return false;
   }
@@ -188,7 +235,8 @@ function shouldPreserveEngagementContext(url: string, context: EngagementContext
     const postMatch = context.postUri.match(/at:\/\/([^/]+)\/app\.bsky\.feed\.post\/([^/]+)/);
     if (postMatch) {
       const [, handle, rkey] = postMatch;
-      if (url.includes(`/profile/${handle}/post/${rkey}`)) return true;
+      // Case-insensitive comparison for handle portion
+      if (url.toLowerCase().includes(`/profile/${handle.toLowerCase()}/post/${rkey}`)) return true;
     }
   }
 
@@ -377,10 +425,20 @@ function extractUserFromMenu(menuElement: Element): {
   handle: string;
   notificationInfo?: { notificationType: NotificationReason | null; subjectUri: string | null };
 } | null {
+  // Get current user's handle to avoid self-targeting
+  const session = getSession();
+  const currentUserHandle = session?.handle?.toLowerCase() || '';
+
+  // Helper to check if a handle is the current user (case-insensitive)
+  const isSelf = (handle: string): boolean => {
+    if (!currentUserHandle) return false;
+    return handle.toLowerCase() === currentUserHandle;
+  };
+
   // Try notification-specific extraction first if on notifications page
   if (isNotificationsPage()) {
     const notificationInfo = extractUserFromNotification(menuElement, lastClickedElement);
-    if (notificationInfo) {
+    if (notificationInfo && !isSelf(notificationInfo.handle)) {
       console.log(
         '[ErgoBlock] Found user from notification context:',
         notificationInfo.handle,
@@ -399,7 +457,7 @@ function extractUserFromMenu(menuElement: Element): {
   const profileLink = menuElement.querySelector(CONFIG.SELECTORS.PROFILE_LINK) as HTMLAnchorElement;
   if (profileLink) {
     const match = profileLink.href.match(CONFIG.REGEX.PROFILE_PATH);
-    if (match) return { handle: match[1] };
+    if (match && !isSelf(match[1])) return { handle: match[1] };
   }
 
   const parent = menuElement.closest(CONFIG.SELECTORS.MENU_CONTAINER);
@@ -407,22 +465,56 @@ function extractUserFromMenu(menuElement: Element): {
     const handleEl = parent.querySelector(CONFIG.SELECTORS.PROFILE_LINK) as HTMLAnchorElement;
     if (handleEl) {
       const match = handleEl.href.match(CONFIG.REGEX.PROFILE_PATH);
-      if (match) return { handle: match[1] };
+      if (match && !isSelf(match[1])) return { handle: match[1] };
     }
   }
 
   if (lastClickedElement) {
     const postContainer = lastClickedElement.closest(CONFIG.SELECTORS.POST_CONTAINER);
     if (postContainer) {
-      const authorLink = postContainer.querySelector(
-        CONFIG.SELECTORS.PROFILE_LINK
-      ) as HTMLAnchorElement;
-      if (authorLink) {
-        const match = authorLink.href.match(CONFIG.REGEX.PROFILE_PATH);
-        if (match) {
-          console.log('[TempBlock] Found user from post context:', match[1]);
-          return { handle: match[1] };
+      // In thread views, multiple profile links may exist (e.g., "Replying to @user").
+      // We need to find the POST AUTHOR, not people mentioned in "Replying to" text.
+      //
+      // Strategy: The post author's profile link is typically:
+      // 1. Near the avatar image (in the header area)
+      // 2. NOT inside text containing "Reply" or "reply"
+      //
+      // First, try to find profile links near an avatar image (strongest signal)
+      const avatarImg = postContainer.querySelector('img[src*="avatar"], [data-testid*="avatar"]');
+      if (avatarImg) {
+        // Look for profile link that's a sibling or nearby ancestor/descendant of the avatar
+        let avatarParent = avatarImg.parentElement;
+        for (let i = 0; i < 5 && avatarParent; i++) {
+          const nearbyLinks = avatarParent.querySelectorAll(CONFIG.SELECTORS.PROFILE_LINK);
+          for (const link of nearbyLinks) {
+            const anchor = link as HTMLAnchorElement;
+            const match = anchor.href.match(CONFIG.REGEX.PROFILE_PATH);
+            if (match && !isSelf(match[1])) {
+              console.log('[TempBlock] Found user from avatar context:', match[1]);
+              return { handle: match[1] };
+            }
+          }
+          avatarParent = avatarParent.parentElement;
         }
+      }
+
+      // Fallback: Find profile links that are NOT inside "Replying to" spans
+      const allLinks = postContainer.querySelectorAll(CONFIG.SELECTORS.PROFILE_LINK);
+      for (const link of allLinks) {
+        const anchor = link as HTMLAnchorElement;
+        const match = anchor.href.match(CONFIG.REGEX.PROFILE_PATH);
+        if (!match || isSelf(match[1])) continue;
+
+        // Check if this link is inside a "Replying to" context
+        const linkText = anchor.closest('span, div')?.textContent?.toLowerCase() || '';
+        const isReplyingTo = linkText.includes('reply') || linkText.includes('replying');
+        if (isReplyingTo) {
+          console.log('[TempBlock] Skipping profile in reply context:', match[1]);
+          continue;
+        }
+
+        console.log('[TempBlock] Found user from post context:', match[1]);
+        return { handle: match[1] };
       }
     }
 
@@ -432,7 +524,7 @@ function extractUserFromMenu(menuElement: Element): {
       for (const link of links) {
         const anchor = link as HTMLAnchorElement;
         const match = anchor.href.match(CONFIG.REGEX.PROFILE_PATH);
-        if (match) {
+        if (match && !isSelf(match[1])) {
           console.log('[TempBlock] Found user from click context:', match[1]);
           return { handle: match[1] };
         }
@@ -446,13 +538,26 @@ function extractUserFromMenu(menuElement: Element): {
 
 /**
  * Show duration picker using Preact component in Shadow DOM
+ *
+ * RACE CONDITION FIX: Uses session ID and AbortController to prevent
+ * stale profile fetches from updating the wrong picker instance.
  */
-function showDurationPicker(actionType: 'block' | 'mute', handle: string): void {
+async function showDurationPicker(actionType: 'block' | 'mute', handle: string): Promise<void> {
+  // Abort any in-flight profile fetch from previous picker
+  if (profileFetchAbortController) {
+    profileFetchAbortController.abort();
+    profileFetchAbortController = null;
+  }
+
   // Remove any existing picker
   if (pickerHost) {
     removeShadowContainer(pickerHost);
     pickerHost = null;
   }
+
+  // Increment session ID to invalidate stale fetches
+  currentPickerSessionId++;
+  const thisSessionId = currentPickerSessionId;
 
   const { host, shadow } = createShadowContainer('ergoblock-duration-picker');
   pickerHost = host;
@@ -460,20 +565,40 @@ function showDurationPicker(actionType: 'block' | 'mute', handle: string): void 
   const container = document.createElement('div');
   shadow.appendChild(container);
 
-  const handleSelect = async (durationMs: number, label: string) => {
+  // Get settings for Last Word default delay
+  const options = await getOptions();
+  const defaultLastWordDelaySeconds = options.lastWordDelaySeconds;
+
+  const handleSelect = async (
+    durationMs: number,
+    label: string,
+    lastWordOptions?: LastWordOptions
+  ) => {
+    // Abort profile fetch if still in progress
+    if (profileFetchAbortController) {
+      profileFetchAbortController.abort();
+      profileFetchAbortController = null;
+    }
+
     removeShadowContainer(pickerHost);
     pickerHost = null;
 
     if (durationMs === -1) {
-      await handlePermanentAction(actionType, handle);
+      await handlePermanentAction(actionType, handle, lastWordOptions);
     } else if (actionType === 'block') {
-      await handleTempBlock(handle, durationMs, label);
+      await handleTempBlock(handle, durationMs, label, lastWordOptions);
     } else {
       await handleTempMute(handle, durationMs, label);
     }
   };
 
   const handleCancel = () => {
+    // Abort profile fetch if still in progress
+    if (profileFetchAbortController) {
+      profileFetchAbortController.abort();
+      profileFetchAbortController = null;
+    }
+
     removeShadowContainer(pickerHost);
     pickerHost = null;
   };
@@ -488,6 +613,7 @@ function showDurationPicker(actionType: 'block' | 'mute', handle: string): void 
         options={DURATION_OPTIONS}
         onSelect={handleSelect}
         onCancel={handleCancel}
+        defaultLastWordDelaySeconds={defaultLastWordDelaySeconds}
       />,
       container
     );
@@ -495,16 +621,36 @@ function showDurationPicker(actionType: 'block' | 'mute', handle: string): void 
 
   renderPicker();
 
+  // Create new AbortController for this fetch
+  profileFetchAbortController = new AbortController();
+
   // Resolve DID in background and re-render with stats
+  // NOTE: getProfile doesn't support AbortSignal yet, but we check session ID
   getProfile(handle)
     .then((profile) => {
-      if (profile?.did && pickerHost) {
+      // RACE CONDITION FIX: Check if this is still the active picker session
+      // If user closed and reopened picker, thisSessionId won't match
+      if (thisSessionId !== currentPickerSessionId) {
+        logger.debug('Ignoring stale profile fetch for previous picker session');
+        return;
+      }
+
+      // Also verify pickerHost is still valid (not closed)
+      if (profile?.did && pickerHost && document.body.contains(pickerHost)) {
         renderPicker(profile.did);
       }
     })
     .catch((err) => {
+      // Ignore aborted fetches
+      if (err?.name === 'AbortError') return;
       // Profile resolution failed, stats will show as unavailable
-      console.debug('[ErgoBlock] Profile resolution failed for stats:', err?.message || err);
+      logger.debug('Profile resolution failed for stats:', err?.message || err);
+    })
+    .finally(() => {
+      // Clear controller if this was the active fetch
+      if (thisSessionId === currentPickerSessionId) {
+        profileFetchAbortController = null;
+      }
     });
 }
 
@@ -546,9 +692,17 @@ function closeMenus(): void {
 async function handleTempBlock(
   handle: string,
   durationMs: number,
-  durationLabel: string
+  durationLabel: string,
+  lastWordOptions?: LastWordOptions
 ): Promise<void> {
   try {
+    // Rate limiting to prevent API abuse
+    if (!actionRateLimiter.canPerformAction()) {
+      const waitTime = Math.ceil(actionRateLimiter.getWaitTime() / 1000);
+      throw new Error(`Too many actions. Please wait ${waitTime}s before blocking again.`);
+    }
+    actionRateLimiter.recordAction();
+
     const postContainer = capturedPostContainer;
 
     const profile = await getProfile(handle);
@@ -556,10 +710,33 @@ async function handleTempBlock(
       throw new Error('Could not get user profile');
     }
 
+    // Prevent self-blocking
+    const session = getSession();
+    if (session?.did && profile.did === session.did) {
+      logger.warn('Prevented self-block attempt');
+      throw new Error('Cannot block yourself');
+    }
+
+    // If Last Word is enabled, schedule delayed block instead of immediate block
+    if (lastWordOptions?.enabled) {
+      await handleLastWordBlock(
+        profile.did,
+        profile.handle || handle,
+        durationMs,
+        durationLabel,
+        false, // not permanent
+        postContainer,
+        lastWordOptions.delaySeconds
+      );
+      return;
+    }
+
     // Pre-check storage quota BEFORE making API call to avoid desync
     // where block succeeds on Bluesky but fails to save locally
+    // Use actual calculated size instead of estimate for accuracy
+    const estimatedSize = calculateEntrySize(profile.did, profile.handle || handle, durationMs);
     try {
-      await preCheckStorageQuota();
+      await preCheckStorageQuota(estimatedSize);
     } catch (quotaError) {
       if (quotaError instanceof StorageQuotaError) {
         throw new Error(
@@ -586,16 +763,27 @@ async function handleTempBlock(
       await addTempBlock(profile.did, profile.handle || handle, durationMs, rkey);
     } catch (storageError) {
       // Storage failed after API succeeded - rollback by unblocking
-      console.error('[ErgoBlock] Storage failed after block, rolling back:', storageError);
+      logger.error('Storage failed after block, rolling back:', storageError);
       try {
         await unblockUser(profile.did, rkey);
-        console.log('[ErgoBlock] Rollback successful - user unblocked');
+        logger.info('Rollback successful - user unblocked');
       } catch (rollbackError) {
-        // Rollback failed - user is blocked on Bluesky but not tracked
-        console.error('[ErgoBlock] Rollback failed - desync occurred:', rollbackError);
+        // Rollback failed - add to pending rollback queue for background processing
+        logger.error('Immediate rollback failed, queuing for retry:', rollbackError);
+        try {
+          await addPendingRollback({
+            type: 'unblock',
+            did: profile.did,
+            handle: profile.handle || handle,
+            rkey,
+          });
+          logger.info('Added to pending rollback queue');
+        } catch (queueError) {
+          logger.error('Failed to queue rollback:', queueError);
+        }
         throw new Error(
           `Block saved to Bluesky but local storage failed. ` +
-            `The user is blocked but not tracked by ErgoBlock. ` +
+            `Unblock has been queued for retry. ` +
             `Original error: ${(storageError as Error).message}`
         );
       }
@@ -646,6 +834,13 @@ async function handleTempMute(
   durationLabel: string
 ): Promise<void> {
   try {
+    // Rate limiting to prevent API abuse
+    if (!actionRateLimiter.canPerformAction()) {
+      const waitTime = Math.ceil(actionRateLimiter.getWaitTime() / 1000);
+      throw new Error(`Too many actions. Please wait ${waitTime}s before muting again.`);
+    }
+    actionRateLimiter.recordAction();
+
     const postContainer = capturedPostContainer;
 
     const profile = await getProfile(handle);
@@ -653,10 +848,19 @@ async function handleTempMute(
       throw new Error('Could not get user profile');
     }
 
+    // Prevent self-muting
+    const session = getSession();
+    if (session?.did && profile.did === session.did) {
+      logger.warn('Prevented self-mute attempt');
+      throw new Error('Cannot mute yourself');
+    }
+
     // Pre-check storage quota BEFORE making API call to avoid desync
     // where mute succeeds on Bluesky but fails to save locally
+    // Use actual calculated size instead of estimate for accuracy
+    const estimatedSize = calculateEntrySize(profile.did, profile.handle || handle, durationMs);
     try {
-      await preCheckStorageQuota();
+      await preCheckStorageQuota(estimatedSize);
     } catch (quotaError) {
       if (quotaError instanceof StorageQuotaError) {
         throw new Error(
@@ -674,16 +878,26 @@ async function handleTempMute(
       await addTempMute(profile.did, profile.handle || handle, durationMs);
     } catch (storageError) {
       // Storage failed after API succeeded - rollback by unmuting
-      console.error('[ErgoBlock] Storage failed after mute, rolling back:', storageError);
+      logger.error('Storage failed after mute, rolling back:', storageError);
       try {
         await unmuteUser(profile.did);
-        console.log('[ErgoBlock] Rollback successful - user unmuted');
+        logger.info('Rollback successful - user unmuted');
       } catch (rollbackError) {
-        // Rollback failed - user is muted on Bluesky but not tracked
-        console.error('[ErgoBlock] Rollback failed - desync occurred:', rollbackError);
+        // Rollback failed - add to pending rollback queue for background processing
+        logger.error('Immediate rollback failed, queuing for retry:', rollbackError);
+        try {
+          await addPendingRollback({
+            type: 'unmute',
+            did: profile.did,
+            handle: profile.handle || handle,
+          });
+          logger.info('Added to pending rollback queue');
+        } catch (queueError) {
+          logger.error('Failed to queue rollback:', queueError);
+        }
         throw new Error(
           `Mute saved to Bluesky but local storage failed. ` +
-            `The user is muted but not tracked by ErgoBlock. ` +
+            `Unmute has been queued for retry. ` +
             `Original error: ${(storageError as Error).message}`
         );
       }
@@ -726,15 +940,135 @@ async function handleTempMute(
 }
 
 /**
+ * Handle Last Word block - mute first (optional), then schedule delayed block
+ */
+async function handleLastWordBlock(
+  did: string,
+  handle: string,
+  blockDurationMs: number,
+  _durationLabel: string,
+  permanent: boolean,
+  postContainer: HTMLElement | null,
+  delaySeconds: number = 60
+): Promise<void> {
+  try {
+    // Prevent self-blocking/muting
+    const session = getSession();
+    if (session?.did && did === session.did) {
+      console.warn('[ErgoBlock] Prevented self-block attempt');
+      throw new Error('Cannot block yourself');
+    }
+
+    // Get options to check if mute is enabled
+    const options = await getOptions();
+    const shouldMute = options.lastWordMuteEnabled;
+
+    // Mute the user first if enabled
+    if (shouldMute) {
+      await muteUser(did);
+      console.log('[ErgoBlock] Last Word: Muted user before delayed block:', handle);
+    }
+
+    // Send message to background to schedule the delayed block
+    // The background will set an alarm and execute the block later
+    const response = (await browser.runtime.sendMessage({
+      type: 'SCHEDULE_DELAYED_BLOCK',
+      did,
+      handle,
+      blockDurationMs,
+      permanent,
+      delaySeconds,
+      mutedFirst: shouldMute,
+    })) as { success: boolean; error?: string; delaySeconds?: number };
+
+    if (!response?.success) {
+      // If scheduling failed, unmute if we muted
+      if (shouldMute) {
+        try {
+          await unmuteUser(did);
+        } catch {
+          // Ignore unmute error
+        }
+      }
+      throw new Error(response?.error || 'Failed to schedule delayed block');
+    }
+
+    // Build notification context if we have notification info
+    const notifContext: NotificationContext | null = capturedNotificationInfo?.notificationType
+      ? {
+          notificationType: capturedNotificationInfo.notificationType,
+          subjectUri: capturedNotificationInfo.subjectUri || undefined,
+          sourceUrl: window.location.href,
+        }
+      : null;
+
+    // Capture post context now (before the block happens)
+    capturePostContext(
+      postContainer,
+      handle,
+      did,
+      'block',
+      permanent,
+      currentEngagementContext,
+      notifContext
+    ).catch((e) => console.warn('[ErgoBlock] Post context capture failed:', e));
+
+    // Clear captured notification info after use
+    capturedNotificationInfo = null;
+    // Clear captured post container to prevent memory leak
+    capturedPostContainer = null;
+
+    closeMenus();
+
+    const actualDelay = response.delaySeconds || delaySeconds;
+    if (shouldMute) {
+      showToast(`Muted @${handle}. Block scheduled in ${actualDelay}s`);
+    } else {
+      showToast(`Block scheduled in ${actualDelay}s for @${handle}`);
+    }
+  } catch (error) {
+    console.error('[ErgoBlock] Failed to schedule Last Word block:', error);
+    showToast(`Failed: ${(error as Error).message}`, true);
+  } finally {
+    clearAllDomRefs();
+  }
+}
+
+/**
  * Handle permanent block/mute action
  */
-async function handlePermanentAction(actionType: 'block' | 'mute', handle: string): Promise<void> {
+async function handlePermanentAction(
+  actionType: 'block' | 'mute',
+  handle: string,
+  lastWordOptions?: LastWordOptions
+): Promise<void> {
   try {
     const postContainer = capturedPostContainer;
 
     const profile = await getProfile(handle);
     if (!profile?.did) {
       throw new Error('Could not get user profile');
+    }
+
+    // Prevent self-blocking/muting
+    const session = getSession();
+    if (session?.did && profile.did === session.did) {
+      console.warn(`[ErgoBlock] Prevented self-${actionType} attempt`);
+      throw new Error(`Cannot ${actionType} yourself`);
+    }
+
+    // If Last Word is enabled for block, schedule delayed block
+    if (actionType === 'block' && lastWordOptions?.enabled) {
+      await handleLastWordBlock(
+        profile.did,
+        profile.handle || handle,
+        -1, // permanent
+        'Permanent',
+        true,
+        postContainer,
+        lastWordOptions.delaySeconds
+      );
+      return;
     }
 
     if (actionType === 'block') {
@@ -811,33 +1145,63 @@ function interceptMenuItem(
 }
 
 /**
+ * Extract handle directly from native menu item text.
+ * Bluesky native menu items show "Block @handle" or "Mute @handle".
+ * This is the most reliable way to get the correct target user.
+ */
+function extractHandleFromMenuItemText(menuItem: Element): string | null {
+  const text = menuItem.textContent || '';
+  // Match @handle pattern (handle can contain alphanumeric, dots, and hyphens)
+  const handleMatch = text.match(/@([a-zA-Z0-9][a-zA-Z0-9.-]*[a-zA-Z0-9]|[a-zA-Z0-9])/);
+  if (handleMatch) {
+    return handleMatch[1];
+  }
+  return null;
+}
+
+/**
  * Inject menu items to intercept native Block/Mute
+ *
+ * FIX: Now checks per-item if already injected, not just per-menu.
+ * This prevents issues when observer fires twice during DOM mutation batch.
  */
 function injectMenuItems(menu: Element): void {
-  if (menu.querySelector(`[${CONFIG.ATTRIBUTES.INJECTED}]`)) {
-    return;
-  }
-
   const menuItems = menu.querySelector(CONFIG.SELECTORS.MENU) || menu;
 
+  // First, try to extract handle from DOM context
   let userInfo = extractUserFromMenu(menu);
   if (!userInfo) {
     userInfo = extractUserFromPage();
   }
 
-  if (!userInfo?.handle) {
-    return;
-  }
+  // Fallback handle from DOM extraction (may be wrong in thread contexts)
+  const fallbackHandle = userInfo?.handle;
 
-  const handle = userInfo.handle;
   // Extract notification info if available (from notification context)
-  const notificationInfo = userInfo.notificationInfo;
+  const notificationInfo = userInfo?.notificationInfo;
   const menuItemsList = menuItems.querySelectorAll(CONFIG.SELECTORS.MENU_ITEM);
 
   for (const item of menuItemsList) {
+    // FIX: Check per-item if already injected (not just per-menu)
+    // This ensures idempotency even when observer fires multiple times
+    if (item.hasAttribute(CONFIG.ATTRIBUTES.INJECTED)) {
+      continue;
+    }
+
     const text = item.textContent?.toLowerCase() || '';
 
     if (text.includes('block') && !text.includes('unblock')) {
+      // PRIORITY: Extract handle from native menu item text (most reliable)
+      // Bluesky shows "Block @handle" which gives us the exact target
+      const nativeHandle = extractHandleFromMenuItemText(item);
+      const handle = nativeHandle || fallbackHandle;
+      if (!handle) {
+        logger.warn('Could not determine block target');
+        continue;
+      }
+      if (nativeHandle && fallbackHandle && nativeHandle !== fallbackHandle) {
+        logger.debug('Using native menu handle:', nativeHandle, '(fallback was:', fallbackHandle, ')');
+      }
       interceptMenuItem(item as HTMLElement, 'block', handle, notificationInfo);
     }
 
@@ -847,12 +1211,26 @@ function injectMenuItems(menu: Element): void {
       !text.includes('thread') &&
       !text.includes('word')
     ) {
+      // PRIORITY: Extract handle from native menu item text (most reliable)
+      // Bluesky shows "Mute @handle" which gives us the exact target
+      const nativeHandle = extractHandleFromMenuItemText(item);
+      const handle = nativeHandle || fallbackHandle;
+      if (!handle) {
+        logger.warn('Could not determine mute target');
+        continue;
+      }
+      if (nativeHandle && fallbackHandle && nativeHandle !== fallbackHandle) {
+        logger.debug('Using native menu handle:', nativeHandle, '(fallback was:', fallbackHandle, ')');
+      }
       interceptMenuItem(item as HTMLElement, 'mute', handle, notificationInfo);
     }
   }
 
   // Try to inject repost filter option (only on profile menus for followed users)
-  injectRepostFilterOption(menu, handle);
+  // Use fallback handle since repost filter is not a native item
+  if (fallbackHandle) {
+    injectRepostFilterOption(menu, fallbackHandle);
+  }
 }
 
 /**
@@ -860,17 +1238,6 @@ function injectMenuItems(menu: Element): void {
  */
 function isProfilePage(): boolean {
   return /\/profile\/[^/]+\/?$/.test(window.location.pathname);
-}
-
-/**
- * Check if a user is in our follows list
- */
-async function isFollowedUser(handle: string): Promise<boolean> {
-  try {
-    return await isHandleFollowed(handle);
-  } catch {
-    return false;
-  }
 }
 
 /**
@@ -883,18 +1250,14 @@ async function injectRepostFilterOption(menu: Element, handle: string): Promise<
   // Check if we already injected
   if (menu.querySelector('[data-ergoblock-repost-filter]')) return;
 
-  // Check if user is followed
-  const isFollowed = await isFollowedUser(handle);
-  if (!isFollowed) return;
+  // Use getProfiles() for real-time follow check (single API call)
+  // ProfileWithViewer includes viewer.following which is the actual follow state
+  const profiles = await getProfiles([handle]);
+  const profile = profiles[0];
 
-  // Get profile info (API returns full profile with displayName/avatar)
-  const profile = (await getProfile(handle)) as {
-    did: string;
-    handle: string;
-    displayName?: string;
-    avatar?: string;
-  } | null;
-  if (!profile?.did) return;
+  // Check if we're following this user (real-time from API, not stale cache)
+  if (!profile?.viewer?.following) return;
+  if (!profile.did) return;
 
   // Check if already filtered
   const isFiltered = await isRepostFiltered(profile.did);
@@ -1091,8 +1454,12 @@ function injectNotificationMenu(notificationItem: Element): void {
 
 /**
  * Observe notifications page for new notification items
+ *
+ * FIX: Added isObservingNotifications flag to prevent duplicate observer creation
+ * when called from multiple event sources (popstate, URL observer, etc.)
  */
 let notificationObserver: MutationObserver | null = null;
+let isObservingNotifications = false;
 
 function observeNotifications(): void {
   if (!isNotificationsPage()) {
@@ -1100,6 +1467,7 @@ function observeNotifications(): void {
     if (notificationObserver) {
       notificationObserver.disconnect();
       notificationObserver = null;
+      isObservingNotifications = false;
     }
     return;
   }
@@ -1112,7 +1480,7 @@ function observeNotifications(): void {
 
   // Debug: log structure to find the right elements
   if (notifFeed) {
-    console.log('[ErgoBlock] Found notification feed container');
+    logger.debug('Found notification feed container');
 
     // Look for notification items - they typically contain profile links and are clickable rows
     // Try multiple strategies to find individual notification items
@@ -1166,14 +1534,18 @@ function observeNotifications(): void {
       );
     });
 
-    console.log('[ErgoBlock] Found', uniqueItems.length, 'notification items to inject menu into');
+    logger.debug('Found', uniqueItems.length, 'notification items to inject menu into');
     uniqueItems.forEach((notif) => injectNotificationMenu(notif));
   } else {
-    console.log('[ErgoBlock] No notification feed container found');
+    logger.debug('No notification feed container found');
   }
 
-  // If already observing, skip setting up new observer
-  if (notificationObserver) return;
+  // FIX: Check both observer AND flag to prevent duplicate creation
+  // The flag prevents race conditions when called from multiple event sources
+  if (notificationObserver || isObservingNotifications) return;
+
+  // Mark as observing before creating (prevents race condition)
+  isObservingNotifications = true;
 
   // Set up observer for new notifications
   notificationObserver = new MutationObserver((mutations) => {
@@ -1211,7 +1583,7 @@ function observeNotifications(): void {
     subtree: true,
   });
 
-  console.log('[ErgoBlock] Notification menu observer started');
+  logger.info('Notification menu observer started');
 }
 
 /**
@@ -1331,18 +1703,33 @@ function getCurrentAuth(): {
 }
 
 // Listen for messages from background (e.g., auth refresh requests)
-browser.runtime.onMessage.addListener((message: unknown) => {
-  const msg = message as { type?: string };
-  if (msg.type === 'REQUEST_AUTH') {
-    const auth = getCurrentAuth();
-    if (auth) {
-      // Also sync to storage for background's immediate use
-      browser.storage.local.set({ authToken: auth, authStatus: 'valid' }).catch(() => {});
+// SECURITY: Only respond to messages from our own extension
+browser.runtime.onMessage.addListener(
+  (
+    message: unknown,
+    sender: browser.Runtime.MessageSender
+  ): Promise<{ auth: ReturnType<typeof getCurrentAuth> }> | undefined => {
+    // SECURITY: Validate sender is from our extension
+    // In MV3, runtime.id is the extension ID, and sender.id should match
+    // Messages from content scripts in other tabs will have different tab IDs
+    // but same extension ID - that's fine, they're our extension
+    if (sender.id !== browser.runtime.id) {
+      logger.warn('Ignoring message from unknown sender:', sender.id);
+      return undefined;
     }
-    return Promise.resolve({ auth });
+
+    const msg = message as { type?: string };
+    if (msg.type === 'REQUEST_AUTH') {
+      const auth = getCurrentAuth();
+      if (auth) {
+        // Also sync to storage for background's immediate use
+        browser.storage.local.set({ authToken: auth, authStatus: 'valid' }).catch(() => {});
+      }
+      return Promise.resolve({ auth });
+    }
+    return undefined;
   }
-  return undefined;
-});
+);
 
 // Initialize
 function init(): void {
@@ -1388,7 +1775,7 @@ function init(): void {
   });
   urlObserver.observe(document.body, { childList: true, subtree: true });
 
-  console.log('[TempBlock] Extension initialized');
+  logger.info('Extension initialized');
 }
 
 init();

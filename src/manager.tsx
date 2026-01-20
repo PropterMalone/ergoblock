@@ -8,7 +8,6 @@ import browser from './browser.js';
 import {
   getAllManagedBlocks,
   getAllManagedMutes,
-  getActionHistory,
   getPostContexts,
   getSyncState,
   getAmnestyReviewedDids,
@@ -24,7 +23,6 @@ import {
 import {
   blocks,
   mutes,
-  history,
   contexts,
   syncState,
   options,
@@ -40,20 +38,20 @@ import {
   setInteractions,
   setExpandedLoading,
   setFindingContext,
+  allEntries,
 } from './signals/manager.js';
 import type { Interaction } from './types.js';
 import {
   StatsBar,
   TabNav,
   Toolbar,
-  BlocksTable,
-  MutesTable,
-  HistoryTable,
+  ActionsTable,
   AmnestyTab,
   BlocklistAuditTab,
   RepostFiltersTab,
   MassOpsTab,
   CopyUserTab,
+  SettingsTab,
   ExportSection,
   formatTimeAgo,
 } from './components/manager/index.js';
@@ -97,7 +95,6 @@ function ManagerApp(): JSX.Element {
     const [
       blocksData,
       mutesData,
-      historyData,
       contextsData,
       syncData,
       reviewedDids,
@@ -108,7 +105,6 @@ function ManagerApp(): JSX.Element {
     ] = await Promise.all([
       getAllManagedBlocks(),
       getAllManagedMutes(),
-      getActionHistory(),
       getPostContexts(),
       getSyncState(),
       getAmnestyReviewedDids(),
@@ -120,7 +116,6 @@ function ManagerApp(): JSX.Element {
 
     blocks.value = blocksData;
     mutes.value = mutesData;
-    history.value = historyData;
     contexts.value = contextsData;
     syncState.value = syncData;
     amnestyReviewedDids.value = reviewedDids;
@@ -325,16 +320,29 @@ function ManagerApp(): JSX.Element {
     const count = selectedItems.value.size;
     if (count === 0) return;
 
-    const tab = currentTab.value;
-    const type = tab === 'blocks' ? 'unblock' : 'unmute';
-    if (!confirm(`${type === 'unblock' ? 'Unblock' : 'Unmute'} ${count} users?`)) return;
+    // Determine what to remove based on each selected item's type
+    const selected = Array.from(selectedItems.value);
+    const entries = allEntries.value;
 
-    for (const did of selectedItems.value) {
-      if (type === 'unblock') {
-        await handleUnblock(did);
-      } else {
-        await handleUnmute(did);
-      }
+    // 'both' entries need both unblock and unmute
+    const toUnblock = selected.filter((did) =>
+      entries.find((e) => e.did === did && (e.type === 'block' || e.type === 'both'))
+    );
+    const toUnmute = selected.filter((did) =>
+      entries.find((e) => e.did === did && (e.type === 'mute' || e.type === 'both'))
+    );
+
+    const parts: string[] = [];
+    if (toUnblock.length > 0) parts.push(`${toUnblock.length} block${toUnblock.length > 1 ? 's' : ''}`);
+    if (toUnmute.length > 0) parts.push(`${toUnmute.length} mute${toUnmute.length > 1 ? 's' : ''}`);
+
+    if (!confirm(`Remove ${parts.join(' and ')}?`)) return;
+
+    for (const did of toUnblock) {
+      await handleUnblock(did);
+    }
+    for (const did of toUnmute) {
+      await handleUnmute(did);
     }
 
     clearSelection();
@@ -384,26 +392,16 @@ function ManagerApp(): JSX.Element {
     }
 
     switch (currentTab.value) {
-      case 'blocks':
+      case 'actions':
         return (
-          <BlocksTable
+          <ActionsTable
             onUnblock={handleUnblock}
-            onFindContext={handleFindContext}
-            onViewPost={handleTempUnblockAndView}
-            onFetchInteractions={handleFetchInteractions}
-          />
-        );
-      case 'mutes':
-        return (
-          <MutesTable
             onUnmute={handleUnmute}
             onFindContext={handleFindContext}
             onViewPost={handleTempUnblockAndView}
             onFetchInteractions={handleFetchInteractions}
           />
         );
-      case 'history':
-        return <HistoryTable />;
       case 'amnesty':
         return (
           <AmnestyTab
@@ -422,6 +420,8 @@ function ManagerApp(): JSX.Element {
         return <MassOpsTab onReload={loadData} />;
       case 'copy-user':
         return <CopyUserTab onReload={loadData} />;
+      case 'settings':
+        return <SettingsTab onReload={loadData} />;
       default:
         return null;
     }

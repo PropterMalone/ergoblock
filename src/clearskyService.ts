@@ -182,9 +182,26 @@ export async function getFollowsWhoBlock(
   };
   await saveBlockedByCache(cacheEntry);
 
-  // Compute intersection with follows
+  // MEDIUM FIX #12: Efficient set intersection - iterate smaller set, check larger
+  // Avoids spreading to array which is O(n) memory for large follow lists
   const blockerSet = new Set(blockerDids);
-  const followsWhoBlock = [...myFollowDids].filter((did) => blockerSet.has(did));
+  const followSet = new Set(myFollowDids);
+  const followsWhoBlock: string[] = [];
+
+  // Iterate the smaller set for efficiency
+  if (followSet.size <= blockerSet.size) {
+    for (const did of followSet) {
+      if (blockerSet.has(did)) {
+        followsWhoBlock.push(did);
+      }
+    }
+  } else {
+    for (const did of blockerSet) {
+      if (followSet.has(did)) {
+        followsWhoBlock.push(did);
+      }
+    }
+  }
 
   return {
     count: followsWhoBlock.length,
@@ -233,10 +250,7 @@ export async function getFollowsWhoBlockCached(
  * Queue targets for background fetching
  * Higher priority = fetched sooner (lower number)
  */
-export async function queueBlockedByFetch(
-  targetDids: string[],
-  priority = 10
-): Promise<void> {
+export async function queueBlockedByFetch(targetDids: string[], priority = 10): Promise<void> {
   for (const did of targetDids) {
     // Skip if we already have fresh cache
     const cached = await getCachedBlockedBy(did);
@@ -342,9 +356,7 @@ export async function prewarmBlockedByCache(
     }
   }
 
-  console.log(
-    `[Clearsky] Prewarm: ${queued} queued, ${alreadyCached} already cached`
-  );
+  console.log(`[Clearsky] Prewarm: ${queued} queued, ${alreadyCached} already cached`);
 
   return { queued, alreadyCached };
 }

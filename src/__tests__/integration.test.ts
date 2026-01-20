@@ -245,6 +245,8 @@ describe('Integration Tests', () => {
         savePostContext: true,
         postContextRetentionDays: 90,
         forgivenessPeriodDays: 90,
+        lastWordMuteEnabled: true,
+        lastWordDelaySeconds: 60,
       };
 
       await setOptions(customOptions);
