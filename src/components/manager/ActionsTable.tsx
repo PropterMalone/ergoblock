@@ -44,9 +44,8 @@ export function ActionsTable({
   onFetchInteractions,
 }: ActionsTableProps): JSX.Element {
   const [isFirstRun, setIsFirstRun] = useState<boolean | null>(null);
-  const [columnVisibility, setColumnVisibility] = useState<ColumnVisibility>(
-    DEFAULT_COLUMN_VISIBILITY
-  );
+  const [columnVisibility, setColumnVisibility] =
+    useState<ColumnVisibility>(DEFAULT_COLUMN_VISIBILITY);
 
   useEffect(() => {
     let mounted = true;
@@ -55,7 +54,9 @@ export function ActionsTable({
         setIsFirstRun(!hasCreated);
       }
     });
-    return () => { mounted = false; };
+    return () => {
+      mounted = false;
+    };
   }, []);
 
   useEffect(() => {
@@ -70,7 +71,9 @@ export function ActionsTable({
 
     // Listen for storage changes to update when settings change
     const handleStorageChange = (changes: Record<string, unknown>) => {
-      const columnVisibilityChange = changes.columnVisibility as browser.Storage.StorageChange | undefined;
+      const columnVisibilityChange = changes.columnVisibility as
+        | browser.Storage.StorageChange
+        | undefined;
       if (columnVisibilityChange && mounted) {
         setColumnVisibility(columnVisibilityChange.newValue as ColumnVisibility);
       }
@@ -213,7 +216,9 @@ export function ActionsTable({
                     </span>
                   </td>
                 )}
-                {columnVisibility.status && <StatusIndicators viewer={entry.viewer} isBlocksTab={isBlock || isBoth} />}
+                {columnVisibility.status && (
+                  <StatusIndicators viewer={entry.viewer} isBlocksTab={isBlock || isBoth} />
+                )}
                 {columnVisibility.amnesty && (
                   <td>
                     <span

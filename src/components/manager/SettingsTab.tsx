@@ -1,6 +1,15 @@
 import type { JSX } from 'preact';
 import { useState, useEffect, useCallback } from 'preact/hooks';
-import { Settings, RefreshCw, Save, RotateCcw, Trash2, Search, AlertCircle, Database } from 'lucide-preact';
+import {
+  Settings,
+  RefreshCw,
+  Save,
+  RotateCcw,
+  Trash2,
+  Search,
+  AlertCircle,
+  Database,
+} from 'lucide-preact';
 import { getOptions, setOptions, getColumnVisibility, setColumnVisibility } from '../../storage.js';
 import {
   DEFAULT_OPTIONS,
@@ -34,9 +43,8 @@ const DURATION_OPTIONS = [
 
 export function SettingsTab({ onReload }: SettingsTabProps): JSX.Element {
   const [options, setLocalOptions] = useState<ExtensionOptions>(DEFAULT_OPTIONS);
-  const [columnVisibility, setColumnVisibilityState] = useState<ColumnVisibility>(
-    DEFAULT_COLUMN_VISIBILITY
-  );
+  const [columnVisibility, setColumnVisibilityState] =
+    useState<ColumnVisibility>(DEFAULT_COLUMN_VISIBILITY);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState<StatusState | null>(null);
@@ -242,7 +250,9 @@ export function SettingsTab({ onReload }: SettingsTabProps): JSX.Element {
 
         {/* Table Columns */}
         <SettingsSection title="Table Columns">
-          <div style={{ marginBottom: '12px', fontSize: '13px', color: 'var(--text-secondary, #666)' }}>
+          <div
+            style={{ marginBottom: '12px', fontSize: '13px', color: 'var(--text-secondary, #666)' }}
+          >
             Choose which columns to show in the Blocks & Mutes table. Hiding columns can make the
             table easier to read.
           </div>
@@ -858,24 +868,27 @@ function PdsCleanupSection(): JSX.Element {
             {scanning ? 'Scanning...' : 'Scan for Duplicates'}
           </button>
 
-          {scanResult && scanResult.duplicateRecords !== undefined && scanResult.duplicateRecords > 0 && scanResult.deleted === undefined && (
-            <button
-              class="blocklist-action-btn"
-              onClick={handleDelete}
-              disabled={scanning || deleting}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '6px',
-                backgroundColor: '#dc3545',
-                color: 'white',
-                borderColor: '#dc3545',
-              }}
-            >
-              {deleting ? <RefreshCw size={14} class="spinner" /> : <Trash2 size={14} />}
-              {deleting ? 'Deleting...' : `Delete ${scanResult.duplicateRecords} Duplicates`}
-            </button>
-          )}
+          {scanResult &&
+            scanResult.duplicateRecords !== undefined &&
+            scanResult.duplicateRecords > 0 &&
+            scanResult.deleted === undefined && (
+              <button
+                class="blocklist-action-btn"
+                onClick={handleDelete}
+                disabled={scanning || deleting}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  backgroundColor: '#dc3545',
+                  color: 'white',
+                  borderColor: '#dc3545',
+                }}
+              >
+                {deleting ? <RefreshCw size={14} class="spinner" /> : <Trash2 size={14} />}
+                {deleting ? 'Deleting...' : `Delete ${scanResult.duplicateRecords} Duplicates`}
+              </button>
+            )}
         </div>
       </div>
     </div>
