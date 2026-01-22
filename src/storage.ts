@@ -7,6 +7,7 @@ import browser from './browser.js';
 import {
   DEFAULT_OPTIONS,
   DEFAULT_MASS_OPS_SETTINGS,
+  DEFAULT_COLUMN_VISIBILITY,
   type ExtensionOptions,
   type HistoryEntry,
   type PostContext,
@@ -23,6 +24,7 @@ import {
   type MassOpsScanResult,
   type MassOpsSettings,
   type DelayedBlockEntry,
+  type ColumnVisibility,
 } from './types.js';
 import { generateId, isValidDid, isValidDuration } from './utils.js';
 
@@ -198,6 +200,8 @@ export const STORAGE_KEYS = {
   PENDING_DELAYED_BLOCKS: 'pendingDelayedBlocks',
   // First-run detection (UX Legibility Audit)
   HAS_CREATED_ACTION: 'hasCreatedAction',
+  // Column visibility (table configuration)
+  COLUMN_VISIBILITY: 'columnVisibility',
 };
 
 const HISTORY_MAX_ENTRIES = 100;
@@ -1399,4 +1403,40 @@ export async function cleanupOldRollbacks(): Promise<number> {
     await browser.storage.local.set({ [PENDING_ROLLBACKS_KEY]: toKeep });
   }
   return removed;
+}
+
+// ============================================================================
+// Column Visibility Storage
+// ============================================================================
+
+/**
+ * Get column visibility settings.
+ * Returns default visibility if not set.
+ */
+export async function getColumnVisibility(): Promise<ColumnVisibility> {
+  const result = await browser.storage.local.get(STORAGE_KEYS.COLUMN_VISIBILITY);
+  const stored = result[STORAGE_KEYS.COLUMN_VISIBILITY];
+
+  if (!stored) {
+    return DEFAULT_COLUMN_VISIBILITY;
+  }
+
+  // Merge with defaults in case new columns were added
+  return { ...DEFAULT_COLUMN_VISIBILITY, ...stored };
+}
+
+/**
+ * Update column visibility settings.
+ * Only updates the columns that are toggleable (not user or actions).
+ */
+export async function setColumnVisibility(visibility: Partial<ColumnVisibility>): Promise<void> {
+  const current = await getColumnVisibility();
+  const updated: ColumnVisibility = {
+    ...current,
+    ...visibility,
+    // Enforce always-visible columns
+    user: true,
+    actions: true,
+  };
+  await browser.storage.local.set({ [STORAGE_KEYS.COLUMN_VISIBILITY]: updated });
 }
