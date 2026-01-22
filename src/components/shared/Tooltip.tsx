@@ -25,10 +25,7 @@ export function Tooltip({
   const tooltipId = useId();
 
   return (
-    <span
-      class={`tooltip-wrapper ${className ?? ''}`}
-      data-tooltip-position={position}
-    >
+    <span class={`tooltip-wrapper ${className ?? ''}`} data-tooltip-position={position}>
       <span class="tooltip-trigger" aria-describedby={tooltipId}>
         {children}
       </span>

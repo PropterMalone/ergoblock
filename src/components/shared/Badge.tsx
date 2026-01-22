@@ -41,7 +41,7 @@ export function Badge({
   const badgeElement = <span class={classes}>{children}</span>;
 
   // Determine tooltip text: explicit prop > default > none
-  const tooltipText = tooltip === false ? null : tooltip ?? BADGE_TOOLTIPS[variant] ?? null;
+  const tooltipText = tooltip === false ? null : (tooltip ?? BADGE_TOOLTIPS[variant] ?? null);
 
   if (tooltipText) {
     return (
