@@ -2,6 +2,7 @@ import { render } from 'preact';
 import { useEffect, useCallback } from 'preact/hooks';
 import { signal } from '@preact/signals';
 import browser from './browser.js';
+import { Tooltip } from './components/shared/Tooltip.js';
 import {
   STORAGE_KEYS,
   getTempBlocks,
@@ -304,7 +305,9 @@ function StatsBar() {
     <div class="stats">
       <StatItem value={blocks} label="Blocks" />
       <StatItem value={mutes} label="Mutes" />
-      <StatItem value={expiring} label="Expiring 24h" />
+      <Tooltip text="Blocks and mutes that will expire in the next 24 hours" position="bottom">
+        <StatItem value={expiring} label="Expiring 24h" />
+      </Tooltip>
     </div>
   );
 }
@@ -394,12 +397,16 @@ function RecentItem({ entry }: { entry: HistoryEntry }) {
 function Footer() {
   return (
     <div class="footer">
-      <button class="btn btn-action" onClick={checkNow}>
-        Check Now
-      </button>
-      <button class="btn btn-action secondary" onClick={syncNow}>
-        Sync
-      </button>
+      <Tooltip text="Manually check for expired blocks/mutes and remove them" position="top">
+        <button class="btn btn-action" onClick={checkNow}>
+          Check Now
+        </button>
+      </Tooltip>
+      <Tooltip text="Refresh data from your Bluesky account" position="top">
+        <button class="btn btn-action secondary" onClick={syncNow}>
+          Sync
+        </button>
+      </Tooltip>
     </div>
   );
 }
