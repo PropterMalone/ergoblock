@@ -4020,3 +4020,76 @@ tr.expanded-row > td {
   font-size: var(--font-size-00);
   color: var(--gray-5);
 }
+
+/* Column Visibility Settings */
+.column-visibility-options {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+
+.column-toggle {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-rows: auto auto;
+  gap: var(--space-xxs) var(--space-sm);
+  align-items: start;
+  padding: var(--space-sm);
+  background: var(--gray-1);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: background-color 200ms ease;
+}
+
+.column-toggle:hover {
+  background: var(--gray-2);
+}
+
+.column-toggle.disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.column-toggle input[type='checkbox'] {
+  grid-row: span 2;
+  margin-top: var(--space-xxs);
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+
+.column-toggle.disabled input[type='checkbox'] {
+  cursor: not-allowed;
+}
+
+.column-label {
+  font-weight: var(--font-weight-5);
+  color: var(--gray-9);
+  font-size: var(--font-size-1);
+}
+
+.column-description {
+  grid-column: 2;
+  font-size: var(--font-size-00);
+  color: var(--gray-5);
+  line-height: 1.4;
+}
+
+/* Dark mode */
+@media (prefers-color-scheme: dark) {
+  .column-toggle {
+    background: var(--gray-8);
+  }
+
+  .column-toggle:hover {
+    background: var(--gray-7);
+  }
+
+  .column-label {
+    color: var(--gray-1);
+  }
+
+  .column-description {
+    color: var(--gray-4);
+  }
+}

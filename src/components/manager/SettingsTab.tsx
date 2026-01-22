@@ -1,8 +1,15 @@
 import type { JSX } from 'preact';
 import { useState, useEffect, useCallback } from 'preact/hooks';
 import { Settings, RefreshCw, Save, RotateCcw, Trash2, Search, AlertCircle, Database } from 'lucide-preact';
-import { getOptions, setOptions } from '../../storage.js';
-import { DEFAULT_OPTIONS, type ExtensionOptions } from '../../types.js';
+import { getOptions, setOptions, getColumnVisibility, setColumnVisibility } from '../../storage.js';
+import {
+  DEFAULT_OPTIONS,
+  DEFAULT_COLUMN_VISIBILITY,
+  COLUMN_METADATA,
+  type ExtensionOptions,
+  type ColumnVisibility,
+  type TableColumn,
+} from '../../types.js';
 import browser from '../../browser.js';
 
 type Theme = 'light' | 'dark' | 'auto';
@@ -27,12 +34,16 @@ const DURATION_OPTIONS = [
 
 export function SettingsTab({ onReload }: SettingsTabProps): JSX.Element {
   const [options, setLocalOptions] = useState<ExtensionOptions>(DEFAULT_OPTIONS);
+  const [columnVisibility, setColumnVisibilityState] = useState<ColumnVisibility>(
+    DEFAULT_COLUMN_VISIBILITY
+  );
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState<StatusState | null>(null);
 
   useEffect(() => {
     loadOptions();
+    loadColumnVisibility();
   }, []);
 
   useEffect(() => {
@@ -54,6 +65,15 @@ export function SettingsTab({ onReload }: SettingsTabProps): JSX.Element {
     }
   };
 
+  const loadColumnVisibility = async () => {
+    try {
+      const visibility = await getColumnVisibility();
+      setColumnVisibilityState(visibility);
+    } catch (error) {
+      console.error('[SettingsTab] Failed to load column visibility:', error);
+    }
+  };
+
   const showStatus = (message: string, type: 'success' | 'error') => {
     setStatus({ message, type });
   };
@@ -64,6 +84,15 @@ export function SettingsTab({ onReload }: SettingsTabProps): JSX.Element {
     },
     []
   );
+
+  const handleColumnToggle = async (column: TableColumn) => {
+    if (COLUMN_METADATA[column].alwaysVisible) return;
+
+    const newValue = !columnVisibility[column];
+    const updated = { ...columnVisibility, [column]: newValue };
+    setColumnVisibilityState(updated);
+    await setColumnVisibility(updated);
+  };
 
   const handleSave = async () => {
     setSaving(true);
@@ -209,6 +238,34 @@ export function SettingsTab({ onReload }: SettingsTabProps): JSX.Element {
               onChange={(theme) => updateOption('theme', theme)}
             />
           </SettingRow>
+        </SettingsSection>
+
+        {/* Table Columns */}
+        <SettingsSection title="Table Columns">
+          <div style={{ marginBottom: '12px', fontSize: '13px', color: 'var(--text-secondary, #666)' }}>
+            Choose which columns to show in the Blocks & Mutes table. Hiding columns can make the
+            table easier to read.
+          </div>
+          <div class="column-visibility-options">
+            {(Object.keys(COLUMN_METADATA) as Array<TableColumn>).map((column) => {
+              const meta = COLUMN_METADATA[column];
+              const isChecked = columnVisibility[column];
+              const isDisabled = meta.alwaysVisible === true;
+
+              return (
+                <label key={column} class={`column-toggle ${isDisabled ? 'disabled' : ''}`}>
+                  <input
+                    type="checkbox"
+                    checked={isChecked}
+                    disabled={isDisabled}
+                    onChange={() => handleColumnToggle(column)}
+                  />
+                  <span class="column-label">{meta.label}</span>
+                  <span class="column-description">{meta.description}</span>
+                </label>
+              );
+            })}
+          </div>
         </SettingsSection>
 
         {/* Post Context */}
