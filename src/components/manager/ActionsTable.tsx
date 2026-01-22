@@ -69,9 +69,10 @@ export function ActionsTable({
     });
 
     // Listen for storage changes to update when settings change
-    const handleStorageChange = (changes: Record<string, browser.Storage.StorageChange>) => {
-      if (changes.columnVisibility && mounted) {
-        setColumnVisibility(changes.columnVisibility.newValue);
+    const handleStorageChange = (changes: Record<string, unknown>) => {
+      const columnVisibilityChange = changes.columnVisibility as browser.Storage.StorageChange | undefined;
+      if (columnVisibilityChange && mounted) {
+        setColumnVisibility(columnVisibilityChange.newValue as ColumnVisibility);
       }
     };
 
