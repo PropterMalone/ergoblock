@@ -23,8 +23,10 @@ import { UserCell } from './UserCell.js';
 import { ContextCell } from './ContextCell.js';
 import { StatusIndicators } from './StatusIndicators.js';
 import { InteractionsList } from './InteractionsList.js';
-import { getHasCreatedAction } from '../../storage.js';
+import { getHasCreatedAction, getColumnVisibility } from '../../storage.js';
+import { DEFAULT_COLUMN_VISIBILITY, type ColumnVisibility } from '../../types.js';
 import { FirstRunEmptyState } from '../shared/FirstRunEmptyState.js';
+import browser from '../../browser.js';
 
 interface ActionsTableProps {
   onUnblock: (did: string, handle: string) => void;
@@ -42,6 +44,9 @@ export function ActionsTable({
   onFetchInteractions,
 }: ActionsTableProps): JSX.Element {
   const [isFirstRun, setIsFirstRun] = useState<boolean | null>(null);
+  const [columnVisibility, setColumnVisibility] = useState<ColumnVisibility>(
+    DEFAULT_COLUMN_VISIBILITY
+  );
 
   useEffect(() => {
     let mounted = true;
@@ -51,6 +56,30 @@ export function ActionsTable({
       }
     });
     return () => { mounted = false; };
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
+
+    // Load initial column visibility
+    getColumnVisibility().then((visibility) => {
+      if (mounted) {
+        setColumnVisibility(visibility);
+      }
+    });
+
+    // Listen for storage changes to update when settings change
+    const handleStorageChange = (changes: Record<string, browser.Storage.StorageChange>) => {
+      if (changes.columnVisibility && mounted) {
+        setColumnVisibility(changes.columnVisibility.newValue);
+      }
+    };
+
+    browser.storage.onChanged.addListener(handleStorageChange);
+    return () => {
+      mounted = false;
+      browser.storage.onChanged.removeListener(handleStorageChange);
+    };
   }, []);
 
   const filtered = filterAndSort(
@@ -108,13 +137,13 @@ export function ActionsTable({
             <input type="checkbox" checked={allSelected} onChange={handleSelectAll} />
           </th>
           <SortableHeader column="user" label="User" />
-          <SortableHeader column="type" label="Type" />
-          <th>Context</th>
-          <SortableHeader column="source" label="Source" />
-          <th>Status</th>
-          <SortableHeader column="amnesty" label="Amnesty" />
-          <SortableHeader column="expires" label="Expires" />
-          <SortableHeader column="date" label="Date" />
+          {columnVisibility.type && <SortableHeader column="type" label="Type" />}
+          {columnVisibility.context && <th>Context</th>}
+          {columnVisibility.source && <SortableHeader column="source" label="Source" />}
+          {columnVisibility.status && <th>Status</th>}
+          {columnVisibility.amnesty && <SortableHeader column="amnesty" label="Amnesty" />}
+          {columnVisibility.expires && <SortableHeader column="expires" label="Expires" />}
+          {columnVisibility.date && <SortableHeader column="date" label="Date" />}
           <th>Actions</th>
         </tr>
       </thead>
@@ -150,57 +179,69 @@ export function ActionsTable({
                   displayName={entry.displayName}
                   avatar={entry.avatar}
                 />
-                <td>
-                  {isBoth ? (
-                    <div class="badge-group">
-                      <span class="badge badge-block">Block</span>
-                      <span class="badge badge-mute">Mute</span>
-                    </div>
-                  ) : (
-                    <span class={`badge ${isBlock ? 'badge-block' : 'badge-mute'}`}>
-                      {isBlock ? 'Block' : 'Mute'}
+                {columnVisibility.type && (
+                  <td>
+                    {isBoth ? (
+                      <div class="badge-group">
+                        <span class="badge badge-block">Block</span>
+                        <span class="badge badge-mute">Mute</span>
+                      </div>
+                    ) : (
+                      <span class={`badge ${isBlock ? 'badge-block' : 'badge-mute'}`}>
+                        {isBlock ? 'Block' : 'Mute'}
+                      </span>
+                    )}
+                  </td>
+                )}
+                {columnVisibility.context && (
+                  <ContextCell
+                    did={entry.did}
+                    handle={entry.handle}
+                    isBlocked={isBlock || isBoth}
+                    isExpanded={isExpanded}
+                    onFindContext={onFindContext}
+                    onViewPost={onViewPost}
+                    onToggleExpand={() => toggleExpanded(entry.did)}
+                    showExpandButton={hasInteractions}
+                  />
+                )}
+                {columnVisibility.source && (
+                  <td>
+                    <span class={`badge ${isTemp ? 'badge-temp' : 'badge-permanent'}`}>
+                      {isTemp ? 'Temp' : 'Perm'}
                     </span>
-                  )}
-                </td>
-                <ContextCell
-                  did={entry.did}
-                  handle={entry.handle}
-                  isBlocked={isBlock || isBoth}
-                  isExpanded={isExpanded}
-                  onFindContext={onFindContext}
-                  onViewPost={onViewPost}
-                  onToggleExpand={() => toggleExpanded(entry.did)}
-                  showExpandButton={hasInteractions}
-                />
-                <td>
-                  <span class={`badge ${isTemp ? 'badge-temp' : 'badge-permanent'}`}>
-                    {isTemp ? 'Temp' : 'Perm'}
-                  </span>
-                </td>
-                <StatusIndicators viewer={entry.viewer} isBlocksTab={isBlock || isBoth} />
-                <td>
-                  <span
-                    class={`badge ${amnestyStatus === 'denied' ? 'badge-denied' : 'badge-unreviewed'}`}
-                  >
-                    {amnestyStatus === 'denied' ? 'Denied' : 'Unreviewed'}
-                  </span>
-                </td>
-                <td>
-                  {isTemp && entry.expiresAt ? (
-                    <span class={`badge ${isExpiringSoon ? 'badge-expiring' : ''}`}>
-                      {formatTimeRemaining(entry.expiresAt)}
+                  </td>
+                )}
+                {columnVisibility.status && <StatusIndicators viewer={entry.viewer} isBlocksTab={isBlock || isBoth} />}
+                {columnVisibility.amnesty && (
+                  <td>
+                    <span
+                      class={`badge ${amnestyStatus === 'denied' ? 'badge-denied' : 'badge-unreviewed'}`}
+                    >
+                      {amnestyStatus === 'denied' ? 'Denied' : 'Unreviewed'}
                     </span>
-                  ) : (
-                    '-'
-                  )}
-                </td>
-                <td>
-                  {entry.createdAt
-                    ? formatDate(entry.createdAt)
-                    : entry.syncedAt
-                      ? formatDate(entry.syncedAt)
-                      : '-'}
-                </td>
+                  </td>
+                )}
+                {columnVisibility.expires && (
+                  <td>
+                    {isTemp && entry.expiresAt ? (
+                      <span class={`badge ${isExpiringSoon ? 'badge-expiring' : ''}`}>
+                        {formatTimeRemaining(entry.expiresAt)}
+                      </span>
+                    ) : (
+                      '-'
+                    )}
+                  </td>
+                )}
+                {columnVisibility.date && (
+                  <td>
+                    {entry.createdAt
+                      ? formatDate(entry.createdAt)
+                      : entry.syncedAt
+                        ? formatDate(entry.syncedAt)
+                        : '-'}
+                  </td>
+                )}
                 <td>
                   {isBoth ? (
                     <div class="action-group">
