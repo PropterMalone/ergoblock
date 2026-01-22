@@ -11,6 +11,7 @@ import {
   getPermanentMutes,
   getActionHistory,
   getSyncState,
+  getHasCreatedAction,
 } from './storage.js';
 import type { HistoryEntry, SyncState } from './types.js';
 
@@ -47,6 +48,7 @@ const syncState = signal<SyncState | null>(null);
 const authExpired = signal(false);
 const statusMessage = signal('');
 const loading = signal(true);
+const isFirstRun = signal<boolean | null>(null);
 
 // Formatting utilities
 function formatTimeRemaining(expiresAt: number): string {
@@ -151,6 +153,11 @@ async function checkAuthStatus(): Promise<void> {
   authExpired.value = result.authStatus === 'invalid';
 }
 
+async function loadFirstRunStatus(): Promise<void> {
+  const hasCreated = await getHasCreatedAction();
+  isFirstRun.value = !hasCreated;
+}
+
 async function loadAllData(): Promise<void> {
   loading.value = true;
   await Promise.all([
@@ -159,6 +166,7 @@ async function loadAllData(): Promise<void> {
     loadRecentActivity(),
     loadSyncState(),
     checkAuthStatus(),
+    loadFirstRunStatus(),
   ]);
   loading.value = false;
 }
@@ -260,6 +268,25 @@ function PopupApp() {
     return () => clearInterval(interval);
   }, []);
 
+  const { blocks, mutes } = stats.value;
+  const totalBlocks = blocks + mutes;
+
+  // If first-run and no data, show compact onboarding
+  if (isFirstRun.value && totalBlocks === 0) {
+    return (
+      <>
+        <Header />
+        {authExpired.value && <AuthWarning />}
+        <div class="popup-first-run">
+          <p><strong>Welcome to ErgoBlock!</strong></p>
+          <p>To get started, go to someone's profile on Bluesky and use the ... menu to block or mute.</p>
+        </div>
+        <Footer />
+        <StatusBar />
+      </>
+    );
+  }
+
   return (
     <>
       <Header />
@@ -329,7 +356,7 @@ function ExpiringSection() {
       <div class="section-header">Expiring Soon</div>
       <div class="section-content">
         {items.length === 0 ? (
-          <div class="empty">Nothing expiring soon</div>
+          <div class="empty">Nothing expiring soon. Your temporary blocks and mutes will appear here when they're about to expire.</div>
         ) : (
           items.map((item) => <ExpiringItem key={item.did} item={item} />)
         )}
