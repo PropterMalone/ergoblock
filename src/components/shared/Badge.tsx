@@ -18,8 +18,11 @@ export type BadgeVariant =
 
 /** Tooltip text for badge variants that need explanation */
 const BADGE_TOOLTIPS: Partial<Record<BadgeVariant, string>> = {
+  /** Explains temporary blocks/mutes auto-expire to help users understand time-limited actions */
   temp: 'Temporary - will automatically expire at the scheduled time',
+  /** Explains permanent blocks/mutes persist until manual removal to set user expectations */
   permanent: 'Permanent - will not expire unless manually removed',
+  /** Explains expiring badge indicates imminent expiration to encourage timely review */
   expiring: 'Expiring soon - scheduled to be removed within 24 hours',
 };
 
