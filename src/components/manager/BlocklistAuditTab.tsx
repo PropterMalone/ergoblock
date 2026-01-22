@@ -132,6 +132,10 @@ export function BlocklistAuditTab({ onReload }: BlocklistAuditTabProps): JSX.Ele
               ? 'None of your follows or followers are on any of your subscribed blocklists.'
               : 'Check if any of your follows or followers are on blocklists you subscribe to.'}
           </p>
+          <p class="empty-hint">
+            Blocklists are shared lists of accounts curated by the Bluesky community. You can find and
+            subscribe to blocklists in Bluesky's Moderation settings.
+          </p>
           <button class="audit-sync-btn" onClick={handleSync} disabled={syncing}>
             <RefreshCw size={16} class={syncing ? 'spinner' : ''} />{' '}
             {syncing ? 'Syncing...' : 'Run Audit'}
