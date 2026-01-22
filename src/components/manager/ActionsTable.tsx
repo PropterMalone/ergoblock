@@ -1,5 +1,6 @@
 import type { JSX } from 'preact';
 import { Fragment } from 'preact';
+import { useState, useEffect } from 'preact/hooks';
 import {
   allEntries,
   searchQuery,
@@ -22,6 +23,8 @@ import { UserCell } from './UserCell.js';
 import { ContextCell } from './ContextCell.js';
 import { StatusIndicators } from './StatusIndicators.js';
 import { InteractionsList } from './InteractionsList.js';
+import { getHasCreatedAction } from '../../storage.js';
+import { FirstRunEmptyState } from '../shared/FirstRunEmptyState.js';
 
 interface ActionsTableProps {
   onUnblock: (did: string, handle: string) => void;
@@ -38,6 +41,14 @@ export function ActionsTable({
   onViewPost,
   onFetchInteractions,
 }: ActionsTableProps): JSX.Element {
+  const [isFirstRun, setIsFirstRun] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    getHasCreatedAction().then((hasCreated) => {
+      setIsFirstRun(!hasCreated);
+    });
+  }, []);
+
   const filtered = filterAndSort(
     allEntries.value,
     searchQuery.value,
@@ -49,10 +60,24 @@ export function ActionsTable({
   );
 
   if (filtered.length === 0) {
+    // Still loading first-run status
+    if (isFirstRun === null) {
+      return <div class="empty-state">Loading...</div>;
+    }
+
+    // First-run: show onboarding
+    if (isFirstRun) {
+      return <FirstRunEmptyState surface="manager" />;
+    }
+
+    // Standard empty state with action hint
     return (
       <div class="empty-state">
-        <h3>No blocks or mutes found</h3>
-        <p>You haven't blocked or muted anyone yet, or try adjusting your filters.</p>
+        <span class="empty-icon">📋</span>
+        <p class="empty-message">No blocks or mutes yet</p>
+        <p class="empty-hint">
+          To block or mute someone, go to their profile on Bluesky and click the ... menu.
+        </p>
       </div>
     );
   }
