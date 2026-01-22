@@ -196,6 +196,8 @@ export const STORAGE_KEYS = {
   CAR_DOWNLOAD_PROGRESS: 'carDownloadProgress',
   // Pending delayed blocks (Last Word feature)
   PENDING_DELAYED_BLOCKS: 'pendingDelayedBlocks',
+  // First-run detection (UX Legibility Audit)
+  HAS_CREATED_ACTION: 'hasCreatedAction',
 };
 
 const HISTORY_MAX_ENTRIES = 100;
@@ -267,6 +269,9 @@ export async function addTempBlock(
   // Use safe write with quota checking
   await safeSyncStorageWrite(STORAGE_KEYS.TEMP_BLOCKS, blocks);
 
+  // Mark that user has created their first action for first-run detection
+  await setHasCreatedAction();
+
   // MEDIUM FIX #10: Notify background with retry mechanism
   // If background is inactive in MV3, retry a few times before giving up
   // The alarm will also be recovered on service worker startup
@@ -337,6 +342,10 @@ export async function addTempMute(
   };
   // Use safe write with quota checking
   await safeSyncStorageWrite(STORAGE_KEYS.TEMP_MUTES, mutes);
+
+  // Mark that user has created their first action for first-run detection
+  await setHasCreatedAction();
+
   // Notify background to set alarm
   browser.runtime
     .sendMessage({
@@ -605,6 +614,27 @@ export async function setSyncState(state: SyncState): Promise<void> {
 export async function updateSyncState(update: Partial<SyncState>): Promise<void> {
   const current = await getSyncState();
   await setSyncState({ ...current, ...update });
+}
+
+// ============================================================================
+// First-Run Detection
+// ============================================================================
+
+/**
+ * Check if user has ever created a block or mute.
+ * Used for first-run onboarding experience.
+ */
+export async function getHasCreatedAction(): Promise<boolean> {
+  const result = await browser.storage.local.get(STORAGE_KEYS.HAS_CREATED_ACTION);
+  return result[STORAGE_KEYS.HAS_CREATED_ACTION] === true;
+}
+
+/**
+ * Mark that user has created their first block or mute.
+ * Called when user creates a block/mute for the first time.
+ */
+export async function setHasCreatedAction(): Promise<void> {
+  await browser.storage.local.set({ [STORAGE_KEYS.HAS_CREATED_ACTION]: true });
 }
 
 // ============================================================================
