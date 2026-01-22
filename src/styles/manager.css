@@ -207,6 +207,56 @@ header h1 {
   color: white;
 }
 
+/* Tab Group Visual Separators */
+.tab[data-group-start="true"]:not(:first-child) {
+  margin-left: var(--space-lg);
+  position: relative;
+}
+
+.tab[data-group-start="true"]:not(:first-child)::before {
+  content: '';
+  position: absolute;
+  left: calc(var(--space-lg) / -2 - 1px);
+  top: 20%;
+  height: 60%;
+  width: 1px;
+  background: var(--gray-3);
+}
+
+/* Group visual hints - subtle background tint for each group */
+.tab[data-group="core"] {
+  /* Core tabs have default styling - no change needed */
+}
+
+.tab[data-group="review"]:not(.active) {
+  /* Review tabs - subtle blue tint when not active */
+  background: var(--blue-0, rgba(59, 130, 246, 0.05));
+}
+
+.tab[data-group="advanced"]:not(.active) {
+  /* Advanced tabs - subtle orange tint when not active */
+  background: var(--orange-0, rgba(251, 146, 60, 0.05));
+}
+
+.tab[data-group="config"]:not(.active) {
+  /* Config tab has default styling */
+}
+
+/* Dark mode adjustments */
+@media (prefers-color-scheme: dark) {
+  .tab[data-group-start="true"]:not(:first-child)::before {
+    background: var(--gray-6);
+  }
+
+  .tab[data-group="review"]:not(.active) {
+    background: rgba(59, 130, 246, 0.08);
+  }
+
+  .tab[data-group="advanced"]:not(.active) {
+    background: rgba(251, 146, 60, 0.08);
+  }
+}
+
 /* Toolbar */
 .toolbar {
   display: flex;
