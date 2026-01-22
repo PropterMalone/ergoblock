@@ -44,9 +44,13 @@ export function ActionsTable({
   const [isFirstRun, setIsFirstRun] = useState<boolean | null>(null);
 
   useEffect(() => {
+    let mounted = true;
     getHasCreatedAction().then((hasCreated) => {
-      setIsFirstRun(!hasCreated);
+      if (mounted) {
+        setIsFirstRun(!hasCreated);
+      }
     });
+    return () => { mounted = false; };
   }, []);
 
   const filtered = filterAndSort(
@@ -73,7 +77,9 @@ export function ActionsTable({
     // Standard empty state with action hint
     return (
       <div class="empty-state">
-        <span class="empty-icon">📋</span>
+        <svg class="empty-icon" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M4 2h12c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2zm0 2v12h12V4H4zm2 2h3v2H6V6zm5 0h3v2h-3V6zm-5 3h3v2H6V9zm5 0h3v2h-3V9z" />
+        </svg>
         <p class="empty-message">No blocks or mutes yet</p>
         <p class="empty-hint">
           To block or mute someone, go to their profile on Bluesky and click the ... menu.

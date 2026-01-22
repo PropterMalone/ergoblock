@@ -1,9 +1,9 @@
 import type { JSX } from 'preact';
 
-export interface FirstRunEmptyStateProps {
+export type FirstRunEmptyStateProps = {
   /** Which surface this is displayed on */
   surface: 'popup' | 'manager';
-}
+};
 
 /**
  * Enhanced empty state for first-time users.

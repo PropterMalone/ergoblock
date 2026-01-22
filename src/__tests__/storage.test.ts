@@ -31,6 +31,8 @@ import {
   isRepostFiltered,
   isHandleRepostFiltered,
   getRepostFilteredUsersArray,
+  getHasCreatedAction,
+  setHasCreatedAction,
   STORAGE_KEYS,
 } from '../storage.js';
 import { DEFAULT_OPTIONS, HistoryEntry, PostContext, RepostFilteredUser } from '../types.js';
@@ -589,6 +591,30 @@ describe('Storage', () => {
       const users = await getRepostFilteredUsers();
       expect(users['did:plc:update'].handle).toBe('new.bsky.social');
       expect(users['did:plc:update'].displayName).toBe('Updated Name');
+    });
+  });
+
+  describe('First-Run Detection', () => {
+    it('should return false when HAS_CREATED_ACTION key not set', async () => {
+      const hasCreated = await getHasCreatedAction();
+      expect(hasCreated).toBe(false);
+    });
+
+    it('should return true after setHasCreatedAction is called', async () => {
+      await setHasCreatedAction();
+
+      const hasCreated = await getHasCreatedAction();
+      expect(hasCreated).toBe(true);
+    });
+
+    it('should be idempotent - calling setHasCreatedAction multiple times is safe', async () => {
+      await setHasCreatedAction();
+      await setHasCreatedAction();
+      await setHasCreatedAction();
+
+      const hasCreated = await getHasCreatedAction();
+      expect(hasCreated).toBe(true);
+      expect(mockedBrowser.storage.local.set).toHaveBeenCalledTimes(3);
     });
   });
 
