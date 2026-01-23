@@ -150,9 +150,12 @@ export function RepostFiltersTab({ onReload }: RepostFiltersTabProps): JSX.Eleme
             No repost filters configured yet.
             <br />
             <br />
-            To hide reposts from specific users while still seeing their original posts, click the
-            three-dot menu on their profile and select "Disable Reposts", or add a user by handle
-            below.
+            To hide reposts from specific users while still seeing their original posts, go to their
+            profile on Bluesky and click the ... menu, then select "Disable Reposts". Or add a user
+            by handle below.
+          </p>
+          <p class="empty-hint">
+            Repost filters let you customize your feed without blocking the person entirely.
           </p>
         </div>
         {/* Add User Section - shown even when empty */}

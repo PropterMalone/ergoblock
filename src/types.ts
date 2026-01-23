@@ -768,3 +768,80 @@ export interface PendingRollback {
   lastAttempt: number;
   error?: string;
 }
+
+// ============================================================================
+// Column Visibility Types (Table Configuration)
+// ============================================================================
+
+/** Available columns in the Blocks & Mutes table */
+export type TableColumn =
+  | 'user'
+  | 'type'
+  | 'context'
+  | 'source'
+  | 'status'
+  | 'amnesty'
+  | 'expires'
+  | 'date'
+  | 'actions';
+
+/** Column visibility configuration */
+export type ColumnVisibility = {
+  /** User column - always visible, cannot be hidden */
+  user: true;
+  /** Block/Mute type column */
+  type: boolean;
+  /** Post context that triggered the block/mute */
+  context: boolean;
+  /** Source: ErgoBlock temp, permanent, or native Bluesky */
+  source: boolean;
+  /** Block relationship status (mutual, they block you, etc.) */
+  status: boolean;
+  /** Amnesty review status */
+  amnesty: boolean;
+  /** Expiration date/time */
+  expires: boolean;
+  /** Creation date */
+  date: boolean;
+  /** Actions column - always visible, cannot be hidden */
+  actions: true;
+};
+
+/** Default column visibility - essential columns only */
+export const DEFAULT_COLUMN_VISIBILITY: ColumnVisibility = {
+  user: true,
+  type: true,
+  context: false,
+  source: true,
+  status: false,
+  amnesty: false,
+  expires: true,
+  date: true,
+  actions: true,
+};
+
+/** Column metadata for settings UI */
+export const COLUMN_METADATA: Record<
+  TableColumn,
+  { label: string; description: string; alwaysVisible?: boolean }
+> = {
+  user: { label: 'User', description: 'Account name and avatar', alwaysVisible: true },
+  type: { label: 'Type', description: 'Block or Mute' },
+  context: { label: 'Context', description: 'The post or situation that triggered this block/mute' },
+  source: { label: 'Source', description: 'Where this came from - ErgoBlock or native Bluesky' },
+  status: {
+    label: 'Status',
+    description: 'Block relationship (mutual, they block you, etc.)',
+  },
+  amnesty: { label: 'Amnesty', description: 'Review status for amnesty consideration' },
+  expires: {
+    label: 'Expires',
+    description: 'When the block/mute will be automatically removed',
+  },
+  date: { label: 'Date', description: 'When the block/mute was created' },
+  actions: {
+    label: 'Actions',
+    description: 'Unblock, unmute, and other actions',
+    alwaysVisible: true,
+  },
+};

@@ -1,8 +1,26 @@
 import type { JSX } from 'preact';
 import { useState, useEffect, useCallback } from 'preact/hooks';
-import { Settings, RefreshCw, Save, RotateCcw, Trash2, Search, AlertCircle, Database } from 'lucide-preact';
-import { getOptions, setOptions } from '../../storage.js';
-import { DEFAULT_OPTIONS, type ExtensionOptions } from '../../types.js';
+import {
+  Settings,
+  RefreshCw,
+  Save,
+  RotateCcw,
+  Trash2,
+  Search,
+  AlertCircle,
+  Database,
+} from 'lucide-preact';
+import { getOptions, setOptions, getColumnVisibility, setColumnVisibility } from '../../storage.js';
+import {
+  DEFAULT_OPTIONS,
+  DEFAULT_COLUMN_VISIBILITY,
+  COLUMN_METADATA,
+  type ExtensionOptions,
+  type ColumnVisibility,
+  type TableColumn,
+} from '../../types.js';
+import { Tooltip } from '../shared/Tooltip.js';
+import { SETTINGS_TOOLTIPS } from '../../constants/tooltips.js';
 import browser from '../../browser.js';
 
 type Theme = 'light' | 'dark' | 'auto';
@@ -27,12 +45,15 @@ const DURATION_OPTIONS = [
 
 export function SettingsTab({ onReload }: SettingsTabProps): JSX.Element {
   const [options, setLocalOptions] = useState<ExtensionOptions>(DEFAULT_OPTIONS);
+  const [columnVisibility, setColumnVisibilityState] =
+    useState<ColumnVisibility>(DEFAULT_COLUMN_VISIBILITY);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState<StatusState | null>(null);
 
   useEffect(() => {
     loadOptions();
+    loadColumnVisibility();
   }, []);
 
   useEffect(() => {
@@ -54,6 +75,15 @@ export function SettingsTab({ onReload }: SettingsTabProps): JSX.Element {
     }
   };
 
+  const loadColumnVisibility = async () => {
+    try {
+      const visibility = await getColumnVisibility();
+      setColumnVisibilityState(visibility);
+    } catch (error) {
+      console.error('[SettingsTab] Failed to load column visibility:', error);
+    }
+  };
+
   const showStatus = (message: string, type: 'success' | 'error') => {
     setStatus({ message, type });
   };
@@ -64,6 +94,15 @@ export function SettingsTab({ onReload }: SettingsTabProps): JSX.Element {
     },
     []
   );
+
+  const handleColumnToggle = async (column: TableColumn) => {
+    if (COLUMN_METADATA[column].alwaysVisible) return;
+
+    const newValue = !columnVisibility[column];
+    const updated = { ...columnVisibility, [column]: newValue };
+    setColumnVisibilityState(updated);
+    await setColumnVisibility(updated);
+  };
 
   const handleSave = async () => {
     setSaving(true);
@@ -193,6 +232,7 @@ export function SettingsTab({ onReload }: SettingsTabProps): JSX.Element {
           <SettingRow
             label="Check interval"
             description="How often to check for expired blocks/mutes"
+            tooltip={SETTINGS_TOOLTIPS.checkInterval}
           >
             <IntervalSelect
               value={options.checkInterval}
@@ -209,6 +249,34 @@ export function SettingsTab({ onReload }: SettingsTabProps): JSX.Element {
               onChange={(theme) => updateOption('theme', theme)}
             />
           </SettingRow>
+        </SettingsSection>
+
+        {/* Table Columns */}
+        <SettingsSection title="Table Columns">
+          <div class="settings-description">
+            Choose which columns to show in the Blocks & Mutes table. Hiding columns can make the
+            table easier to read.
+          </div>
+          <div class="column-visibility-options">
+            {(Object.keys(COLUMN_METADATA) as Array<TableColumn>).map((column) => {
+              const meta = COLUMN_METADATA[column];
+              const isChecked = columnVisibility[column];
+              const isDisabled = meta.alwaysVisible === true;
+
+              return (
+                <label key={column} class={`column-toggle ${isDisabled ? 'disabled' : ''}`}>
+                  <input
+                    type="checkbox"
+                    checked={isChecked}
+                    disabled={isDisabled}
+                    onChange={() => handleColumnToggle(column)}
+                  />
+                  <span class="column-label">{meta.label}</span>
+                  <span class="column-description">{meta.description}</span>
+                </label>
+              );
+            })}
+          </div>
         </SettingsSection>
 
         {/* Post Context */}
@@ -228,6 +296,7 @@ export function SettingsTab({ onReload }: SettingsTabProps): JSX.Element {
           <SettingRow
             label="Context retention"
             description="How long to keep post context (0 = forever)"
+            tooltip={SETTINGS_TOOLTIPS.postContextRetention}
           >
             <NumberInput
               id="settings-postContextRetentionDays"
@@ -245,6 +314,7 @@ export function SettingsTab({ onReload }: SettingsTabProps): JSX.Element {
           <SettingRow
             label="Forgiveness period"
             description="How old a block must be to appear in Amnesty review"
+            tooltip={SETTINGS_TOOLTIPS.forgivenessPeriod}
           >
             <NumberInput
               id="settings-forgivenessPeriodDays"
@@ -258,10 +328,17 @@ export function SettingsTab({ onReload }: SettingsTabProps): JSX.Element {
         </SettingsSection>
 
         {/* Last Word */}
-        <SettingsSection title="Last Word">
+        <SettingsSection
+          title={
+            <Tooltip text={SETTINGS_TOOLTIPS.lastWord} position="right">
+              <span>Last Word</span>
+            </Tooltip>
+          }
+        >
           <SettingRow
             label="Default delay"
             description="How long to wait before blocking when using Last Word"
+            tooltip={SETTINGS_TOOLTIPS.lastWordDelay}
           >
             <NumberInput
               id="settings-lastWordDelaySeconds"
@@ -330,7 +407,7 @@ export function SettingsTab({ onReload }: SettingsTabProps): JSX.Element {
 // Sub-components
 
 interface SettingsSectionProps {
-  title: string;
+  title: preact.ComponentChildren;
   children: preact.ComponentChildren;
 }
 
@@ -367,9 +444,16 @@ interface SettingRowProps {
   label: string;
   description: string;
   children: preact.ComponentChildren;
+  tooltip?: string;
 }
 
-function SettingRow({ label, description, children }: SettingRowProps): JSX.Element {
+function SettingRow({ label, description, children, tooltip }: SettingRowProps): JSX.Element {
+  const labelElement = (
+    <div style={{ fontSize: '13px', fontWeight: '500', color: 'var(--text-primary, #333)' }}>
+      {label}
+    </div>
+  );
+
   return (
     <div
       class="setting-row"
@@ -381,9 +465,13 @@ function SettingRow({ label, description, children }: SettingRowProps): JSX.Elem
       }}
     >
       <div style={{ flex: 1 }}>
-        <div style={{ fontSize: '13px', fontWeight: '500', color: 'var(--text-primary, #333)' }}>
-          {label}
-        </div>
+        {tooltip ? (
+          <Tooltip text={tooltip} position="right">
+            {labelElement}
+          </Tooltip>
+        ) : (
+          labelElement
+        )}
         <div style={{ fontSize: '12px', color: 'var(--text-secondary, #666)', marginTop: '2px' }}>
           {description}
         </div>
@@ -693,7 +781,9 @@ function PdsCleanupSection(): JSX.Element {
           borderBottom: '1px solid var(--border-color, #e0e0e0)',
         }}
       >
-        PDS Cleanup
+        <Tooltip text={SETTINGS_TOOLTIPS.pds} position="right">
+          <span>PDS Cleanup</span>
+        </Tooltip>
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
@@ -801,24 +891,27 @@ function PdsCleanupSection(): JSX.Element {
             {scanning ? 'Scanning...' : 'Scan for Duplicates'}
           </button>
 
-          {scanResult && scanResult.duplicateRecords !== undefined && scanResult.duplicateRecords > 0 && scanResult.deleted === undefined && (
-            <button
-              class="blocklist-action-btn"
-              onClick={handleDelete}
-              disabled={scanning || deleting}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '6px',
-                backgroundColor: '#dc3545',
-                color: 'white',
-                borderColor: '#dc3545',
-              }}
-            >
-              {deleting ? <RefreshCw size={14} class="spinner" /> : <Trash2 size={14} />}
-              {deleting ? 'Deleting...' : `Delete ${scanResult.duplicateRecords} Duplicates`}
-            </button>
-          )}
+          {scanResult &&
+            scanResult.duplicateRecords !== undefined &&
+            scanResult.duplicateRecords > 0 &&
+            scanResult.deleted === undefined && (
+              <button
+                class="blocklist-action-btn"
+                onClick={handleDelete}
+                disabled={scanning || deleting}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  backgroundColor: '#dc3545',
+                  color: 'white',
+                  borderColor: '#dc3545',
+                }}
+              >
+                {deleting ? <RefreshCw size={14} class="spinner" /> : <Trash2 size={14} />}
+                {deleting ? 'Deleting...' : `Delete ${scanResult.duplicateRecords} Duplicates`}
+              </button>
+            )}
         </div>
       </div>
     </div>
@@ -887,7 +980,9 @@ function PdsRecordCountsSection(): JSX.Element {
           borderBottom: '1px solid var(--border-color, #e0e0e0)',
         }}
       >
-        PDS Record Counts
+        <Tooltip text={SETTINGS_TOOLTIPS.car} position="right">
+          <span>CAR Cache</span>
+        </Tooltip>
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>

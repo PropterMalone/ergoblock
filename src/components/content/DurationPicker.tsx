@@ -1,6 +1,8 @@
 import type { JSX } from 'preact';
 import { useCallback, useEffect, useState } from 'preact/hooks';
 import type { LastWordOptions } from '../../types.js';
+import { Tooltip } from '../shared/Tooltip.js';
+import { DURATION_TOOLTIPS } from '../../constants/tooltips.js';
 
 export interface DurationOption {
   label: string;
@@ -229,28 +231,43 @@ export function DurationPicker({
           </h3>
           <p class="ergo-duration-subtitle">Choose duration:</p>
           <div class="ergo-duration-buttons">
-            {options.map((option) => (
-              <button
-                key={option.label}
-                type="button"
-                class={`ergo-duration-btn ${option.ms === -1 ? 'permanent' : ''}`}
-                onClick={() => handleSelect(option)}
-              >
-                {option.label}
-              </button>
-            ))}
+            {options.map((option) => {
+              const button = (
+                <button
+                  key={option.label}
+                  type="button"
+                  class={`ergo-duration-btn ${option.ms === -1 ? 'permanent' : ''}`}
+                  onClick={() => handleSelect(option)}
+                >
+                  {option.label}
+                </button>
+              );
+
+              // Add tooltip for Permanent option
+              if (option.ms === -1) {
+                return (
+                  <Tooltip key={option.label} text={DURATION_TOOLTIPS.permanent} position="left">
+                    <span>{button}</span>
+                  </Tooltip>
+                );
+              }
+
+              return button;
+            })}
           </div>
           {actionType === 'block' && (
             <div class="ergo-lastword-section">
-              <label class="ergo-lastword-label">
-                <input
-                  type="checkbox"
-                  class="ergo-lastword-checkbox"
-                  checked={lastWordEnabled}
-                  onChange={(e) => setLastWordEnabled((e.target as HTMLInputElement).checked)}
-                />
-                Last Word (delay block)
-              </label>
+              <Tooltip text={DURATION_TOOLTIPS.lastWordOption} position="left">
+                <label class="ergo-lastword-label">
+                  <input
+                    type="checkbox"
+                    class="ergo-lastword-checkbox"
+                    checked={lastWordEnabled}
+                    onChange={(e) => setLastWordEnabled((e.target as HTMLInputElement).checked)}
+                  />
+                  Last Word (delay block)
+                </label>
+              </Tooltip>
               {lastWordEnabled && (
                 <>
                   <div class="ergo-lastword-delay">

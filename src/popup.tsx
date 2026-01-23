@@ -2,6 +2,8 @@ import { render } from 'preact';
 import { useEffect, useCallback } from 'preact/hooks';
 import { signal } from '@preact/signals';
 import browser from './browser.js';
+import { Tooltip } from './components/shared/Tooltip.js';
+import { POPUP_TOOLTIPS } from './constants/tooltips.js';
 import {
   STORAGE_KEYS,
   getTempBlocks,
@@ -10,6 +12,7 @@ import {
   getPermanentMutes,
   getActionHistory,
   getSyncState,
+  getHasCreatedAction,
 } from './storage.js';
 import type { HistoryEntry, SyncState } from './types.js';
 
@@ -46,6 +49,7 @@ const syncState = signal<SyncState | null>(null);
 const authExpired = signal(false);
 const statusMessage = signal('');
 const loading = signal(true);
+const isFirstRun = signal<boolean | null>(null);
 
 // Formatting utilities
 function formatTimeRemaining(expiresAt: number): string {
@@ -150,6 +154,11 @@ async function checkAuthStatus(): Promise<void> {
   authExpired.value = result.authStatus === 'invalid';
 }
 
+async function loadFirstRunStatus(): Promise<void> {
+  const hasCreated = await getHasCreatedAction();
+  isFirstRun.value = !hasCreated;
+}
+
 async function loadAllData(): Promise<void> {
   loading.value = true;
   await Promise.all([
@@ -158,6 +167,7 @@ async function loadAllData(): Promise<void> {
     loadRecentActivity(),
     loadSyncState(),
     checkAuthStatus(),
+    loadFirstRunStatus(),
   ]);
   loading.value = false;
 }
@@ -259,6 +269,25 @@ function PopupApp() {
     return () => clearInterval(interval);
   }, []);
 
+  const { blocks, mutes } = stats.value;
+  const totalBlocks = blocks + mutes;
+
+  // If first-run and no data, show compact onboarding
+  if (isFirstRun.value && totalBlocks === 0) {
+    return (
+      <>
+        <Header />
+        {authExpired.value && <AuthWarning />}
+        <div class="popup-first-run">
+          <p><strong>Welcome to ErgoBlock!</strong></p>
+          <p>To get started, go to someone's profile on Bluesky and use the ... menu to block or mute.</p>
+        </div>
+        <Footer />
+        <StatusBar />
+      </>
+    );
+  }
+
   return (
     <>
       <Header />
@@ -277,9 +306,11 @@ function Header() {
   return (
     <div class="header">
       <h1>ErgoBlock</h1>
-      <button class="header-link" onClick={openManager}>
-        Open Full Manager
-      </button>
+      <Tooltip text={POPUP_TOOLTIPS.openManager} position="bottom">
+        <button class="header-link" onClick={openManager}>
+          Open Full Manager
+        </button>
+      </Tooltip>
     </div>
   );
 }
@@ -304,7 +335,9 @@ function StatsBar() {
     <div class="stats">
       <StatItem value={blocks} label="Blocks" />
       <StatItem value={mutes} label="Mutes" />
-      <StatItem value={expiring} label="Expiring 24h" />
+      <Tooltip text={POPUP_TOOLTIPS.expiring24h} position="bottom">
+        <StatItem value={expiring} label="Expiring 24h" />
+      </Tooltip>
     </div>
   );
 }
@@ -326,7 +359,7 @@ function ExpiringSection() {
       <div class="section-header">Expiring Soon</div>
       <div class="section-content">
         {items.length === 0 ? (
-          <div class="empty">Nothing expiring soon</div>
+          <div class="empty">Nothing expiring soon. Your temporary blocks and mutes will appear here when they're about to expire.</div>
         ) : (
           items.map((item) => <ExpiringItem key={item.did} item={item} />)
         )}
@@ -394,12 +427,16 @@ function RecentItem({ entry }: { entry: HistoryEntry }) {
 function Footer() {
   return (
     <div class="footer">
-      <button class="btn btn-action" onClick={checkNow}>
-        Check Now
-      </button>
-      <button class="btn btn-action secondary" onClick={syncNow}>
-        Sync
-      </button>
+      <Tooltip text={POPUP_TOOLTIPS.checkNow} position="top">
+        <button class="btn btn-action" onClick={checkNow}>
+          Check Now
+        </button>
+      </Tooltip>
+      <Tooltip text={POPUP_TOOLTIPS.sync} position="top">
+        <button class="btn btn-action secondary" onClick={syncNow}>
+          Sync
+        </button>
+      </Tooltip>
     </div>
   );
 }

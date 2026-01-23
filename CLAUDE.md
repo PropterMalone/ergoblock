@@ -1,12 +1,14 @@
 # ErgoBlock for Bluesky - Project Summary
 
+Last verified: 2026-01-23
+
 > **Maintainer Note**: Keep this file updated when adding features, changing architecture, or modifying key files. This reduces context loading for AI assistants. For detailed developer docs, see [AGENTS.md](AGENTS.md).
 
 ## Quick Reference
 
 | Item | Value |
 |------|-------|
-| Version | 1.10.0 |
+| Version | 1.14.0 |
 | Type | Chrome/Firefox Extension (Manifest V3) |
 | Stack | TypeScript, Preact, esbuild |
 | Node | >= 22.0.0 |
@@ -23,6 +25,8 @@ Temporary blocking and muting for Bluesky. Users can block/mute accounts for con
 - **Blocklist Audit**: Find interactions between you and blocked users via CAR file parsing
 - **Manager UI**: Full-page interface at manager.html for managing all blocks, mutes, and history
 - **Cross-Device Sync**: Uses Chrome sync storage
+- **Column Configuration**: Table columns can be shown/hidden per user preference
+- **First-Run Onboarding**: Actionable empty states for new users
 
 ## Project Structure
 
@@ -36,16 +40,17 @@ ergoblock/
 │   ├── options.tsx        # Settings page
 │   ├── api.ts             # Bluesky AT Protocol wrapper (330 lines)
 │   ├── storage.ts         # Chrome storage helpers (165 lines)
-│   ├── types.ts           # TypeScript interfaces (605 lines)
+│   ├── types.ts           # TypeScript interfaces (~850 lines)
 │   ├── post-context.ts    # Post context capture utilities
 │   ├── carRepo.ts         # CAR file parsing for context search
 │   ├── components/
-│   │   ├── shared/        # Button, Badge, Modal, Toast, UserCell, EmptyState
+│   │   ├── shared/        # Button, Badge, Modal, Toast, UserCell, EmptyState, Tooltip, FirstRunEmptyState
 │   │   ├── content/       # DurationPicker, ContentToast
 │   │   └── manager/       # BlocksTable, MutesTable, HistoryTable, AmnestyTab, BlocklistAuditTab, etc.
+│   ├── constants/         # Centralized UI text (tooltips.ts)
 │   ├── hooks/             # useBlocks, useMutes, useHistory, useOptions
 │   ├── signals/           # Preact signals for manager state
-│   └── __tests__/         # 8 test files, ~170 test cases
+│   └── __tests__/         # 9 test files, ~200 test cases
 ├── dist/                  # Built extension (load this in browser)
 ├── scripts/               # bundle.js, sync-version.js, copy-assets.js
 ├── manifest.json          # Chrome manifest

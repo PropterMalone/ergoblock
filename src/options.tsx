@@ -2,6 +2,8 @@ import { render } from 'preact';
 import { useState, useEffect, useCallback } from 'preact/hooks';
 import { getOptions, setOptions } from './storage.js';
 import { DEFAULT_OPTIONS, type ExtensionOptions } from './types.js';
+import { Tooltip } from './components/shared/Tooltip.js';
+import { SETTINGS_TOOLTIPS } from './constants/tooltips.js';
 
 type Theme = 'light' | 'dark' | 'auto';
 
@@ -155,7 +157,11 @@ function OptionsApp() {
 
       <SettingsSection title="Expiration Check">
         <SettingRow
-          label="Check interval"
+          label={
+            <Tooltip text={SETTINGS_TOOLTIPS.checkInterval} position="right">
+              <span>Check interval</span>
+            </Tooltip>
+          }
           description="How often to check for expired blocks/mutes"
         >
           <RangeSlider
@@ -204,7 +210,7 @@ function SettingsSection({ title, children }: SettingsSectionProps) {
 }
 
 interface SettingRowProps {
-  label: string;
+  label: preact.ComponentChildren;
   description: string;
   children: preact.ComponentChildren;
 }
