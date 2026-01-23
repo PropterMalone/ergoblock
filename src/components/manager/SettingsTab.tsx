@@ -19,6 +19,8 @@ import {
   type ColumnVisibility,
   type TableColumn,
 } from '../../types.js';
+import { Tooltip } from '../shared/Tooltip.js';
+import { SETTINGS_TOOLTIPS } from '../../constants/tooltips.js';
 import browser from '../../browser.js';
 
 type Theme = 'light' | 'dark' | 'auto';
@@ -230,6 +232,7 @@ export function SettingsTab({ onReload }: SettingsTabProps): JSX.Element {
           <SettingRow
             label="Check interval"
             description="How often to check for expired blocks/mutes"
+            tooltip={SETTINGS_TOOLTIPS.checkInterval}
           >
             <IntervalSelect
               value={options.checkInterval}
@@ -293,6 +296,7 @@ export function SettingsTab({ onReload }: SettingsTabProps): JSX.Element {
           <SettingRow
             label="Context retention"
             description="How long to keep post context (0 = forever)"
+            tooltip={SETTINGS_TOOLTIPS.postContextRetention}
           >
             <NumberInput
               id="settings-postContextRetentionDays"
@@ -310,6 +314,7 @@ export function SettingsTab({ onReload }: SettingsTabProps): JSX.Element {
           <SettingRow
             label="Forgiveness period"
             description="How old a block must be to appear in Amnesty review"
+            tooltip={SETTINGS_TOOLTIPS.forgivenessPeriod}
           >
             <NumberInput
               id="settings-forgivenessPeriodDays"
@@ -327,6 +332,7 @@ export function SettingsTab({ onReload }: SettingsTabProps): JSX.Element {
           <SettingRow
             label="Default delay"
             description="How long to wait before blocking when using Last Word"
+            tooltip={SETTINGS_TOOLTIPS.lastWordDelay}
           >
             <NumberInput
               id="settings-lastWordDelaySeconds"
@@ -432,9 +438,16 @@ interface SettingRowProps {
   label: string;
   description: string;
   children: preact.ComponentChildren;
+  tooltip?: string;
 }
 
-function SettingRow({ label, description, children }: SettingRowProps): JSX.Element {
+function SettingRow({ label, description, children, tooltip }: SettingRowProps): JSX.Element {
+  const labelElement = (
+    <div style={{ fontSize: '13px', fontWeight: '500', color: 'var(--text-primary, #333)' }}>
+      {label}
+    </div>
+  );
+
   return (
     <div
       class="setting-row"
@@ -446,9 +459,13 @@ function SettingRow({ label, description, children }: SettingRowProps): JSX.Elem
       }}
     >
       <div style={{ flex: 1 }}>
-        <div style={{ fontSize: '13px', fontWeight: '500', color: 'var(--text-primary, #333)' }}>
-          {label}
-        </div>
+        {tooltip ? (
+          <Tooltip text={tooltip} position="right">
+            {labelElement}
+          </Tooltip>
+        ) : (
+          labelElement
+        )}
         <div style={{ fontSize: '12px', color: 'var(--text-secondary, #666)', marginTop: '2px' }}>
           {description}
         </div>
