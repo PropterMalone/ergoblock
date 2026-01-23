@@ -152,11 +152,7 @@ export function ActionsTable({
             </th>
           )}
           {columnVisibility.source && (
-            <th>
-              <Tooltip text={COLUMN_TOOLTIPS.source} position="bottom">
-                <SortableHeader column="source" label="Source" />
-              </Tooltip>
-            </th>
+            <SortableHeader column="source" label="Source" tooltip={COLUMN_TOOLTIPS.source} />
           )}
           {columnVisibility.status && (
             <th>
@@ -166,18 +162,10 @@ export function ActionsTable({
             </th>
           )}
           {columnVisibility.amnesty && (
-            <th>
-              <Tooltip text={COLUMN_TOOLTIPS.amnesty} position="bottom">
-                <SortableHeader column="amnesty" label="Amnesty" />
-              </Tooltip>
-            </th>
+            <SortableHeader column="amnesty" label="Amnesty" tooltip={COLUMN_TOOLTIPS.amnesty} />
           )}
           {columnVisibility.expires && (
-            <th>
-              <Tooltip text={COLUMN_TOOLTIPS.expires} position="bottom">
-                <SortableHeader column="expires" label="Expires" />
-              </Tooltip>
-            </th>
+            <SortableHeader column="expires" label="Expires" tooltip={COLUMN_TOOLTIPS.expires} />
           )}
           {columnVisibility.date && <SortableHeader column="date" label="Date" />}
           <th>Actions</th>

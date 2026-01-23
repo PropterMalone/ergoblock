@@ -328,7 +328,13 @@ export function SettingsTab({ onReload }: SettingsTabProps): JSX.Element {
         </SettingsSection>
 
         {/* Last Word */}
-        <SettingsSection title="Last Word">
+        <SettingsSection
+          title={
+            <Tooltip text={SETTINGS_TOOLTIPS.lastWord} position="right">
+              <span>Last Word</span>
+            </Tooltip>
+          }
+        >
           <SettingRow
             label="Default delay"
             description="How long to wait before blocking when using Last Word"
@@ -401,7 +407,7 @@ export function SettingsTab({ onReload }: SettingsTabProps): JSX.Element {
 // Sub-components
 
 interface SettingsSectionProps {
-  title: string;
+  title: preact.ComponentChildren;
   children: preact.ComponentChildren;
 }
 
@@ -775,7 +781,9 @@ function PdsCleanupSection(): JSX.Element {
           borderBottom: '1px solid var(--border-color, #e0e0e0)',
         }}
       >
-        PDS Cleanup
+        <Tooltip text={SETTINGS_TOOLTIPS.pds} position="right">
+          <span>PDS Cleanup</span>
+        </Tooltip>
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
@@ -972,7 +980,9 @@ function PdsRecordCountsSection(): JSX.Element {
           borderBottom: '1px solid var(--border-color, #e0e0e0)',
         }}
       >
-        PDS Record Counts
+        <Tooltip text={SETTINGS_TOOLTIPS.car} position="right">
+          <span>CAR Cache</span>
+        </Tooltip>
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>

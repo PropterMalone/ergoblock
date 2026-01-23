@@ -1,10 +1,14 @@
 /**
  * Centralized tooltip text definitions for consistent messaging across the UI.
  * These explain jargon and domain-specific terms to new users.
+ *
+ * pattern: Functional Core
  */
 
+import type { BadgeVariant } from '../components/shared/Badge.js';
+
 /** Badge-related tooltips (also used in Phase 1) */
-export const BADGE_TOOLTIPS = {
+export const BADGE_TOOLTIPS: Partial<Record<BadgeVariant, string>> = {
   temp: 'Temporary - will automatically expire at the scheduled time',
   permanent: 'Permanent - will not expire unless manually removed',
   expiring: 'Expiring soon - scheduled to be removed within 24 hours',
