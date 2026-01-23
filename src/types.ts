@@ -786,7 +786,7 @@ export type TableColumn =
   | 'actions';
 
 /** Column visibility configuration */
-export interface ColumnVisibility {
+export type ColumnVisibility = {
   /** User column - always visible, cannot be hidden */
   user: true;
   /** Block/Mute type column */
@@ -805,7 +805,7 @@ export interface ColumnVisibility {
   date: boolean;
   /** Actions column - always visible, cannot be hidden */
   actions: true;
-}
+};
 
 /** Default column visibility - essential columns only */
 export const DEFAULT_COLUMN_VISIBILITY: ColumnVisibility = {

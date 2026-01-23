@@ -33,9 +33,18 @@ import {
   getRepostFilteredUsersArray,
   getHasCreatedAction,
   setHasCreatedAction,
+  getColumnVisibility,
+  setColumnVisibility,
   STORAGE_KEYS,
 } from '../storage.js';
-import { DEFAULT_OPTIONS, HistoryEntry, PostContext, RepostFilteredUser } from '../types.js';
+import {
+  DEFAULT_OPTIONS,
+  HistoryEntry,
+  PostContext,
+  RepostFilteredUser,
+  DEFAULT_COLUMN_VISIBILITY,
+  type ColumnVisibility,
+} from '../types.js';
 import browser from '../browser.js';
 
 // Get the mocked browser for assertions
@@ -630,6 +639,117 @@ describe('Storage', () => {
       expect(STORAGE_KEYS.PERMANENT_MUTES).toBe('permanentMutes');
       expect(STORAGE_KEYS.SYNC_STATE).toBe('syncState');
       expect(STORAGE_KEYS.REPOST_FILTERED_USERS).toBe('repostFilteredUsers');
+    });
+  });
+
+  describe('Column Visibility', () => {
+    it('should return default visibility when none is set', async () => {
+      const visibility = await getColumnVisibility();
+      expect(visibility).toEqual(DEFAULT_COLUMN_VISIBILITY);
+      expect(visibility.user).toBe(true);
+      expect(visibility.actions).toBe(true);
+      expect(visibility.type).toBe(true);
+      expect(visibility.context).toBe(false);
+      expect(visibility.status).toBe(false);
+      expect(visibility.amnesty).toBe(false);
+    });
+
+    it('should merge stored values with defaults', async () => {
+      // Manually set a partial visibility in storage
+      const partialVisibility: Partial<ColumnVisibility> = {
+        type: false,
+        context: true,
+      };
+      await mockedBrowser.storage.local.set({
+        [STORAGE_KEYS.COLUMN_VISIBILITY]: partialVisibility,
+      });
+
+      const visibility = await getColumnVisibility();
+
+      // Merged values: stored partials + defaults for missing keys
+      expect(visibility.type).toBe(false);
+      expect(visibility.context).toBe(true);
+      // Defaults should be present for unspecified keys
+      expect(visibility.user).toBe(true);
+      expect(visibility.actions).toBe(true);
+      expect(visibility.expires).toBe(true);
+      expect(visibility.date).toBe(true);
+    });
+
+    it('should enforce always-visible columns (user and actions)', async () => {
+      // Note: We can't actually set user/actions to false in the type, so we test
+      // that setColumnVisibility enforces them to true regardless
+      const attempt = {
+        type: false,
+      };
+
+      await setColumnVisibility(attempt);
+
+      const visibility = await getColumnVisibility();
+      // These must always be true
+      expect(visibility.user).toBe(true);
+      expect(visibility.actions).toBe(true);
+      // Other column should be set as requested
+      expect(visibility.type).toBe(false);
+    });
+
+    it('should allow toggling other columns', async () => {
+      const updates: Partial<ColumnVisibility> = {
+        type: false,
+        context: true,
+        source: false,
+        status: true,
+        amnesty: true,
+        expires: false,
+        date: false,
+      };
+
+      await setColumnVisibility(updates);
+
+      const visibility = await getColumnVisibility();
+      expect(visibility.type).toBe(false);
+      expect(visibility.context).toBe(true);
+      expect(visibility.source).toBe(false);
+      expect(visibility.status).toBe(true);
+      expect(visibility.amnesty).toBe(true);
+      expect(visibility.expires).toBe(false);
+      expect(visibility.date).toBe(false);
+      // Always visible columns
+      expect(visibility.user).toBe(true);
+      expect(visibility.actions).toBe(true);
+    });
+
+    it('should persist and retrieve settings across calls', async () => {
+      // First call: set custom visibility
+      await setColumnVisibility({
+        type: false,
+        context: true,
+      });
+
+      // Second call: retrieve
+      const first = await getColumnVisibility();
+      expect(first.type).toBe(false);
+      expect(first.context).toBe(true);
+
+      // Third call: retrieve again to ensure persistence
+      const second = await getColumnVisibility();
+      expect(second.type).toBe(false);
+      expect(second.context).toBe(true);
+    });
+
+    it('should handle setting visibility multiple times', async () => {
+      // First update
+      await setColumnVisibility({ type: false, context: true });
+      let visibility = await getColumnVisibility();
+      expect(visibility.type).toBe(false);
+      expect(visibility.context).toBe(true);
+
+      // Second update (partial, shouldn't lose other settings)
+      await setColumnVisibility({ amnesty: true });
+      visibility = await getColumnVisibility();
+      expect(visibility.type).toBe(false);
+      expect(visibility.context).toBe(true);
+      expect(visibility.amnesty).toBe(true);
     });
   });
 });

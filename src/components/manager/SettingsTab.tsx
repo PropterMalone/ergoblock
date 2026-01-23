@@ -250,9 +250,7 @@ export function SettingsTab({ onReload }: SettingsTabProps): JSX.Element {
 
         {/* Table Columns */}
         <SettingsSection title="Table Columns">
-          <div
-            style={{ marginBottom: '12px', fontSize: '13px', color: 'var(--text-secondary, #666)' }}
-          >
+          <div class="settings-description">
             Choose which columns to show in the Blocks & Mutes table. Hiding columns can make the
             table easier to read.
           </div>

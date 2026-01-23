@@ -4022,6 +4022,12 @@ tr.expanded-row > td {
 }
 
 /* Column Visibility Settings */
+.settings-description {
+  margin-bottom: 12px;
+  font-size: 13px;
+  color: var(--text-secondary, #666);
+}
+
 .column-visibility-options {
   display: flex;
   flex-direction: column;
