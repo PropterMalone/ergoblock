@@ -26,6 +26,8 @@ import { InteractionsList } from './InteractionsList.js';
 import { getHasCreatedAction, getColumnVisibility } from '../../storage.js';
 import { DEFAULT_COLUMN_VISIBILITY, type ColumnVisibility } from '../../types.js';
 import { FirstRunEmptyState } from '../shared/FirstRunEmptyState.js';
+import { Tooltip } from '../shared/Tooltip.js';
+import { COLUMN_TOOLTIPS } from '../../constants/tooltips.js';
 import browser from '../../browser.js';
 
 interface ActionsTableProps {
@@ -142,11 +144,41 @@ export function ActionsTable({
           </th>
           <SortableHeader column="user" label="User" />
           {columnVisibility.type && <SortableHeader column="type" label="Type" />}
-          {columnVisibility.context && <th>Context</th>}
-          {columnVisibility.source && <SortableHeader column="source" label="Source" />}
-          {columnVisibility.status && <th>Status</th>}
-          {columnVisibility.amnesty && <SortableHeader column="amnesty" label="Amnesty" />}
-          {columnVisibility.expires && <SortableHeader column="expires" label="Expires" />}
+          {columnVisibility.context && (
+            <th>
+              <Tooltip text={COLUMN_TOOLTIPS.context} position="bottom">
+                <span>Context</span>
+              </Tooltip>
+            </th>
+          )}
+          {columnVisibility.source && (
+            <th>
+              <Tooltip text={COLUMN_TOOLTIPS.source} position="bottom">
+                <SortableHeader column="source" label="Source" />
+              </Tooltip>
+            </th>
+          )}
+          {columnVisibility.status && (
+            <th>
+              <Tooltip text={COLUMN_TOOLTIPS.status} position="bottom">
+                <span>Status</span>
+              </Tooltip>
+            </th>
+          )}
+          {columnVisibility.amnesty && (
+            <th>
+              <Tooltip text={COLUMN_TOOLTIPS.amnesty} position="bottom">
+                <SortableHeader column="amnesty" label="Amnesty" />
+              </Tooltip>
+            </th>
+          )}
+          {columnVisibility.expires && (
+            <th>
+              <Tooltip text={COLUMN_TOOLTIPS.expires} position="bottom">
+                <SortableHeader column="expires" label="Expires" />
+              </Tooltip>
+            </th>
+          )}
           {columnVisibility.date && <SortableHeader column="date" label="Date" />}
           <th>Actions</th>
         </tr>
