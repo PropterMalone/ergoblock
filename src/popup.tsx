@@ -3,6 +3,7 @@ import { useEffect, useCallback } from 'preact/hooks';
 import { signal } from '@preact/signals';
 import browser from './browser.js';
 import { Tooltip } from './components/shared/Tooltip.js';
+import { POPUP_TOOLTIPS } from './constants/tooltips.js';
 import {
   STORAGE_KEYS,
   getTempBlocks,
@@ -305,9 +306,11 @@ function Header() {
   return (
     <div class="header">
       <h1>ErgoBlock</h1>
-      <button class="header-link" onClick={openManager}>
-        Open Full Manager
-      </button>
+      <Tooltip text={POPUP_TOOLTIPS.openManager} position="bottom">
+        <button class="header-link" onClick={openManager}>
+          Open Full Manager
+        </button>
+      </Tooltip>
     </div>
   );
 }
@@ -332,7 +335,7 @@ function StatsBar() {
     <div class="stats">
       <StatItem value={blocks} label="Blocks" />
       <StatItem value={mutes} label="Mutes" />
-      <Tooltip text="Blocks and mutes that will expire in the next 24 hours" position="bottom">
+      <Tooltip text={POPUP_TOOLTIPS.expiring24h} position="bottom">
         <StatItem value={expiring} label="Expiring 24h" />
       </Tooltip>
     </div>
@@ -424,12 +427,12 @@ function RecentItem({ entry }: { entry: HistoryEntry }) {
 function Footer() {
   return (
     <div class="footer">
-      <Tooltip text="Manually check for expired blocks/mutes and remove them" position="top">
+      <Tooltip text={POPUP_TOOLTIPS.checkNow} position="top">
         <button class="btn btn-action" onClick={checkNow}>
           Check Now
         </button>
       </Tooltip>
-      <Tooltip text="Refresh data from your Bluesky account" position="top">
+      <Tooltip text={POPUP_TOOLTIPS.sync} position="top">
         <button class="btn btn-action secondary" onClick={syncNow}>
           Sync
         </button>
