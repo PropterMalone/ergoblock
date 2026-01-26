@@ -109,17 +109,47 @@ function extractPostText(postContainer: HTMLElement): string | undefined {
 
 /**
  * Extract post author handle from a post container
+ *
+ * In thread views, multiple profile links may exist (e.g., "Replying to @user").
+ * We use avatar proximity to find the actual post author, not mentioned users.
  */
 function extractPostAuthorHandle(postContainer: HTMLElement): string | undefined {
-  // Look for profile link in the post header
-  const profileLink = postContainer.querySelector('a[href^="/profile/"]');
-  if (profileLink) {
-    const href = (profileLink as HTMLAnchorElement).href;
-    const match = href.match(/\/profile\/([^/?#]+)/);
-    if (match) {
-      return match[1];
+  // Strategy: Find the profile link near the avatar, since the avatar always
+  // belongs to the post author. This handles thread views with "Replying to @user".
+  const avatarImg = postContainer.querySelector('img[src*="avatar"], [data-testid*="avatar"]');
+  if (avatarImg) {
+    // Look for profile link that's a sibling or nearby ancestor/descendant of the avatar
+    let avatarParent = avatarImg.parentElement;
+    for (let i = 0; i < 5 && avatarParent; i++) {
+      const nearbyLinks = avatarParent.querySelectorAll('a[href^="/profile/"]');
+      for (const link of nearbyLinks) {
+        const href = (link as HTMLAnchorElement).href;
+        const match = href.match(/\/profile\/([^/?#]+)/);
+        if (match) {
+          return match[1];
+        }
+      }
+      avatarParent = avatarParent.parentElement;
     }
   }
+
+  // Fallback: Find profile links that are NOT inside "Replying to" spans
+  const allLinks = postContainer.querySelectorAll('a[href^="/profile/"]');
+  for (const link of allLinks) {
+    const href = (link as HTMLAnchorElement).href;
+    const match = href.match(/\/profile\/([^/?#]+)/);
+    if (!match) continue;
+
+    // Check if this link is inside a "Replying to" context
+    const linkText = link.closest('span, div')?.textContent?.toLowerCase() || '';
+    const isReplyingTo = linkText.includes('reply') || linkText.includes('replying');
+    if (isReplyingTo) {
+      continue;
+    }
+
+    return match[1];
+  }
+
   return undefined;
 }
 

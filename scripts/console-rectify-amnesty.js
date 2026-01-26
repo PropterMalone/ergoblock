@@ -1,3 +1,4 @@
+/* global browser, chrome */
 // NOTE: As of the latest version, ErgoBlock automatically rectifies failed
 // amnesty unblocks on startup. You can also trigger it manually by running:
 //   chrome.runtime.sendMessage({ type: 'RECTIFY_AMNESTY_UNBLOCKS' }, console.log)

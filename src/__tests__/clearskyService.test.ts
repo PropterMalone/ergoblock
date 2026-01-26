@@ -56,18 +56,23 @@ describe('clearskyService', () => {
       expect(result.blockerDids).toEqual(['did:plc:blocker1', 'did:plc:blocker2']);
       expect(result.complete).toBe(true);
       expect(mockFetch).toHaveBeenCalledWith(
-        expect.stringContaining('identifier=did%3Aplc%3Atarget')
+        expect.stringContaining('single-blocklist/did%3Aplc%3Atarget')
       );
     });
 
-    it('handles pagination with cursor', async () => {
+    it('handles pagination when page is full (100 items)', async () => {
+      // Create 100 blockers to trigger pagination (PAGE_SIZE = 100)
+      const firstPageBlockers = Array.from({ length: 100 }, (_, i) => ({
+        did: `did:plc:blocker${i + 1}`,
+        blocked_date: '2024-01-01T00:00:00Z',
+      }));
+
       mockFetch
         .mockResolvedValueOnce({
           ok: true,
           json: async () => ({
             data: {
-              blocklist: [{ did: 'did:plc:blocker1', blocked_date: '2024-01-01T00:00:00Z' }],
-              cursor: 'page2cursor',
+              blocklist: firstPageBlockers,
             },
             status: true,
           }),
@@ -76,7 +81,7 @@ describe('clearskyService', () => {
           ok: true,
           json: async () => ({
             data: {
-              blocklist: [{ did: 'did:plc:blocker2', blocked_date: '2024-01-02T00:00:00Z' }],
+              blocklist: [{ did: 'did:plc:blocker101', blocked_date: '2024-01-02T00:00:00Z' }],
             },
             status: true,
           }),
@@ -84,7 +89,9 @@ describe('clearskyService', () => {
 
       const result = await fetchBlockedByFromClearsky('did:plc:target');
 
-      expect(result.blockerDids).toEqual(['did:plc:blocker1', 'did:plc:blocker2']);
+      expect(result.blockerDids).toHaveLength(101);
+      expect(result.blockerDids[0]).toBe('did:plc:blocker1');
+      expect(result.blockerDids[100]).toBe('did:plc:blocker101');
       expect(mockFetch).toHaveBeenCalledTimes(2);
     });
 

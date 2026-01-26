@@ -218,6 +218,114 @@
         background: #d5d5d5;
       }
 
+      /* Tooltip Component */
+      .tooltip-wrapper {
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+      }
+
+      .tooltip-trigger {
+        display: inline-flex;
+        align-items: center;
+      }
+
+      /* Footer tooltip wrappers need to fill space */
+      .footer .tooltip-wrapper {
+        flex: 1;
+      }
+
+      .footer .tooltip-trigger {
+        width: 100%;
+      }
+
+      .footer .tooltip-wrapper .btn-action {
+        width: 100%;
+      }
+
+      /* Stats bar tooltip wrapper needs to match stat flex */
+      .stats .tooltip-wrapper {
+        flex: 1;
+        border-right: 1px solid #e5e5e5;
+      }
+
+      .stats .tooltip-wrapper:last-child {
+        border-right: none;
+      }
+
+      .stats .tooltip-trigger {
+        width: 100%;
+      }
+
+      .stats .tooltip-wrapper .stat {
+        border-right: none;
+      }
+
+      /* Header tooltip positioning */
+      .header .tooltip-wrapper {
+        display: inline-flex;
+      }
+
+      .tooltip-content {
+        position: absolute;
+        z-index: 1000;
+        padding: 6px 10px;
+        background: #1a1a1a;
+        color: #fff;
+        font-size: 11px;
+        font-weight: 500;
+        line-height: 1.4;
+        border-radius: 6px;
+        max-width: 200px;
+        white-space: normal;
+        text-align: center;
+        pointer-events: none;
+        opacity: 0;
+        visibility: hidden;
+        transition: opacity 0.15s ease-in-out, visibility 0.15s ease-in-out;
+      }
+
+      /* Position variants */
+      .tooltip-wrapper[data-tooltip-position="top"] .tooltip-content {
+        bottom: calc(100% + 8px);
+        left: 50%;
+        transform: translateX(-50%);
+      }
+
+      .tooltip-wrapper[data-tooltip-position="bottom"] .tooltip-content {
+        top: calc(100% + 8px);
+        left: 50%;
+        transform: translateX(-50%);
+      }
+
+      /* Show on hover and focus */
+      .tooltip-wrapper:hover .tooltip-content,
+      .tooltip-wrapper:focus-within .tooltip-content {
+        opacity: 1;
+        visibility: visible;
+      }
+
+      /* Arrow indicator */
+      .tooltip-content::before {
+        content: '';
+        position: absolute;
+        border: 5px solid transparent;
+      }
+
+      .tooltip-wrapper[data-tooltip-position="top"] .tooltip-content::before {
+        top: 100%;
+        left: 50%;
+        transform: translateX(-50%);
+        border-top-color: #1a1a1a;
+      }
+
+      .tooltip-wrapper[data-tooltip-position="bottom"] .tooltip-content::before {
+        bottom: 100%;
+        left: 50%;
+        transform: translateX(-50%);
+        border-bottom-color: #1a1a1a;
+      }
+
       .status {
         text-align: center;
         font-size: 11px;

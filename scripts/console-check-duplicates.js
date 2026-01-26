@@ -1,3 +1,4 @@
+/* global chrome */
 // Paste this entire script into the browser console while on bsky.app with ErgoBlock loaded
 // It will scan for duplicate follow records and report what it finds
 

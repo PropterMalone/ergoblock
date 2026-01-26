@@ -255,6 +255,103 @@
           font-size: 24px;
         }
       }
+
+      /* Tooltip Component */
+      .tooltip-wrapper {
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+      }
+
+      .tooltip-trigger {
+        display: inline-flex;
+        align-items: center;
+      }
+
+      .tooltip-content {
+        position: absolute;
+        z-index: 1000;
+        padding: 8px 12px;
+        background: #1a1a1a;
+        color: #fff;
+        font-size: 13px;
+        font-weight: 500;
+        line-height: 1.4;
+        border-radius: 6px;
+        max-width: 240px;
+        white-space: normal;
+        pointer-events: none;
+        opacity: 0;
+        visibility: hidden;
+        transition: opacity 0.15s ease-in-out, visibility 0.15s ease-in-out;
+      }
+
+      /* Position variants */
+      .tooltip-wrapper[data-tooltip-position="top"] .tooltip-content {
+        bottom: calc(100% + 8px);
+        left: 50%;
+        transform: translateX(-50%);
+      }
+
+      .tooltip-wrapper[data-tooltip-position="bottom"] .tooltip-content {
+        top: calc(100% + 8px);
+        left: 50%;
+        transform: translateX(-50%);
+      }
+
+      .tooltip-wrapper[data-tooltip-position="left"] .tooltip-content {
+        right: calc(100% + 8px);
+        top: 50%;
+        transform: translateY(-50%);
+      }
+
+      .tooltip-wrapper[data-tooltip-position="right"] .tooltip-content {
+        left: calc(100% + 8px);
+        top: 50%;
+        transform: translateY(-50%);
+      }
+
+      /* Show on hover and focus */
+      .tooltip-wrapper:hover .tooltip-content,
+      .tooltip-wrapper:focus-within .tooltip-content {
+        opacity: 1;
+        visibility: visible;
+      }
+
+      /* Arrow indicator */
+      .tooltip-content::before {
+        content: '';
+        position: absolute;
+        border: 5px solid transparent;
+      }
+
+      .tooltip-wrapper[data-tooltip-position="top"] .tooltip-content::before {
+        top: 100%;
+        left: 50%;
+        transform: translateX(-50%);
+        border-top-color: #1a1a1a;
+      }
+
+      .tooltip-wrapper[data-tooltip-position="bottom"] .tooltip-content::before {
+        bottom: 100%;
+        left: 50%;
+        transform: translateX(-50%);
+        border-bottom-color: #1a1a1a;
+      }
+
+      .tooltip-wrapper[data-tooltip-position="left"] .tooltip-content::before {
+        left: 100%;
+        top: 50%;
+        transform: translateY(-50%);
+        border-left-color: #1a1a1a;
+      }
+
+      .tooltip-wrapper[data-tooltip-position="right"] .tooltip-content::before {
+        right: 100%;
+        top: 50%;
+        transform: translateY(-50%);
+        border-right-color: #1a1a1a;
+      }
     </style>
   </head>
   <body>

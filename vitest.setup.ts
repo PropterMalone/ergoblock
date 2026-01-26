@@ -4,6 +4,74 @@ import { vi, beforeEach } from 'vitest';
 let syncStore: Record<string, unknown> = {};
 let localStore: Record<string, unknown> = {};
 
+// Mock IndexedDB for clearskyCache
+const createMockRequest = (result: unknown = undefined) => {
+  const request = {
+    onsuccess: null as ((event: unknown) => void) | null,
+    onerror: null as ((event: unknown) => void) | null,
+    result,
+    error: null,
+  };
+  // Auto-resolve success
+  setTimeout(() => request.onsuccess?.({ target: request }), 0);
+  return request;
+};
+
+const createMockObjectStore = () => ({
+  put: vi.fn().mockImplementation(() => createMockRequest()),
+  get: vi.fn().mockImplementation(() => createMockRequest(null)),
+  delete: vi.fn().mockImplementation(() => createMockRequest()),
+  clear: vi.fn().mockImplementation(() => createMockRequest()),
+  getAll: vi.fn().mockImplementation(() => createMockRequest([])),
+  createIndex: vi.fn(),
+});
+
+const createMockTransaction = () => ({
+  objectStore: vi.fn().mockReturnValue(createMockObjectStore()),
+  oncomplete: null as (() => void) | null,
+  onerror: null as (() => void) | null,
+});
+
+const createMockDatabase = () => ({
+  transaction: vi.fn().mockImplementation(() => {
+    const tx = createMockTransaction();
+    // Auto-complete the transaction
+    setTimeout(() => tx.oncomplete?.(), 0);
+    return tx;
+  }),
+  objectStoreNames: { contains: vi.fn().mockReturnValue(true) },
+  createObjectStore: vi.fn().mockReturnValue(createMockObjectStore()),
+  close: vi.fn(),
+});
+
+const mockIndexedDB = {
+  open: vi.fn().mockImplementation(() => {
+    const request = {
+      onsuccess: null as ((event: unknown) => void) | null,
+      onerror: null as ((event: unknown) => void) | null,
+      onupgradeneeded: null as ((event: unknown) => void) | null,
+      result: createMockDatabase(),
+      error: null,
+    };
+    // Simulate async success
+    setTimeout(() => {
+      request.onsuccess?.({ target: request });
+    }, 0);
+    return request;
+  }),
+  deleteDatabase: vi.fn().mockImplementation(() => {
+    const request = {
+      onsuccess: null as ((event: unknown) => void) | null,
+      onerror: null as ((event: unknown) => void) | null,
+      result: undefined,
+    };
+    setTimeout(() => request.onsuccess?.({ target: request }), 0);
+    return request;
+  }),
+};
+
+global.indexedDB = mockIndexedDB as unknown as IDBFactory;
+
 // Create the mock chrome/browser API
 const createBrowserMock = () => ({
   storage: {

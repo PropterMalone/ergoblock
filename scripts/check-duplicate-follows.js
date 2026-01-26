@@ -139,7 +139,7 @@ async function main() {
     let deleted = 0;
     let failed = 0;
 
-    for (const { did: subjectDid, records } of duplicates) {
+    for (const { records } of duplicates) {
       // Keep the first (oldest), delete the rest
       for (let i = 1; i < records.length; i++) {
         const record = records[i];

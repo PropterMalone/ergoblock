@@ -326,7 +326,37 @@ function extractUserFromNotification(
 
   if (!notificationItem) return null;
 
-  // Find the first profile link - this is typically the notification actor
+  const notificationType = detectNotificationType(notificationItem);
+
+  // For quote notifications, there are TWO profile links in the DOM:
+  // 1. The quoting user (notification actor) - who we want to block
+  // 2. The quoted user (original post author) - who we DON'T want to block
+  //
+  // Strategy: Find the profile link near the avatar, since the avatar always
+  // belongs to the notification actor. This is the same strategy used in
+  // extractUserFromMenu for thread contexts.
+  const avatarImg = notificationItem.querySelector('img[src*="avatar"], [data-testid*="avatar"]');
+  if (avatarImg) {
+    // Look for profile link that's a sibling or nearby ancestor/descendant of the avatar
+    let avatarParent = avatarImg.parentElement;
+    for (let i = 0; i < 5 && avatarParent; i++) {
+      const nearbyLinks = avatarParent.querySelectorAll(CONFIG.SELECTORS.PROFILE_LINK);
+      for (const link of nearbyLinks) {
+        const anchor = link as HTMLAnchorElement;
+        const match = anchor.href.match(CONFIG.REGEX.PROFILE_PATH);
+        if (match) {
+          return {
+            handle: match[1],
+            notificationType,
+            subjectUri: extractNotificationSubjectUri(notificationItem),
+          };
+        }
+      }
+      avatarParent = avatarParent.parentElement;
+    }
+  }
+
+  // Fallback: Use first profile link (works for non-quote notifications)
   const profileLink = notificationItem.querySelector(
     CONFIG.SELECTORS.PROFILE_LINK
   ) as HTMLAnchorElement;
@@ -337,7 +367,7 @@ function extractUserFromNotification(
 
   return {
     handle: handleMatch[1],
-    notificationType: detectNotificationType(notificationItem),
+    notificationType,
     subjectUri: extractNotificationSubjectUri(notificationItem),
   };
 }
