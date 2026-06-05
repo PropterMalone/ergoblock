@@ -1,0 +1,1274 @@
+import {
+  BskySession,
+  BskyAccount,
+  StorageStructure,
+  Profile,
+  ProfileView,
+  ProfileWithViewer,
+  GetBlocksResponse,
+  GetMutesResponse,
+  BlockRecord,
+  ListBlockRecordsResponse,
+  FeedPost,
+  GetAuthorFeedResponse,
+  GetFollowsResponse,
+  GetFollowersResponse,
+  GetListBlocksResponse,
+  GetListMutesResponse,
+  GetListResponse,
+  GetListsResponse,
+  ListView,
+  FollowRecord,
+  ListFollowRecordsResponse,
+  ListNotificationsResponse,
+  GetActorLikesResponse,
+  GetPostsResponse,
+  OwnedList,
+} from '../types.js';
+import {
+  sleep,
+  withRetry,
+  isRetryableError,
+  validatePdsUrl,
+  apiCircuitBreaker,
+  createLogger,
+  extractRkeyFromUri,
+  isValidRkey,
+} from './utils.js';
+
+const log = createLogger('api');
+
+// AT Protocol API helpers for Bluesky
+// Handles block/mute/unblock/unmute operations
+
+// Default timeout for API requests (30 seconds)
+const DEFAULT_TIMEOUT_MS = 30000;
+
+// Public Bluesky API endpoint (AppView) - use this for most operations
+const BSKY_PUBLIC_API = 'https://public.api.bsky.app';
+// User's PDS for repo operations
+const BSKY_PDS_DEFAULT = 'https://bsky.social';
+
+// Helper to safely access localStorage
+const getLocalStorage = () => {
+  if (typeof window !== 'undefined' && window.localStorage) {
+    return window.localStorage;
+  }
+  return null;
+};
+
+/**
+ * Get the current session from Bluesky's localStorage
+ * @returns {Object|null} Session object with accessJwt and did
+ */
+export function getSession(): BskySession | null {
+  try {
+    const localStorageProxy = getLocalStorage();
+    if (!localStorageProxy) return null;
+
+    // Try multiple possible storage key patterns
+    const possibleKeys = Object.keys(localStorageProxy).filter(
+      (k) => k.includes('BSKY') || k.includes('bsky') || k.includes('session')
+    );
+
+    // CRITICAL FIX #3: Don't log storage keys - could aid attackers in understanding storage structure
+    log.debug(`Found ${possibleKeys.length} potential session storage keys`);
+
+    for (const storageKey of possibleKeys) {
+      try {
+        const raw = localStorageProxy.getItem(storageKey);
+        if (!raw) continue;
+
+        const parsed = JSON.parse(raw) as StorageStructure;
+
+        // Try different possible structures
+        let account: BskyAccount | null = null;
+
+        // Structure 1: { session: { currentAccount: {...}, accounts: [...] } }
+        if (parsed?.session?.currentAccount) {
+          const currentDid = parsed.session.currentAccount.did;
+          account = parsed.session.accounts?.find((a) => a.did === currentDid) || null;
+        }
+
+        // Structure 2: { currentAccount: {...}, accounts: [...] }
+        if (!account && parsed?.currentAccount) {
+          const currentDid = parsed.currentAccount.did;
+          account = parsed.accounts?.find((a) => a.did === currentDid) || null;
+        }
+
+        // Structure 3: Direct account object
+        // MEDIUM FIX #9: Use proper type guard instead of unsafe double cast
+        if (!account && parsed?.accessJwt && parsed?.did) {
+          account = {
+            did: parsed.did,
+            handle: parsed.handle,
+            accessJwt: parsed.accessJwt,
+            refreshJwt: undefined, // May not be present in this structure
+            service: parsed.service,
+            pdsUrl: parsed.pdsUrl,
+          };
+        }
+
+        if (account && account.accessJwt && account.did) {
+          // CRITICAL FIX #3: Only log handle (public info), not DID or token-related info
+          log.debug('Found valid session', account.handle ? `for @${account.handle}` : '');
+          // Validate and normalize the PDS URL
+          const rawPdsUrl = account.pdsUrl || account.service || BSKY_PDS_DEFAULT;
+          const pdsUrl = validatePdsUrl(rawPdsUrl);
+          if (!pdsUrl) {
+            log.error('Invalid PDS URL, using default:', rawPdsUrl);
+            // Fall back to default PDS for safety
+          }
+          const finalPdsUrl = pdsUrl || BSKY_PDS_DEFAULT;
+          log.debug('Using PDS URL:', finalPdsUrl);
+
+          return {
+            accessJwt: account.accessJwt,
+            refreshJwt: account.refreshJwt,
+            did: account.did,
+            handle: account.handle || '',
+            pdsUrl: finalPdsUrl,
+          };
+        }
+      } catch (_e) {
+        // Continue to next key
+      }
+    }
+
+    log.error('No valid session found in localStorage');
+    return null;
+  } catch (e) {
+    log.error('Failed to get session:', e);
+    return null;
+  }
+}
+
+/**
+ * Options for API requests
+ */
+export interface ApiRequestOptions {
+  /** Timeout in milliseconds (default: 30000) */
+  timeoutMs?: number;
+  /** Whether to retry on failure (default: true for GET, false for mutations) */
+  retry?: boolean;
+  /** Maximum retry attempts (default: 3) */
+  maxRetries?: number;
+}
+
+/**
+ * Execute an authenticated API request
+ * Shared logic for both content script (localStorage) and background (chrome.storage)
+ * Includes timeout, circuit breaker, and optional retry with exponential backoff
+ */
+export async function executeApiRequest<T>(
+  endpoint: string,
+  method: string,
+  body: unknown,
+  auth: { accessJwt: string; pdsUrl: string },
+  targetBaseUrl?: string,
+  options: ApiRequestOptions = {}
+): Promise<T | null> {
+  const {
+    timeoutMs = DEFAULT_TIMEOUT_MS,
+    // Default: retry GET requests, don't retry mutations (POST/DELETE) to avoid duplicates
+    retry = method === 'GET',
+    maxRetries = 3,
+  } = options;
+
+  // Check circuit breaker before making request
+  if (!apiCircuitBreaker.isAllowed()) {
+    const state = apiCircuitBreaker.getState();
+    log.warn(`Circuit breaker is ${state}, rejecting request to ${endpoint}`);
+    throw new Error(
+      `API circuit breaker is open. Service may be unavailable. Please try again later.`
+    );
+  }
+
+  // Determine correct base URL:
+  // - com.atproto.repo.* endpoints go to user's PDS
+  // - app.bsky.* endpoints go to public API (AppView) unless overridden
+  let base = targetBaseUrl;
+
+  if (!base) {
+    if (endpoint.startsWith('com.atproto.repo.')) {
+      base = auth.pdsUrl;
+    } else {
+      base = BSKY_PUBLIC_API;
+    }
+  }
+
+  if (!base) {
+    throw new Error('Could not determine base URL for API request');
+  }
+
+  // Normalize base URL - remove trailing slashes
+  base = base.replace(/\/+$/, '');
+
+  const url = `${base}/xrpc/${endpoint}`;
+
+  const doRequest = async (): Promise<T | null> => {
+    log.debug('API request:', method, url);
+
+    // Create AbortController for timeout
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const fetchOptions: RequestInit = {
+        method,
+        headers: {
+          Authorization: `Bearer ${auth.accessJwt}`,
+          'Content-Type': 'application/json',
+        },
+        signal: controller.signal,
+      };
+
+      if (body) {
+        fetchOptions.body = JSON.stringify(body);
+      }
+
+      const response = await fetch(url, fetchOptions);
+
+      if (!response.ok) {
+        const error = (await response.json().catch(() => ({}))) as {
+          message?: string;
+          error?: string;
+        };
+        const errorCode = error.error || '';
+        const errorMessage = error.message || error.error || `API error: ${response.status}`;
+
+        // Block-related errors are expected during context detection, don't log as errors
+        const isBlockError =
+          errorCode === 'BlockedActor' ||
+          errorCode === 'BlockedByActor' ||
+          errorMessage.includes('blocked');
+
+        // Expired token errors are expected on cold boot before Bluesky refreshes the session
+        const isExpiredToken =
+          errorCode === 'ExpiredToken' ||
+          errorMessage.toLowerCase().includes('token has expired') ||
+          errorMessage.toLowerCase().includes('expired token');
+
+        if (isExpiredToken) {
+          // Log at debug level - this is expected behavior on browser startup
+          log.debug('Session token expired, waiting for Bluesky to refresh...');
+        } else if (!isBlockError) {
+          log.error('API error:', response.status, JSON.stringify(error));
+        }
+
+        // Record failure for circuit breaker (5xx errors indicate service issues)
+        if (response.status >= 500) {
+          apiCircuitBreaker.recordFailure();
+        }
+
+        // Throw specific error for 401 to help background worker detect auth failure
+        if (response.status === 401) {
+          throw new Error(`Auth error: ${response.status} ${errorMessage}`);
+        }
+
+        // Include status code in error for retry logic
+        throw new Error(`${response.status}: ${errorMessage}`);
+      }
+
+      // Record success for circuit breaker
+      apiCircuitBreaker.recordSuccess();
+
+      // Some endpoints return empty responses
+      const text = await response.text();
+      return text ? (JSON.parse(text) as T) : null;
+    } catch (error) {
+      // Convert abort to timeout error
+      if (error instanceof Error && error.name === 'AbortError') {
+        apiCircuitBreaker.recordFailure();
+        throw new Error(`Request timeout after ${timeoutMs}ms: ${url}`);
+      }
+      // Network errors also count as failures
+      apiCircuitBreaker.recordFailure();
+      throw error;
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  };
+
+  // Execute with or without retry
+  if (retry) {
+    return withRetry(doRequest, {
+      maxRetries,
+      initialDelayMs: 1000,
+      maxDelayMs: 10000,
+      isRetryable: isRetryableError,
+    });
+  }
+
+  return doRequest();
+}
+
+/**
+ * Make an authenticated API request (using local session)
+ * @param {string} endpoint - API endpoint
+ * @param {string} method - HTTP method
+ * @param {Object} body - Request body
+ * @param {string} baseUrl - Override base URL (for PDS vs AppView)
+ */
+async function apiRequest<T>(
+  endpoint: string,
+  method = 'GET',
+  body: unknown = null,
+  baseUrl: string | null = null
+): Promise<T | null> {
+  const session = getSession();
+  if (!session) {
+    throw new Error('Not logged in to Bluesky');
+  }
+
+  return executeApiRequest<T>(
+    endpoint,
+    method,
+    body,
+    { accessJwt: session.accessJwt, pdsUrl: session.pdsUrl },
+    baseUrl || undefined
+  );
+}
+
+/**
+ * Block a user
+ * @param {string} did - DID of user to block
+ * @returns {Promise<{ uri: string; cid: string } | null>} The created record info
+ */
+export async function blockUser(did: string): Promise<{ uri: string; cid: string } | null> {
+  const session = getSession();
+  if (!session) throw new Error('Not logged in');
+
+  const record = {
+    $type: 'app.bsky.graph.block',
+    subject: did,
+    createdAt: new Date().toISOString(),
+  };
+
+  return apiRequest<{ uri: string; cid: string }>('com.atproto.repo.createRecord', 'POST', {
+    repo: session.did,
+    collection: 'app.bsky.graph.block',
+    record,
+  });
+}
+
+/**
+ * Unblock a user
+ * @param {string} did - DID of user to unblock
+ * @param {string} [rkey] - Optional record key for direct deletion
+ *
+ * HIGH FIX #4: Added full pagination support for users with >100 blocks
+ * HIGH FIX #5: Added rkey validation before using
+ */
+export async function unblockUser(did: string, rkey?: string): Promise<unknown> {
+  const session = getSession();
+  if (!session) throw new Error('Not logged in');
+
+  // If we have the rkey, validate and delete directly (O(1))
+  if (rkey) {
+    // HIGH FIX #5: Validate rkey format before using
+    if (!isValidRkey(rkey)) {
+      log.error('Invalid rkey format provided for unblock:', rkey);
+      throw new Error('Invalid rkey format');
+    }
+    log.info('Unblocking using direct rkey');
+    return apiRequest('com.atproto.repo.deleteRecord', 'POST', {
+      repo: session.did,
+      collection: 'app.bsky.graph.block',
+      rkey,
+    });
+  }
+
+  // HIGH FIX #4: Paginate through ALL blocks to find the record
+  // Previously only checked first 100, causing orphaned storage for users with >100 blocks
+  log.info('Unblocking using list scan (legacy, paginated)...');
+
+  let cursor: string | undefined;
+  let foundRkey: string | null = null;
+
+  do {
+    let endpoint = `com.atproto.repo.listRecords?repo=${session.did}&collection=app.bsky.graph.block&limit=100`;
+    if (cursor) {
+      endpoint += `&cursor=${encodeURIComponent(cursor)}`;
+    }
+
+    const response = await apiRequest<{
+      records?: Array<{ value: { subject: string }; uri: string }>;
+      cursor?: string;
+    }>(endpoint);
+
+    // Search for the block record in this page
+    const blockRecord = response?.records?.find((r) => r.value.subject === did);
+    if (blockRecord) {
+      // HIGH FIX #5: Use extractRkeyFromUri for safe extraction with validation
+      foundRkey = extractRkeyFromUri(blockRecord.uri);
+      break;
+    }
+
+    cursor = response?.cursor;
+
+    // Rate limit between pages
+    if (cursor) {
+      await sleep(100);
+    }
+  } while (cursor);
+
+  if (!foundRkey) {
+    log.info('No block record found for DID');
+    return null;
+  }
+
+  return apiRequest('com.atproto.repo.deleteRecord', 'POST', {
+    repo: session.did,
+    collection: 'app.bsky.graph.block',
+    rkey: foundRkey,
+  });
+}
+
+/**
+ * Mute a user
+ * @param {string} did - DID of user to mute
+ */
+export async function muteUser(did: string): Promise<unknown> {
+  const session = getSession();
+  if (!session) throw new Error('Not logged in');
+  // Mute goes to user's PDS
+  return apiRequest(
+    'app.bsky.graph.muteActor',
+    'POST',
+    {
+      actor: did,
+    },
+    session.pdsUrl
+  );
+}
+
+/**
+ * Unmute a user
+ * @param {string} did - DID of user to unmute
+ */
+export async function unmuteUser(did: string): Promise<unknown> {
+  const session = getSession();
+  if (!session) throw new Error('Not logged in');
+  // Unmute goes to user's PDS
+  return apiRequest(
+    'app.bsky.graph.unmuteActor',
+    'POST',
+    {
+      actor: did,
+    },
+    session.pdsUrl
+  );
+}
+
+/**
+ * Get a user's profile by handle or DID
+ * @param {string} actor - Handle or DID
+ */
+export async function getProfile(actor: string): Promise<Profile | null> {
+  return apiRequest<Profile>(`app.bsky.actor.getProfile?actor=${encodeURIComponent(actor)}`);
+}
+
+/**
+ * Response from app.bsky.actor.getProfiles
+ */
+interface GetProfilesResponse {
+  profiles: ProfileWithViewer[];
+}
+
+/**
+ * Get multiple profiles with viewer state (up to 25 at a time)
+ * Includes relationship info: blocking, muted, following, followedBy
+ * @param actors - Array of handles or DIDs (max 25)
+ */
+export async function getProfiles(actors: string[]): Promise<ProfileWithViewer[]> {
+  if (actors.length === 0) return [];
+  if (actors.length > 25) {
+    throw new Error('getProfiles supports max 25 actors at once');
+  }
+
+  const params = actors.map((a) => `actors=${encodeURIComponent(a)}`).join('&');
+  const response = await apiRequest<GetProfilesResponse>(`app.bsky.actor.getProfiles?${params}`);
+  return response?.profiles || [];
+}
+
+/**
+ * Get profiles for a list of DIDs, batching requests (25 per batch)
+ * Returns a Map of DID -> ProfileWithViewer for quick lookup
+ */
+export async function getProfilesBatched(
+  dids: string[],
+  onProgress?: (fetched: number, total: number) => void
+): Promise<Map<string, ProfileWithViewer>> {
+  const result = new Map<string, ProfileWithViewer>();
+  const batchSize = 25;
+
+  for (let i = 0; i < dids.length; i += batchSize) {
+    const batch = dids.slice(i, i + batchSize);
+    const profiles = await getProfiles(batch);
+
+    for (const profile of profiles) {
+      result.set(profile.did, profile);
+    }
+
+    onProgress?.(Math.min(i + batchSize, dids.length), dids.length);
+
+    // Rate limit between batches
+    if (i + batchSize < dids.length) {
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+  }
+
+  return result;
+}
+
+// Rate limiting delay for paginated requests (ms)
+const PAGINATION_DELAY = 500;
+
+/**
+ * Get a page of blocked users
+ * @param cursor - Pagination cursor
+ * @param limit - Number of results per page (max 100)
+ */
+export async function getBlocks(cursor?: string, limit = 100): Promise<GetBlocksResponse> {
+  const session = getSession();
+  if (!session) throw new Error('Not logged in');
+
+  let endpoint = `app.bsky.graph.getBlocks?limit=${limit}`;
+  if (cursor) {
+    endpoint += `&cursor=${encodeURIComponent(cursor)}`;
+  }
+
+  // getBlocks goes to user's PDS
+  const response = await apiRequest<GetBlocksResponse>(endpoint, 'GET', null, session.pdsUrl);
+  return response || { blocks: [] };
+}
+
+/**
+ * Get a page of muted users
+ * @param cursor - Pagination cursor
+ * @param limit - Number of results per page (max 100)
+ */
+export async function getMutes(cursor?: string, limit = 100): Promise<GetMutesResponse> {
+  const session = getSession();
+  if (!session) throw new Error('Not logged in');
+
+  let endpoint = `app.bsky.graph.getMutes?limit=${limit}`;
+  if (cursor) {
+    endpoint += `&cursor=${encodeURIComponent(cursor)}`;
+  }
+
+  // getMutes goes to user's PDS
+  const response = await apiRequest<GetMutesResponse>(endpoint, 'GET', null, session.pdsUrl);
+  return response || { mutes: [] };
+}
+
+/**
+ * Fetch all blocked users (paginated)
+ * @param onProgress - Optional callback with current count
+ */
+export async function getAllBlocks(onProgress?: (count: number) => void): Promise<ProfileView[]> {
+  const allBlocks: ProfileView[] = [];
+  let cursor: string | undefined;
+
+  do {
+    const response = await getBlocks(cursor);
+    allBlocks.push(...response.blocks);
+    cursor = response.cursor;
+    onProgress?.(allBlocks.length);
+
+    // Rate limit between requests
+    if (cursor) {
+      await sleep(PAGINATION_DELAY);
+    }
+  } while (cursor);
+
+  log.info('Fetched all blocks:', allBlocks.length);
+  return allBlocks;
+}
+
+/**
+ * Fetch all muted users (paginated)
+ * @param onProgress - Optional callback with current count
+ */
+export async function getAllMutes(onProgress?: (count: number) => void): Promise<ProfileView[]> {
+  const allMutes: ProfileView[] = [];
+  let cursor: string | undefined;
+
+  do {
+    const response = await getMutes(cursor);
+    allMutes.push(...response.mutes);
+    cursor = response.cursor;
+    onProgress?.(allMutes.length);
+
+    // Rate limit between requests
+    if (cursor) {
+      await sleep(PAGINATION_DELAY);
+    }
+  } while (cursor);
+
+  log.info('Fetched all mutes:', allMutes.length);
+  return allMutes;
+}
+
+/**
+ * Get a page of block records with createdAt timestamps
+ * @param cursor - Pagination cursor
+ * @param limit - Number of results per page (max 100)
+ */
+export async function getBlockRecords(
+  cursor?: string,
+  limit = 100
+): Promise<ListBlockRecordsResponse> {
+  const session = getSession();
+  if (!session) throw new Error('Not logged in');
+
+  let endpoint = `com.atproto.repo.listRecords?repo=${session.did}&collection=app.bsky.graph.block&limit=${limit}`;
+  if (cursor) {
+    endpoint += `&cursor=${encodeURIComponent(cursor)}`;
+  }
+
+  // listRecords goes to user's PDS
+  const response = await apiRequest<ListBlockRecordsResponse>(
+    endpoint,
+    'GET',
+    null,
+    session.pdsUrl
+  );
+  return response || { records: [] };
+}
+
+/**
+ * Fetch all block records with createdAt timestamps (paginated)
+ * @param onProgress - Optional callback with current count
+ */
+export async function getAllBlockRecords(
+  onProgress?: (count: number) => void
+): Promise<BlockRecord[]> {
+  const allRecords: BlockRecord[] = [];
+  let cursor: string | undefined;
+
+  do {
+    const response = await getBlockRecords(cursor);
+    allRecords.push(...response.records);
+    cursor = response.cursor;
+    onProgress?.(allRecords.length);
+
+    // Rate limit between requests
+    if (cursor) {
+      await sleep(PAGINATION_DELAY);
+    }
+  } while (cursor);
+
+  log.info('Fetched all block records:', allRecords.length);
+  return allRecords;
+}
+
+/**
+ * Get a user's feed (posts, replies, reposts)
+ * @param actor - DID or handle
+ * @param limit - Number of posts to fetch
+ * @param cursor - Pagination cursor
+ */
+export async function getAuthorFeed(
+  actor: string,
+  limit = 100,
+  cursor?: string
+): Promise<GetAuthorFeedResponse> {
+  let endpoint = `app.bsky.feed.getAuthorFeed?actor=${encodeURIComponent(actor)}&limit=${limit}`;
+  if (cursor) {
+    endpoint += `&cursor=${encodeURIComponent(cursor)}`;
+  }
+
+  // getAuthorFeed goes to public API
+  const response = await apiRequest<GetAuthorFeedResponse>(endpoint);
+  return response || { feed: [] };
+}
+
+/**
+ * Find the most recent interaction (reply or quote) from targetDid to loggedInDid
+ * Used for "guessed context" when importing blocks
+ * @param targetDid - DID of the blocked user
+ * @param loggedInDid - DID of the logged-in user
+ * @param limit - Number of posts to scan (default 100)
+ */
+export async function findRecentInteraction(
+  targetDid: string,
+  loggedInDid: string,
+  limit = 100
+): Promise<FeedPost | null> {
+  try {
+    const { feed } = await getAuthorFeed(targetDid, limit);
+
+    for (const { post } of feed) {
+      // Check if this is a reply to the logged-in user
+      if (post.record.reply?.parent?.uri?.includes(loggedInDid)) {
+        return post;
+      }
+
+      // Check if this is a quote of the logged-in user's post
+      if (
+        post.record.embed?.$type === 'app.bsky.embed.record' &&
+        post.record.embed.record?.uri?.includes(loggedInDid)
+      ) {
+        return post;
+      }
+    }
+
+    return null;
+  } catch (error) {
+    // User may have blocked us back, profile may be private, etc.
+    log.debug(
+      `Could not fetch feed for ${targetDid}:`,
+      error instanceof Error ? error.message : error
+    );
+    return null;
+  }
+}
+
+// ============================================================================
+// Blocklist Audit API Functions
+// ============================================================================
+
+/**
+ * Get a page of accounts the user follows
+ * @param actor - DID or handle of the user
+ * @param cursor - Pagination cursor
+ * @param limit - Number of results per page (max 100)
+ */
+export async function getFollows(
+  actor: string,
+  cursor?: string,
+  limit = 100
+): Promise<GetFollowsResponse> {
+  let endpoint = `app.bsky.graph.getFollows?actor=${encodeURIComponent(actor)}&limit=${limit}`;
+  if (cursor) {
+    endpoint += `&cursor=${encodeURIComponent(cursor)}`;
+  }
+
+  const response = await apiRequest<GetFollowsResponse>(endpoint);
+  return response || { follows: [] };
+}
+
+/**
+ * Fetch all accounts the user follows (paginated)
+ * @param actor - DID or handle of the user
+ * @param onProgress - Optional callback with current count
+ */
+export async function getAllFollows(
+  actor: string,
+  onProgress?: (count: number) => void
+): Promise<ProfileView[]> {
+  const allFollows: ProfileView[] = [];
+  let cursor: string | undefined;
+
+  do {
+    const response = await getFollows(actor, cursor);
+    allFollows.push(...response.follows);
+    cursor = response.cursor;
+    onProgress?.(allFollows.length);
+
+    if (cursor) {
+      await sleep(PAGINATION_DELAY);
+    }
+  } while (cursor);
+
+  log.info('Fetched all follows:', allFollows.length);
+  return allFollows;
+}
+
+/**
+ * Get a page of accounts following the user
+ * @param actor - DID or handle of the user
+ * @param cursor - Pagination cursor
+ * @param limit - Number of results per page (max 100)
+ */
+export async function getFollowers(
+  actor: string,
+  cursor?: string,
+  limit = 100
+): Promise<GetFollowersResponse> {
+  let endpoint = `app.bsky.graph.getFollowers?actor=${encodeURIComponent(actor)}&limit=${limit}`;
+  if (cursor) {
+    endpoint += `&cursor=${encodeURIComponent(cursor)}`;
+  }
+
+  const response = await apiRequest<GetFollowersResponse>(endpoint);
+  return response || { followers: [] };
+}
+
+/**
+ * Fetch all accounts following the user (paginated)
+ * @param actor - DID or handle of the user
+ * @param onProgress - Optional callback with current count
+ */
+export async function getAllFollowers(
+  actor: string,
+  onProgress?: (count: number) => void
+): Promise<ProfileView[]> {
+  const allFollowers: ProfileView[] = [];
+  let cursor: string | undefined;
+
+  do {
+    const response = await getFollowers(actor, cursor);
+    allFollowers.push(...response.followers);
+    cursor = response.cursor;
+    onProgress?.(allFollowers.length);
+
+    if (cursor) {
+      await sleep(PAGINATION_DELAY);
+    }
+  } while (cursor);
+
+  log.info('Fetched all followers:', allFollowers.length);
+  return allFollowers;
+}
+
+/**
+ * Get blocklists the user subscribes to (list blocks)
+ * @param cursor - Pagination cursor
+ * @param limit - Number of results per page (max 100)
+ */
+export async function getListBlocks(cursor?: string, limit = 100): Promise<GetListBlocksResponse> {
+  const session = getSession();
+  if (!session) throw new Error('Not logged in');
+
+  let endpoint = `app.bsky.graph.getListBlocks?limit=${limit}`;
+  if (cursor) {
+    endpoint += `&cursor=${encodeURIComponent(cursor)}`;
+  }
+
+  // getListBlocks goes to user's PDS
+  const response = await apiRequest<GetListBlocksResponse>(endpoint, 'GET', null, session.pdsUrl);
+  return response || { lists: [] };
+}
+
+/**
+ * Fetch all blocklists the user subscribes to (paginated)
+ * @param onProgress - Optional callback with current count
+ */
+export async function getAllListBlocks(onProgress?: (count: number) => void): Promise<ListView[]> {
+  const allLists: ListView[] = [];
+  let cursor: string | undefined;
+
+  do {
+    const response = await getListBlocks(cursor);
+    allLists.push(...response.lists);
+    cursor = response.cursor;
+    onProgress?.(allLists.length);
+
+    if (cursor) {
+      await sleep(PAGINATION_DELAY);
+    }
+  } while (cursor);
+
+  log.info('Fetched all subscribed blocklists:', allLists.length);
+  return allLists;
+}
+
+/**
+ * Get mutelists the user subscribes to (list mutes)
+ * @param cursor - Pagination cursor
+ * @param limit - Number of results per page (max 100)
+ */
+export async function getListMutes(cursor?: string, limit = 100): Promise<GetListMutesResponse> {
+  const session = getSession();
+  if (!session) throw new Error('Not logged in');
+
+  let endpoint = `app.bsky.graph.getListMutes?limit=${limit}`;
+  if (cursor) {
+    endpoint += `&cursor=${encodeURIComponent(cursor)}`;
+  }
+
+  // getListMutes goes to user's PDS
+  const response = await apiRequest<GetListMutesResponse>(endpoint, 'GET', null, session.pdsUrl);
+  return response || { lists: [] };
+}
+
+/**
+ * Fetch all mutelists the user subscribes to (paginated)
+ * @param onProgress - Optional callback with current count
+ */
+export async function getAllListMutes(onProgress?: (count: number) => void): Promise<ListView[]> {
+  const allLists: ListView[] = [];
+  let cursor: string | undefined;
+
+  do {
+    const response = await getListMutes(cursor);
+    allLists.push(...response.lists);
+    cursor = response.cursor;
+    onProgress?.(allLists.length);
+
+    if (cursor) {
+      await sleep(PAGINATION_DELAY);
+    }
+  } while (cursor);
+
+  log.info('Fetched all subscribed mutelists:', allLists.length);
+  return allLists;
+}
+
+/**
+ * Get members of a list
+ * @param listUri - AT Protocol URI of the list (at://did/app.bsky.graph.list/rkey)
+ * @param cursor - Pagination cursor
+ * @param limit - Number of results per page (max 100)
+ */
+export async function getList(
+  listUri: string,
+  cursor?: string,
+  limit = 100
+): Promise<GetListResponse> {
+  let endpoint = `app.bsky.graph.getList?list=${encodeURIComponent(listUri)}&limit=${limit}`;
+  if (cursor) {
+    endpoint += `&cursor=${encodeURIComponent(cursor)}`;
+  }
+
+  const response = await apiRequest<GetListResponse>(endpoint);
+  return response || { list: {} as ListView, items: [] };
+}
+
+/**
+ * Fetch all members of a list (paginated)
+ * @param listUri - AT Protocol URI of the list
+ * @param onProgress - Optional callback with current count
+ */
+export async function getAllListMembers(
+  listUri: string,
+  onProgress?: (count: number) => void
+): Promise<ProfileView[]> {
+  const allMembers: ProfileView[] = [];
+  let cursor: string | undefined;
+
+  do {
+    const response = await getList(listUri, cursor);
+    for (const item of response.items) {
+      allMembers.push(item.subject);
+    }
+    cursor = response.cursor;
+    onProgress?.(allMembers.length);
+
+    if (cursor) {
+      await sleep(PAGINATION_DELAY);
+    }
+  } while (cursor);
+
+  log.info('Fetched all list members for', listUri, ':', allMembers.length);
+  return allMembers;
+}
+
+/**
+ * Get lists created by a specific actor
+ * @param actor - DID or handle of the actor
+ * @param cursor - Pagination cursor
+ * @param limit - Number of results per page (max 100)
+ */
+export async function getLists(
+  actor: string,
+  cursor?: string,
+  limit = 100
+): Promise<GetListsResponse> {
+  let endpoint = `app.bsky.graph.getLists?actor=${encodeURIComponent(actor)}&limit=${limit}`;
+  if (cursor) {
+    endpoint += `&cursor=${encodeURIComponent(cursor)}`;
+  }
+
+  // getLists is a public endpoint
+  const response = await apiRequest<GetListsResponse>(endpoint);
+  return response || { lists: [] };
+}
+
+/**
+ * Fetch all lists owned by a user
+ * @param actor - DID of the actor (typically the logged-in user)
+ * @returns Array of OwnedList objects
+ */
+export async function getActorLists(actor: string): Promise<OwnedList[]> {
+  const allLists: OwnedList[] = [];
+  let cursor: string | undefined;
+
+  do {
+    const response = await getLists(actor, cursor);
+    for (const list of response.lists) {
+      // Only include lists where the actor is the creator
+      if (list.creator.did === actor) {
+        allLists.push({
+          uri: list.uri,
+          name: list.name,
+          purpose: list.purpose === 'app.bsky.graph.defs#modlist' ? 'modlist' : 'curatelist',
+          description: list.description,
+          avatar: list.avatar,
+          listItemCount: list.listItemCount || 0,
+          createdAt: new Date(list.indexedAt).getTime(),
+        });
+      }
+    }
+    cursor = response.cursor;
+
+    if (cursor) {
+      await sleep(PAGINATION_DELAY);
+    }
+  } while (cursor);
+
+  log.info('Fetched all owned lists for', actor, ':', allLists.length);
+  return allLists;
+}
+
+/**
+ * Unsubscribe from a blocklist
+ * @param listUri - AT Protocol URI of the list to unsubscribe from
+ *
+ * HIGH FIX #5: Added rkey validation
+ */
+export async function unsubscribeFromBlocklist(listUri: string): Promise<void> {
+  const session = getSession();
+  if (!session) throw new Error('Not logged in');
+
+  // Find the listblock record for this list (paginated)
+  let cursor: string | undefined;
+  let foundRkey: string | null = null;
+
+  do {
+    let endpoint = `com.atproto.repo.listRecords?repo=${session.did}&collection=app.bsky.graph.listblock&limit=100`;
+    if (cursor) {
+      endpoint += `&cursor=${encodeURIComponent(cursor)}`;
+    }
+
+    const response = await apiRequest<{
+      records: Array<{ uri: string; value: { subject: string } }>;
+      cursor?: string;
+    }>(endpoint);
+
+    const record = response?.records?.find((r) => r.value.subject === listUri);
+    if (record) {
+      // HIGH FIX #5: Use extractRkeyFromUri for safe extraction with validation
+      foundRkey = extractRkeyFromUri(record.uri);
+      break;
+    }
+
+    cursor = response?.cursor;
+    if (cursor) {
+      await sleep(100);
+    }
+  } while (cursor);
+
+  if (!foundRkey) {
+    log.info('No listblock record found for list');
+    return;
+  }
+
+  await apiRequest('com.atproto.repo.deleteRecord', 'POST', {
+    repo: session.did,
+    collection: 'app.bsky.graph.listblock',
+    rkey: foundRkey,
+  });
+
+  log.info('Unsubscribed from blocklist');
+}
+
+// ============================================================================
+// Starter Pack Tools APIs
+// ============================================================================
+
+/**
+ * Get follow records with creation timestamps
+ * Used to detect "follow all" actions from starter packs
+ */
+export async function getFollowRecords(
+  limit = 100,
+  cursor?: string
+): Promise<ListFollowRecordsResponse> {
+  const session = getSession();
+  if (!session) throw new Error('Not logged in');
+
+  let endpoint = `com.atproto.repo.listRecords?repo=${encodeURIComponent(session.did)}&collection=app.bsky.graph.follow&limit=${limit}`;
+  if (cursor) {
+    endpoint += `&cursor=${encodeURIComponent(cursor)}`;
+  }
+
+  const response = await apiRequest<ListFollowRecordsResponse>(endpoint);
+  return response || { records: [] };
+}
+
+/**
+ * Get all follow records (paginated)
+ */
+export async function getAllFollowRecords(
+  onProgress?: (count: number) => void
+): Promise<FollowRecord[]> {
+  const allRecords: FollowRecord[] = [];
+  let cursor: string | undefined;
+
+  do {
+    const response = await getFollowRecords(100, cursor);
+    allRecords.push(...response.records);
+    cursor = response.cursor;
+    onProgress?.(allRecords.length);
+
+    if (cursor) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  } while (cursor);
+
+  log.info('Fetched all follow records:', allRecords.length);
+  return allRecords;
+}
+
+/**
+ * Follow a user
+ */
+export async function followUser(did: string): Promise<{ uri: string; cid: string } | null> {
+  const session = getSession();
+  if (!session) throw new Error('Not logged in');
+
+  const record = {
+    $type: 'app.bsky.graph.follow',
+    subject: did,
+    createdAt: new Date().toISOString(),
+  };
+
+  return apiRequest<{ uri: string; cid: string }>('com.atproto.repo.createRecord', 'POST', {
+    repo: session.did,
+    collection: 'app.bsky.graph.follow',
+    record,
+  });
+}
+
+/**
+ * Unfollow a user
+ * @param did - DID of user to unfollow
+ * @param rkey - Optional rkey if known (faster)
+ */
+export async function unfollowUser(did: string, rkey?: string): Promise<void> {
+  const session = getSession();
+  if (!session) throw new Error('Not logged in');
+
+  // If we have the rkey, delete directly
+  if (rkey) {
+    await apiRequest('com.atproto.repo.deleteRecord', 'POST', {
+      repo: session.did,
+      collection: 'app.bsky.graph.follow',
+      rkey,
+    });
+    log.info('Unfollowed user:', did);
+    return;
+  }
+
+  // Otherwise, find the follow record first
+  const records = await apiRequest<ListFollowRecordsResponse>(
+    `com.atproto.repo.listRecords?repo=${encodeURIComponent(session.did)}&collection=app.bsky.graph.follow&limit=100`
+  );
+
+  // Scan for the record (may need pagination for large follow lists)
+  let foundRkey: string | undefined;
+  let cursor = records?.cursor;
+
+  for (const record of records?.records || []) {
+    if (record.value.subject === did) {
+      foundRkey = record.uri.split('/').pop();
+      break;
+    }
+  }
+
+  // Continue paginating if not found
+  while (!foundRkey && cursor) {
+    const moreRecords = await apiRequest<ListFollowRecordsResponse>(
+      `com.atproto.repo.listRecords?repo=${encodeURIComponent(session.did)}&collection=app.bsky.graph.follow&limit=100&cursor=${encodeURIComponent(cursor)}`
+    );
+
+    for (const record of moreRecords?.records || []) {
+      if (record.value.subject === did) {
+        foundRkey = record.uri.split('/').pop();
+        break;
+      }
+    }
+    cursor = moreRecords?.cursor;
+  }
+
+  if (!foundRkey) {
+    log.info('No follow record found for:', did);
+    return;
+  }
+
+  await apiRequest('com.atproto.repo.deleteRecord', 'POST', {
+    repo: session.did,
+    collection: 'app.bsky.graph.follow',
+    rkey: foundRkey,
+  });
+
+  log.info('Unfollowed user:', did);
+}
+
+/**
+ * Get notifications (likes, reposts, follows, mentions, replies)
+ */
+export async function getNotifications(
+  limit = 50,
+  cursor?: string
+): Promise<ListNotificationsResponse> {
+  const session = getSession();
+  if (!session) throw new Error('Not logged in');
+
+  let endpoint = `app.bsky.notification.listNotifications?limit=${limit}`;
+  if (cursor) {
+    endpoint += `&cursor=${encodeURIComponent(cursor)}`;
+  }
+
+  const response = await apiRequest<ListNotificationsResponse>(endpoint);
+  return response || { notifications: [] };
+}
+
+/**
+ * Get posts the user has liked
+ * Used for engagement scoring (who you've engaged with)
+ */
+export async function getActorLikes(
+  actor: string,
+  limit = 50,
+  cursor?: string
+): Promise<GetActorLikesResponse> {
+  let endpoint = `app.bsky.feed.getActorLikes?actor=${encodeURIComponent(actor)}&limit=${limit}`;
+  if (cursor) {
+    endpoint += `&cursor=${encodeURIComponent(cursor)}`;
+  }
+
+  const response = await apiRequest<GetActorLikesResponse>(endpoint);
+  return response || { feed: [] };
+}
+
+/**
+ * Fetch posts by URI from the public API (no authentication)
+ * Used by QT Peek to retrieve concealed (blocked/detached) quoted posts.
+ * Calls public.api.bsky.app directly without auth headers so block-based
+ * content hiding is not enforced.
+ *
+ * @param uris - Array of AT Protocol post URIs (max 25)
+ * @returns Array of PostView objects
+ */
+export async function getPostsPublic(uris: string[]): Promise<GetPostsResponse> {
+  if (uris.length === 0) return { posts: [] };
+  if (uris.length > 25) {
+    throw new Error('getPostsPublic supports max 25 URIs at once');
+  }
+
+  const params = uris.map((u) => `uris=${encodeURIComponent(u)}`).join('&');
+  const url = `${BSKY_PUBLIC_API}/xrpc/app.bsky.feed.getPosts?${params}`;
+
+  log.info('Public API getPosts:', url);
+
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    // No Authorization header - this is intentional for public API access
+  });
+
+  if (!response.ok) {
+    const error = (await response.json().catch(() => ({}))) as { message?: string };
+    throw new Error(error.message || `Public API error: ${response.status}`);
+  }
+
+  const data = (await response.json()) as GetPostsResponse;
+  return data;
+}

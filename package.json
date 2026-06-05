@@ -1,0 +1,69 @@
+{
+  "name": "ergoblock",
+  "version": "1.17.0",
+  "description": "Temporary block and mute for Bluesky",
+  "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "build": "node scripts/bundle.js --target=chrome",
+    "build:chrome": "node scripts/bundle.js --target=chrome",
+    "build:firefox": "node scripts/bundle.js --target=firefox",
+    "build:all": "npm run build:firefox && npm run build:chrome",
+    "dev": "node scripts/bundle.js --watch",
+    "test": "vitest run",
+    "sync-version": "node scripts/sync-version.js",
+    "type-check": "tsc --noEmit",
+    "lint": "eslint src/ scripts/",
+    "lint:dead": "knip && fallow dead-code",
+    "lint:dead:full": "knip && fallow",
+    "format": "prettier --write \"src/**/*.{ts,tsx,js}\" \"scripts/**/*.js\" \"*.{json,js,html}\" \".github/**/*.yml\"",
+    "format:check": "prettier --check \"src/**/*.{ts,tsx,js}\" \"scripts/**/*.js\" \"*.{json,js,html}\" \".github/**/*.yml\"",
+    "validate": "npm run lint && npm run type-check && npm run format:check && npm test && npm run lint:dead",
+    "publish:chrome": "node scripts/publish-chrome.js",
+    "publish:chrome:upload": "node scripts/publish-chrome.js --upload-only",
+    "publish:firefox": "node scripts/publish-firefox.js",
+    "prepare": "husky || true"
+  },
+  "devDependencies": {
+    "@testing-library/preact": "^3.2.4",
+    "@types/chrome": "^0.1.32",
+    "@types/webextension-polyfill": "^0.12.4",
+    "@typescript-eslint/eslint-plugin": "^8.51.0",
+    "@typescript-eslint/parser": "^8.51.0",
+    "@vitest/coverage-v8": "^4.0.16",
+    "chrome-webstore-upload": "^4.0.3",
+    "esbuild": "^0.27.2",
+    "eslint": "^9.39.2",
+    "eslint-config-prettier": "^10.1.8",
+    "fallow": "2.69.0",
+    "globals": "^17.0.0",
+    "husky": "^9.1.7",
+    "jsdom": "^27.4.0",
+    "jsonwebtoken": "^9.0.3",
+    "knip": "6.12.2",
+    "lint-staged": "^16.2.7",
+    "prettier": "^3.7.4",
+    "sharp": "^0.34.5",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.16"
+  },
+  "lint-staged": {
+    "src/**/*.{ts,tsx}": [
+      "eslint --fix"
+    ],
+    "src/**/*.{ts,tsx,js},scripts/**/*.js,*.{json,js,html},.github/**/*.yml": [
+      "prettier --write"
+    ]
+  },
+  "dependencies": {
+    "@atcute/cbor": "^2.2.8",
+    "@atcute/repo": "^0.1.1",
+    "@preact/signals": "^2.5.1",
+    "lucide-preact": "^0.562.0",
+    "open-props": "^1.7.17",
+    "preact": "^10.28.2",
+    "webextension-polyfill": "^0.12.0"
+  }
+}
