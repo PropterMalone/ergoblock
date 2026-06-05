@@ -1,0 +1,44 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "entry": [
+    "src/background.ts",
+    "src/content.tsx",
+    "src/popup.tsx",
+    "src/options.tsx",
+    "src/manager.tsx",
+    "src/types.ts",
+    "scripts/copy-assets.js",
+    "scripts/check-duplicate-follows.js",
+    "scripts/console-check-duplicates.js",
+    "scripts/console-rectify-amnesty.js",
+    "scripts/create-promo-tile.cjs",
+    "scripts/crop-screenshots.cjs",
+    "scripts/rectify-amnesty-unblocks.ts",
+    "scripts/resize-screenshots.cjs",
+    "scripts/screenshot-promo.cjs",
+    "scripts/ux-audit.mjs",
+    "src/__tests__/**/*.{test,spec}.{ts,tsx}"
+  ],
+  "project": ["src/**/*.{ts,tsx}!", "scripts/**/*.{js,cjs,mjs,ts}!"],
+  "ignore": ["dist/**", "packages/**"],
+  "ignoreExportsUsedInFile": true,
+  "ignoreDependencies": [
+    "@types/chrome",
+    "@types/webextension-polyfill",
+    "open-props",
+    "fallow",
+    "@eslint/js",
+    "puppeteer",
+    "playwright"
+  ],
+  "rules": {
+    "files": "error",
+    "dependencies": "error",
+    "unlisted": "warn",
+    "exports": "warn",
+    "nsExports": "warn",
+    "types": "warn",
+    "nsTypes": "warn",
+    "duplicates": "warn"
+  }
+}

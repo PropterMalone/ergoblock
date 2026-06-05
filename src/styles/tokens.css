@@ -1,0 +1,144 @@
+/* ErgoBlock — v2 Bluesky-aligned design tokens
+ *
+ * Strategy: use Bluesky's native tokens (system font, sky-blue accent, cool
+ * neutrals, pure-white light surfaces) so the extension feels native, but
+ * differentiate via:
+ *   - a single signature accent shift (a touch deeper than Bluesky's blue)
+ *   - a desaturated indigo for "expiring/temporary" states (Bluesky has no
+ *     equivalent — this is our differentiator)
+ *   - airy density that matches Bluesky's settings pages
+ *   - a 2-color butterfly mark in our deeper blue (extension-as-companion)
+ *
+ * Scoped to .eb-light / .eb-dark — manager.css is unaffected.
+ */
+
+.eb-light {
+  --eb-bg:           #ffffff;
+  --eb-surface:      #ffffff;
+  --eb-surface-alt:  #f1f3f5;
+  --eb-surface-2:    #e6e9ec;
+  --eb-divider:      #e9ecef;
+  --eb-border:       #d4dbe2;
+  --eb-border-strong:#aab5c0;
+
+  --eb-text:         #0b0f14;
+  --eb-text-muted:   #5b6573;
+  --eb-text-faint:   #8a96a3;
+  --eb-text-disabled:#aab5c0;
+
+  --eb-blue-50:      #eaf4ff;
+  --eb-blue-100:     #cfe5ff;
+  --eb-blue-300:     #6bb1ff;
+  --eb-blue-500:     #0a7aff;
+  --eb-blue-600:     #0066d6;
+  --eb-blue-700:     #0050ad;
+
+  --eb-indigo-50:    #eef0ff;
+  --eb-indigo-100:   #d6dbff;
+  --eb-indigo-500:   #5c6bd0;
+  --eb-indigo-700:   #3d4aa0;
+
+  --eb-red-50:       #fff1f0;
+  --eb-red-100:      #ffd6d3;
+  --eb-red-500:      #e53935;
+  --eb-red-700:      #b3261e;
+
+  --eb-green-100:    #d8f3dc;
+  --eb-green-500:    #2e7d32;
+
+  --eb-accent:       var(--eb-blue-500);
+  --eb-accent-hover: var(--eb-blue-600);
+  --eb-accent-soft:  var(--eb-blue-50);
+  --eb-accent-on:    #ffffff;
+
+  --eb-font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --eb-font-mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+
+  --eb-fs-xs: 12px;
+  --eb-fs-sm: 13px;
+  --eb-fs-base: 15px;
+  --eb-fs-md: 16px;
+  --eb-fs-lg: 18px;
+  --eb-fs-xl: 22px;
+  --eb-fs-2xl: 28px;
+  --eb-fs-3xl: 34px;
+
+  --eb-r-1: 6px;
+  --eb-r-2: 10px;
+  --eb-r-3: 14px;
+  --eb-r-4: 20px;
+  --eb-r-pill: 999px;
+
+  --eb-s-1: 4px;
+  --eb-s-2: 8px;
+  --eb-s-3: 12px;
+  --eb-s-4: 16px;
+  --eb-s-5: 20px;
+  --eb-s-6: 24px;
+  --eb-s-7: 32px;
+  --eb-s-8: 48px;
+
+  --eb-shadow-1: 0 1px 2px rgba(11, 15, 20, 0.06);
+  --eb-shadow-2: 0 4px 16px rgba(11, 15, 20, 0.08);
+  --eb-shadow-pop: 0 8px 32px rgba(11, 15, 20, 0.16);
+
+  --eb-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.eb-dark {
+  --eb-bg:           #0b0f14;
+  --eb-surface:      #161b22;
+  --eb-surface-alt:  #1f2630;
+  --eb-surface-2:    #2a323d;
+  --eb-divider:      #232a33;
+  --eb-border:       #2f3744;
+  --eb-border-strong:#475061;
+
+  --eb-text:         #f3f6fa;
+  --eb-text-muted:   #a8b3bf;
+  --eb-text-faint:   #6f7c8a;
+  --eb-text-disabled:#525d6b;
+
+  --eb-blue-50:      #0e2440;
+  --eb-blue-100:     #163461;
+  --eb-blue-300:     #4d8ee0;
+  --eb-blue-500:     #2b8eff;
+  --eb-blue-600:     #4d9fff;
+  --eb-blue-700:     #6fb3ff;
+
+  --eb-indigo-50:    #1a1f3d;
+  --eb-indigo-100:   #2a3160;
+  --eb-indigo-500:   #8390e0;
+  --eb-indigo-700:   #a0aaee;
+
+  --eb-red-50:       #3a1715;
+  --eb-red-100:      #5c1f1c;
+  --eb-red-500:      #ff5b56;
+  --eb-red-700:      #ff8a86;
+
+  --eb-accent:       var(--eb-blue-500);
+  --eb-accent-hover: var(--eb-blue-600);
+  --eb-accent-soft:  var(--eb-blue-50);
+  --eb-accent-on:    #ffffff;
+
+  --eb-shadow-1: 0 1px 2px rgba(0,0,0,0.4);
+  --eb-shadow-2: 0 4px 16px rgba(0,0,0,0.5);
+  --eb-shadow-pop: 0 8px 32px rgba(0,0,0,0.7);
+}
+
+.eb-root {
+  font-family: var(--eb-font);
+  font-size: var(--eb-fs-base);
+  line-height: 1.45;
+  color: var(--eb-text);
+  background: var(--eb-bg);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+.eb-mono { font-family: var(--eb-font-mono); }
+
+.eb-root *,
+.eb-root *::before,
+.eb-root *::after { box-sizing: border-box; }
+.eb-root button { font: inherit; color: inherit; cursor: pointer; border: none; background: none; padding: 0; }
+.eb-root input, .eb-root select, .eb-root textarea { font: inherit; color: inherit; }

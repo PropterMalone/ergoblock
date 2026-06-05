@@ -1,0 +1,58 @@
+{
+  "entry": [
+    "src/background.ts",
+    "src/content.tsx",
+    "src/popup.tsx",
+    "src/options.tsx",
+    "src/manager.tsx",
+    "src/types.ts",
+    "scripts/bundle.js",
+    "scripts/copy-assets.js",
+    "scripts/sync-version.js",
+    "scripts/publish-chrome.js",
+    "scripts/publish-firefox.js",
+    "scripts/rectify-amnesty-unblocks.ts",
+    "scripts/ux-audit.mjs"
+  ],
+  "ignorePatterns": [
+    "dist/**",
+    "node_modules/**",
+    "packages/**",
+    "src/__tests__/**",
+    "src/styles/**",
+    "**/*.test.ts",
+    "**/*.test.tsx",
+    "**/*.spec.ts",
+    "**/*.spec.tsx",
+    "scripts/console-*.js",
+    "scripts/check-duplicate-follows.js",
+    "scripts/create-promo-tile.cjs",
+    "scripts/crop-screenshots.cjs",
+    "scripts/resize-screenshots.cjs",
+    "scripts/screenshot-promo.cjs",
+    "vitest.setup.ts",
+    "vitest.polyfill-mock.ts",
+    "popup.html",
+    "options.html",
+    "src/manager.html"
+  ],
+  "ignoreDependencies": [
+    "@types/chrome",
+    "@types/webextension-polyfill",
+    "open-props",
+    "@eslint/js",
+    "puppeteer",
+    "playwright"
+  ],
+  "ignoreExportsUsedInFile": true,
+  "rules": {
+    "unused-files": "error",
+    "unused-dependencies": "error",
+    "unused-exports": "warn",
+    "unused-types": "warn",
+    "unused-class-members": "warn",
+    "unresolved-imports": "warn",
+    "unlisted-dependencies": "warn",
+    "duplicate-exports": "warn"
+  }
+}

@@ -1,0 +1,2 @@
+npm run sync-version
+npx lint-staged

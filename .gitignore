@@ -1,0 +1,35 @@
+# Build artifacts
+*.zip
+bluesky-temp-block.zip
+ergoblock.zip
+dist/
+coverage/
+
+# Dependencies
+node_modules/
+
+# Local scripts
+resize-icons.ps1
+
+# Environment files
+.env
+*.env.local
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor files
+.vscode/
+*.swp
+*.swo
+
+# Claude Code temp files
+tmpclaude-*-cwd
+
+# Local scratch files
+entities.json
+mempalace.yaml
+
+# internal beads issue-tracker data — never publish
+.beads/

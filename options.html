@@ -1,0 +1,363 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ErgoBlock Settings</title>
+    <style>
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      body {
+        font-family:
+          InterVariable,
+          Inter,
+          -apple-system,
+          BlinkMacSystemFont,
+          'Segoe UI',
+          Roboto,
+          'Helvetica Neue',
+          Arial,
+          sans-serif;
+        background: #f8f9fa;
+        color: #1a1a1a;
+        line-height: 1.5;
+      }
+
+      .container {
+        max-width: 600px;
+        margin: 0 auto;
+        padding: 32px 20px;
+      }
+
+      .header {
+        margin-bottom: 40px;
+      }
+
+      .header h1 {
+        font-size: 28px;
+        font-weight: 700;
+        margin-bottom: 8px;
+        letter-spacing: -0.01em;
+      }
+
+      .header p {
+        font-size: 15px;
+        color: #666;
+      }
+
+      .settings-section {
+        background: white;
+        border-radius: 12px;
+        padding: 24px;
+        margin-bottom: 16px;
+        border: 1px solid #e5e5e5;
+      }
+
+      .section-title {
+        font-size: 16px;
+        font-weight: 600;
+        color: #1a1a1a;
+        margin-bottom: 20px;
+        padding-bottom: 12px;
+        border-bottom: 1px solid #f0f0f0;
+      }
+
+      .setting-group {
+        margin-bottom: 24px;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 16px;
+        align-items: center;
+      }
+
+      .setting-group:last-child {
+        margin-bottom: 0;
+      }
+
+      .setting-label {
+        font-size: 14px;
+        font-weight: 500;
+        color: #1a1a1a;
+      }
+
+      .setting-description {
+        font-size: 13px;
+        color: #888;
+        margin-top: 4px;
+      }
+
+      .setting-control {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+
+      select,
+      input[type='number'],
+      input[type='range'] {
+        padding: 10px 12px;
+        border: 1px solid #ddd;
+        border-radius: 8px;
+        font-size: 14px;
+        font-family: inherit;
+        color: inherit;
+      }
+
+      select:focus,
+      input:focus {
+        outline: none;
+        border-color: #1185fe;
+        box-shadow: 0 0 0 2px rgba(17, 133, 254, 0.1);
+      }
+
+      input[type='checkbox'] {
+        width: 18px;
+        height: 18px;
+        cursor: pointer;
+        accent-color: #1185fe;
+      }
+
+      .checkbox-group {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      .radio-group {
+        display: flex;
+        gap: 16px;
+      }
+
+      .radio-option {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        cursor: pointer;
+      }
+
+      .radio-option input[type='radio'] {
+        width: 16px;
+        height: 16px;
+        cursor: pointer;
+        accent-color: #1185fe;
+      }
+
+      .slider-container {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      input[type='range'] {
+        flex: 1;
+        padding: 0;
+        height: 6px;
+        width: 100%;
+        cursor: pointer;
+      }
+
+      .slider-value {
+        min-width: 40px;
+        text-align: right;
+        font-size: 14px;
+        font-weight: 500;
+      }
+
+      .button-group {
+        display: flex;
+        gap: 12px;
+        margin-top: 32px;
+        padding-top: 24px;
+        border-top: 1px solid #f0f0f0;
+      }
+
+      button {
+        padding: 12px 24px;
+        border-radius: 8px;
+        font-size: 14px;
+        font-weight: 600;
+        border: none;
+        cursor: pointer;
+        transition: all 0.15s ease;
+        font-family: inherit;
+      }
+
+      .btn-primary {
+        background: #1185fe;
+        color: white;
+        flex: 1;
+      }
+
+      .btn-primary:hover {
+        background: #0070dd;
+        transform: scale(1.01);
+      }
+
+      .btn-secondary {
+        background: #f0f0f0;
+        color: #1a1a1a;
+      }
+
+      .btn-secondary:hover {
+        background: #e5e5e5;
+      }
+
+      .btn-secondary:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
+      .status-message {
+        padding: 12px 16px;
+        border-radius: 8px;
+        margin-bottom: 16px;
+        display: none;
+        font-size: 14px;
+      }
+
+      .status-message.show {
+        display: block;
+      }
+
+      .status-message.success {
+        background: #dcfce7;
+        color: #166534;
+        border: 1px solid #bbf7d0;
+      }
+
+      .status-message.error {
+        background: #fee2e2;
+        color: #991b1b;
+        border: 1px solid #fecaca;
+      }
+
+      .form-column {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 20px;
+      }
+
+      @media (max-width: 600px) {
+        .container {
+          padding: 16px;
+        }
+
+        .setting-group {
+          grid-template-columns: 1fr;
+          gap: 8px;
+        }
+
+        .header h1 {
+          font-size: 24px;
+        }
+      }
+
+      /* Tooltip Component */
+      .tooltip-wrapper {
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+      }
+
+      .tooltip-trigger {
+        display: inline-flex;
+        align-items: center;
+      }
+
+      .tooltip-content {
+        position: absolute;
+        z-index: 1000;
+        padding: 8px 12px;
+        background: #1a1a1a;
+        color: #fff;
+        font-size: 13px;
+        font-weight: 500;
+        line-height: 1.4;
+        border-radius: 6px;
+        max-width: 240px;
+        white-space: normal;
+        pointer-events: none;
+        opacity: 0;
+        visibility: hidden;
+        transition:
+          opacity 0.15s ease-in-out,
+          visibility 0.15s ease-in-out;
+      }
+
+      /* Position variants */
+      .tooltip-wrapper[data-tooltip-position='top'] .tooltip-content {
+        bottom: calc(100% + 8px);
+        left: 50%;
+        transform: translateX(-50%);
+      }
+
+      .tooltip-wrapper[data-tooltip-position='bottom'] .tooltip-content {
+        top: calc(100% + 8px);
+        left: 50%;
+        transform: translateX(-50%);
+      }
+
+      .tooltip-wrapper[data-tooltip-position='left'] .tooltip-content {
+        right: calc(100% + 8px);
+        top: 50%;
+        transform: translateY(-50%);
+      }
+
+      .tooltip-wrapper[data-tooltip-position='right'] .tooltip-content {
+        left: calc(100% + 8px);
+        top: 50%;
+        transform: translateY(-50%);
+      }
+
+      /* Show on hover and focus */
+      .tooltip-wrapper:hover .tooltip-content,
+      .tooltip-wrapper:focus-within .tooltip-content {
+        opacity: 1;
+        visibility: visible;
+      }
+
+      /* Arrow indicator */
+      .tooltip-content::before {
+        content: '';
+        position: absolute;
+        border: 5px solid transparent;
+      }
+
+      .tooltip-wrapper[data-tooltip-position='top'] .tooltip-content::before {
+        top: 100%;
+        left: 50%;
+        transform: translateX(-50%);
+        border-top-color: #1a1a1a;
+      }
+
+      .tooltip-wrapper[data-tooltip-position='bottom'] .tooltip-content::before {
+        bottom: 100%;
+        left: 50%;
+        transform: translateX(-50%);
+        border-bottom-color: #1a1a1a;
+      }
+
+      .tooltip-wrapper[data-tooltip-position='left'] .tooltip-content::before {
+        left: 100%;
+        top: 50%;
+        transform: translateY(-50%);
+        border-left-color: #1a1a1a;
+      }
+
+      .tooltip-wrapper[data-tooltip-position='right'] .tooltip-content::before {
+        right: 100%;
+        top: 50%;
+        transform: translateY(-50%);
+        border-right-color: #1a1a1a;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="options.js"></script>
+  </body>
+</html>

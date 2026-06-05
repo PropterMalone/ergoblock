@@ -1,0 +1,56 @@
+name: PR Checks
+
+on:
+  pull_request:
+    branches: [master, main]
+
+jobs:
+  test-and-lint:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [22.x]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Security audit
+        run: npm audit --audit-level=moderate
+
+      - name: Run linter
+        run: npm run lint
+
+      - name: Type check
+        run: npm run type-check
+
+      - name: Check code formatting
+        run: npm run format:check
+
+      - name: Run tests with coverage
+        run: npm test -- --coverage > coverage_output.txt 2>&1 || (cat coverage_output.txt && exit 1)
+
+      - name: Add coverage to summary
+        if: always()
+        run: |
+          if [ -f coverage_output.txt ]; then
+            echo "### Test Coverage Summary" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            # Extract the table from vitest output (usually starts with '----------')
+            sed -n '/----/,/----/p' coverage_output.txt >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          else
+            echo "### Test Coverage Summary" >> $GITHUB_STEP_SUMMARY
+            echo "No coverage output found. Check previous step logs." >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Build verification
+        run: npm run build
