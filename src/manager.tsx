@@ -41,6 +41,8 @@ import {
   selectedItems,
   clearSelection,
   loading,
+  quotePostRef,
+  quoteAutoFetch,
   tempUnblockTimers,
   setInteractions,
   setExpandedLoading,
@@ -58,6 +60,7 @@ import {
   RepostFiltersTab,
   MassOpsTab,
   CopyUserTab,
+  QuoteSweepTab,
   SettingsTab,
   ExportSection,
   formatTimeAgo,
@@ -115,6 +118,20 @@ function ManagerApp(): JSX.Element {
     const interval = setInterval(loadData, 30000);
     return () => clearInterval(interval);
   }, [loadData]);
+
+  // Auto-fill from URL params: ?tab=quote-sweep&postUri=<encoded at-uri>
+  // Switches to the Quote Sweep tab and prefills/auto-triggers the fetch.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('tab') === 'quote-sweep') {
+      currentTab.value = 'quote-sweep';
+      const postUri = params.get('postUri');
+      if (postUri) {
+        quotePostRef.value = postUri;
+        quoteAutoFetch.value = true;
+      }
+    }
+  }, []);
 
   // Sync handler
   const handleSync = async () => {
@@ -403,6 +420,8 @@ function ManagerApp(): JSX.Element {
         return <MassOpsTab onReload={loadData} />;
       case 'copy-user':
         return <CopyUserTab onReload={loadData} />;
+      case 'quote-sweep':
+        return <QuoteSweepTab onReload={loadData} />;
       case 'settings':
         return <SettingsTab onReload={loadData} />;
       default:

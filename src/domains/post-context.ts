@@ -3,7 +3,7 @@
  * Extracts AT Protocol post URIs from the DOM when blocking/muting
  */
 
-import type { PostContext, NotificationReason } from '../types.js';
+import type { PostContext, SerializedPostContext, NotificationReason } from '../types.js';
 import { addPostContext, getOptions } from '../platform/storage.js';
 import { generateId, createLogger } from '../platform/utils.js';
 
@@ -181,9 +181,16 @@ export interface NotificationContext {
 }
 
 /**
- * Capture post context when blocking/muting from a post
+ * Build a serializable post context from the DOM without persisting it.
+ *
+ * This is the content-script half of the create flow: it reads the page DOM
+ * (which the background has no access to) and returns a structured-clonable
+ * SerializedPostContext that is threaded through the CREATE_TEMP_ACTION message
+ * and persisted by the background create primitive. Returns null when the user
+ * has post-context capture disabled or extraction fails — callers treat both as
+ * "no context to save".
  */
-export async function capturePostContext(
+export async function buildPostContext(
   postContainer: HTMLElement | null,
   targetHandle: string,
   targetDid: string,
@@ -191,7 +198,7 @@ export async function capturePostContext(
   permanent: boolean,
   engagementContext?: EngagementContext | null,
   notificationContext?: NotificationContext | null
-): Promise<PostContext | null> {
+): Promise<SerializedPostContext | null> {
   const options = await getOptions();
 
   if (!options.savePostContext) {
@@ -217,10 +224,9 @@ export async function capturePostContext(
       }
     }
 
-    // Always save context, even without a post URI
+    // Always build context, even without a post URI
     // This happens when blocking from a profile page or when URI extraction fails
-    const context: PostContext = {
-      id: generateContextId(),
+    return {
       postUri: postUri || '', // Empty string if no URI found
       postAuthorDid,
       postAuthorHandle,
@@ -237,11 +243,43 @@ export async function capturePostContext(
       notificationType: notificationContext?.notificationType,
       notificationSubjectUri: notificationContext?.subjectUri,
     };
-
-    await addPostContext(context);
-    return context;
   } catch (error) {
-    log.error('Failed to capture post context:', error);
+    log.error('Failed to build post context:', error);
     return null;
   }
+}
+
+/**
+ * Capture post context when blocking/muting from a post and persist it locally.
+ * Convenience wrapper around buildPostContext + addPostContext for callers that
+ * persist directly (e.g. delayed Last Word blocks scheduled in the background).
+ */
+export async function capturePostContext(
+  postContainer: HTMLElement | null,
+  targetHandle: string,
+  targetDid: string,
+  actionType: 'block' | 'mute',
+  permanent: boolean,
+  engagementContext?: EngagementContext | null,
+  notificationContext?: NotificationContext | null
+): Promise<PostContext | null> {
+  const serialized = await buildPostContext(
+    postContainer,
+    targetHandle,
+    targetDid,
+    actionType,
+    permanent,
+    engagementContext,
+    notificationContext
+  );
+  if (!serialized) return null;
+
+  const context: PostContext = { id: generateContextId(), ...serialized };
+  try {
+    await addPostContext(context);
+  } catch (error) {
+    log.error('Failed to save post context:', error);
+    return null;
+  }
+  return context;
 }

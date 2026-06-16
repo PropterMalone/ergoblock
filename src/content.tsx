@@ -5,29 +5,16 @@
 import { render } from 'preact';
 import browser from './platform/browser.js';
 import { send } from './platform/messages.js';
+import { getSession, getProfile, getProfiles, muteUser, unmuteUser } from './platform/api.js';
 import {
-  getSession,
-  getProfile,
-  getProfiles,
-  blockUser,
-  muteUser,
-  unblockUser,
-  unmuteUser,
-} from './platform/api.js';
-import {
-  addTempBlock,
-  addTempMute,
   isRepostFiltered,
   addRepostFilteredUser,
   removeRepostFilteredUser,
-  preCheckStorageQuota,
-  calculateEntrySize,
-  StorageQuotaError,
   getOptions,
-  addPendingRollback,
 } from './platform/storage.js';
 import type { RepostFilteredUser, LastWordOptions } from './types.js';
 import {
+  buildPostContext,
   capturePostContext,
   findPostContainer,
   type EngagementContext,
@@ -727,6 +714,19 @@ function closeMenus(): void {
 }
 
 /**
+ * Build a NotificationContext from the most-recently captured notification info,
+ * or null when the action did not originate from a notification.
+ */
+function buildNotificationContext(): NotificationContext | null {
+  if (!capturedNotificationInfo?.notificationType) return null;
+  return {
+    notificationType: capturedNotificationInfo.notificationType,
+    subjectUri: capturedNotificationInfo.subjectUri || undefined,
+    sourceUrl: window.location.href,
+  };
+}
+
+/**
  * Handle temp block action
  */
 async function handleTempBlock(
@@ -771,88 +771,34 @@ async function handleTempBlock(
       return;
     }
 
-    // Pre-check storage quota BEFORE making API call to avoid desync
-    // where block succeeds on Bluesky but fails to save locally
-    // Use actual calculated size instead of estimate for accuracy
-    const estimatedSize = calculateEntrySize(profile.did, profile.handle || handle, durationMs);
-    try {
-      await preCheckStorageQuota(estimatedSize);
-    } catch (quotaError) {
-      if (quotaError instanceof StorageQuotaError) {
-        throw new Error(
-          `Storage full (${Math.round(quotaError.quotaInfo.percentUsed * 100)}% used). ` +
-            `Please remove some temp blocks/mutes first.`
-        );
-      }
-      throw quotaError;
-    }
-
-    const blockResult = await blockUser(profile.did);
-
-    let rkey: string | undefined;
-    if (blockResult && blockResult.uri) {
-      const parts = blockResult.uri.split('/');
-      const lastPart = parts[parts.length - 1];
-      if (lastPart) {
-        rkey = lastPart;
-      }
-    }
-
-    // Try to save to storage - if this fails, we need to rollback the API call
-    try {
-      await addTempBlock(profile.did, profile.handle || handle, durationMs, rkey);
-    } catch (storageError) {
-      // Storage failed after API succeeded - rollback by unblocking
-      log.error('Storage failed after block, rolling back:', storageError);
-      try {
-        await unblockUser(profile.did, rkey);
-        log.info('Rollback successful - user unblocked');
-      } catch (rollbackError) {
-        // Rollback failed - add to pending rollback queue for background processing
-        log.error('Immediate rollback failed, queuing for retry:', rollbackError);
-        try {
-          await addPendingRollback({
-            type: 'unblock',
-            did: profile.did,
-            handle: profile.handle || handle,
-            rkey,
-          });
-          log.info('Added to pending rollback queue');
-        } catch (queueError) {
-          log.error('Failed to queue rollback:', queueError);
-        }
-        throw new Error(
-          `Block saved to Bluesky but local storage failed. ` +
-            `Unblock has been queued for retry. ` +
-            `Original error: ${(storageError as Error).message}`
-        );
-      }
-      throw storageError;
-    }
-
-    // Build notification context if we have notification info
-    const notifContext: NotificationContext | null = capturedNotificationInfo?.notificationType
-      ? {
-          notificationType: capturedNotificationInfo.notificationType,
-          subjectUri: capturedNotificationInfo.subjectUri || undefined,
-          sourceUrl: window.location.href,
-        }
-      : null;
-
-    capturePostContext(
+    // Serialize DOM-derived post context here (the background has no page session),
+    // then delegate the create (quota pre-check, API call, storage write, rollback,
+    // read-back verification) to the unified background primitive.
+    const postContext = await buildPostContext(
       postContainer,
       handle,
       profile.did,
       'block',
       false,
       currentEngagementContext,
-      notifContext
-    ).catch((e) => log.warn('Post context capture failed:', e));
+      buildNotificationContext()
+    );
 
-    // Clear captured notification info after use
+    // Clear captured DOM refs after serialization to prevent memory leaks
     capturedNotificationInfo = null;
-    // Clear captured post container to prevent memory leak
     capturedPostContainer = null;
+
+    const result = await send('CREATE_TEMP_ACTION', {
+      did: profile.did,
+      handle: profile.handle || handle,
+      durationMs,
+      isMute: false,
+      isPermanent: false,
+      postContext,
+    });
+    if (!result.success) {
+      throw new Error(result.error || 'Failed to block');
+    }
 
     closeMenus();
     showToast(`Temporarily blocked @${profile.handle || handle} for ${durationLabel}`);
@@ -895,78 +841,33 @@ async function handleTempMute(
       throw new Error('Cannot mute yourself');
     }
 
-    // Pre-check storage quota BEFORE making API call to avoid desync
-    // where mute succeeds on Bluesky but fails to save locally
-    // Use actual calculated size instead of estimate for accuracy
-    const estimatedSize = calculateEntrySize(profile.did, profile.handle || handle, durationMs);
-    try {
-      await preCheckStorageQuota(estimatedSize);
-    } catch (quotaError) {
-      if (quotaError instanceof StorageQuotaError) {
-        throw new Error(
-          `Storage full (${Math.round(quotaError.quotaInfo.percentUsed * 100)}% used). ` +
-            `Please remove some temp blocks/mutes first.`
-        );
-      }
-      throw quotaError;
-    }
-
-    await muteUser(profile.did);
-
-    // Try to save to storage - if this fails, we need to rollback the API call
-    try {
-      await addTempMute(profile.did, profile.handle || handle, durationMs);
-    } catch (storageError) {
-      // Storage failed after API succeeded - rollback by unmuting
-      log.error('Storage failed after mute, rolling back:', storageError);
-      try {
-        await unmuteUser(profile.did);
-        log.info('Rollback successful - user unmuted');
-      } catch (rollbackError) {
-        // Rollback failed - add to pending rollback queue for background processing
-        log.error('Immediate rollback failed, queuing for retry:', rollbackError);
-        try {
-          await addPendingRollback({
-            type: 'unmute',
-            did: profile.did,
-            handle: profile.handle || handle,
-          });
-          log.info('Added to pending rollback queue');
-        } catch (queueError) {
-          log.error('Failed to queue rollback:', queueError);
-        }
-        throw new Error(
-          `Mute saved to Bluesky but local storage failed. ` +
-            `Unmute has been queued for retry. ` +
-            `Original error: ${(storageError as Error).message}`
-        );
-      }
-      throw storageError;
-    }
-
-    // Build notification context if we have notification info
-    const notifContext: NotificationContext | null = capturedNotificationInfo?.notificationType
-      ? {
-          notificationType: capturedNotificationInfo.notificationType,
-          subjectUri: capturedNotificationInfo.subjectUri || undefined,
-          sourceUrl: window.location.href,
-        }
-      : null;
-
-    capturePostContext(
+    // Serialize DOM-derived post context, then delegate to the unified primitive
+    // (quota pre-check, API call, storage write, rollback, read-back verification).
+    const postContext = await buildPostContext(
       postContainer,
       handle,
       profile.did,
       'mute',
       false,
       currentEngagementContext,
-      notifContext
-    ).catch((e) => log.warn('Post context capture failed:', e));
+      buildNotificationContext()
+    );
 
-    // Clear captured notification info after use
+    // Clear captured DOM refs after serialization to prevent memory leaks
     capturedNotificationInfo = null;
-    // Clear captured post container to prevent memory leak
     capturedPostContainer = null;
+
+    const result = await send('CREATE_TEMP_ACTION', {
+      did: profile.did,
+      handle: profile.handle || handle,
+      durationMs,
+      isMute: true,
+      isPermanent: false,
+      postContext,
+    });
+    if (!result.success) {
+      throw new Error(result.error || 'Failed to mute');
+    }
 
     closeMenus();
     showToast(`Temporarily muted @${profile.handle || handle} for ${durationLabel}`);
@@ -1032,16 +933,8 @@ async function handleLastWordBlock(
       throw new Error(response?.error || 'Failed to schedule delayed block');
     }
 
-    // Build notification context if we have notification info
-    const notifContext: NotificationContext | null = capturedNotificationInfo?.notificationType
-      ? {
-          notificationType: capturedNotificationInfo.notificationType,
-          subjectUri: capturedNotificationInfo.subjectUri || undefined,
-          sourceUrl: window.location.href,
-        }
-      : null;
-
-    // Capture post context now (before the block happens)
+    // Capture post context now (before the delayed block happens). The delayed-block
+    // path persists locally here because the block itself fires later in the background.
     capturePostContext(
       postContainer,
       handle,
@@ -1049,7 +942,7 @@ async function handleLastWordBlock(
       'block',
       permanent,
       currentEngagementContext,
-      notifContext
+      buildNotificationContext()
     ).catch((e) => log.warn('Post context capture failed:', e));
 
     // Clear captured notification info after use
@@ -1110,33 +1003,35 @@ async function handlePermanentAction(
       return;
     }
 
-    if (actionType === 'block') {
-      await blockUser(profile.did);
-    } else {
-      await muteUser(profile.did);
-    }
-
-    // Build notification context if we have notification info
-    const notifContext: NotificationContext | null = capturedNotificationInfo?.notificationType
-      ? {
-          notificationType: capturedNotificationInfo.notificationType,
-          subjectUri: capturedNotificationInfo.subjectUri || undefined,
-          sourceUrl: window.location.href,
-        }
-      : null;
-
-    capturePostContext(
+    // Serialize DOM-derived post context, then delegate to the unified primitive.
+    // Permanent actions route through the same primitive (isPermanent gates storage),
+    // which also writes permanent LOCAL storage — previously the content path wrote
+    // none, leaving permanent actions untracked locally.
+    const postContext = await buildPostContext(
       postContainer,
       handle,
       profile.did,
       actionType,
       true,
       currentEngagementContext,
-      notifContext
-    ).catch((e) => log.warn('Post context capture failed:', e));
+      buildNotificationContext()
+    );
 
-    // Clear captured notification info after use
+    // Clear captured DOM refs after serialization to prevent memory leaks
     capturedNotificationInfo = null;
+    capturedPostContainer = null;
+
+    const result = await send('CREATE_TEMP_ACTION', {
+      did: profile.did,
+      handle: profile.handle || handle,
+      durationMs: 0, // ignored for permanent actions; isPermanent is the sole gate
+      isMute: actionType === 'mute',
+      isPermanent: true,
+      postContext,
+    });
+    if (!result.success) {
+      throw new Error(result.error || `Failed to ${actionType}`);
+    }
 
     closeMenus();
     showToast(
@@ -1273,6 +1168,78 @@ function injectMenuItems(menu: Element): void {
 
   // Try to inject QT Peek option (only if post has a concealed quote embed)
   injectPeekOption(menu);
+
+  // Try to inject "Sweep quotes" option (only on menus tied to a resolvable post)
+  injectSweepQuotesOption(menu);
+}
+
+/**
+ * Inject a "Sweep quotes" item into a post menu. On click, open the manager's Quote
+ * Sweep tab pre-filled with the post's at-uri so the user can fetch + bulk-block its
+ * quote posters.
+ *
+ * Mirrors injectPeekOption's clone-and-modify pattern. The post at-uri comes from the
+ * same lastClickedPostContainer / findPostContainer machinery the peek flow uses.
+ *
+ * Note: this opens the extension page via window.open(runtime.getURL(...)) rather than
+ * browser.tabs.create — the content script has no "tabs" permission, and a top-level
+ * navigation to an extension URL works without one.
+ */
+function injectSweepQuotesOption(menu: Element): void {
+  // Don't inject if already present.
+  if (menu.querySelector('[data-ergoblock-sweep-quotes]')) return;
+
+  // Resolve the post container the same way the peek flow does.
+  const postContainer =
+    lastClickedPostContainer || (lastClickedElement ? findPostContainer(lastClickedElement) : null);
+  if (!postContainer) return;
+
+  // Only offer the sweep when we can extract a post at-uri.
+  const atUri = extractParentPostUri(postContainer);
+  if (!atUri) return;
+
+  // Clone an existing menu item for style matching.
+  const existingMenuItem = menu.querySelector(CONFIG.SELECTORS.MENU_ITEM);
+  if (!existingMenuItem) return;
+
+  const sweepItem = existingMenuItem.cloneNode(true) as HTMLElement;
+  sweepItem.setAttribute('role', 'menuitem');
+  sweepItem.setAttribute('data-ergoblock-sweep-quotes', 'true');
+  sweepItem.setAttribute('tabindex', '0');
+
+  const textLabel = 'Sweep quotes';
+  const updateText = (el: Element): boolean => {
+    for (const child of el.childNodes) {
+      if (child.nodeType === Node.TEXT_NODE && child.textContent?.trim()) {
+        child.textContent = textLabel;
+        return true;
+      }
+    }
+    for (const child of el.children) {
+      if (updateText(child)) return true;
+    }
+    return false;
+  };
+  if (!updateText(sweepItem)) {
+    sweepItem.textContent = textLabel;
+  }
+
+  const svg = sweepItem.querySelector('svg');
+  if (svg) svg.remove();
+
+  sweepItem.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    closeMenus();
+    const url =
+      browser.runtime.getURL('manager.html') +
+      '?tab=quote-sweep&postUri=' +
+      encodeURIComponent(atUri);
+    window.open(url, '_blank');
+  });
+
+  const menuContainer = menu.querySelector(CONFIG.SELECTORS.MENU) || menu;
+  menuContainer.appendChild(sweepItem);
 }
 
 /**

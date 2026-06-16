@@ -8,6 +8,10 @@ import {
   getTempMutes,
   getPermanentBlocks,
   getPermanentMutes,
+  removeTempBlock,
+  removeTempMute,
+  removePermanentBlock,
+  removePermanentMute,
 } from './platform/storage.js';
 import { Mark, Wordmark, Btn, Icon } from './ui/components/shared/index.js';
 import { createLogger } from './platform/utils.js';
@@ -228,19 +232,15 @@ async function performUnblockOrUnmute(): Promise<void> {
       : await send('UNMUTE_USER', { did: cur.profile.did });
     if (!res.success) throw new Error(res.error || 'Action failed');
 
-    // Also clear local storage entry
+    // Also clear local storage entry via typed helpers. Temp lives in sync storage,
+    // permanent lives in local storage — the previous hand-rolled writes deleted from a
+    // local read but wrote to sync, never touching real permanent storage (dead write).
     if (isBlock) {
-      const tempBlocks = await getTempBlocks();
-      const permBlocks = await getPermanentBlocks();
-      delete tempBlocks[cur.profile.did];
-      delete permBlocks[cur.profile.did];
-      await browser.storage.sync.set({ tempBlocks, permanentBlocks: permBlocks });
+      await removeTempBlock(cur.profile.did);
+      await removePermanentBlock(cur.profile.did);
     } else {
-      const tempMutes = await getTempMutes();
-      const permMutes = await getPermanentMutes();
-      delete tempMutes[cur.profile.did];
-      delete permMutes[cur.profile.did];
-      await browser.storage.sync.set({ tempMutes, permanentMutes: permMutes });
+      await removeTempMute(cur.profile.did);
+      await removePermanentMute(cur.profile.did);
     }
 
     showStatus(isBlock ? `Unblocked @${cur.profile.handle}` : `Unmuted @${cur.profile.handle}`);

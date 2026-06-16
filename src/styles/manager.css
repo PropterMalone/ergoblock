@@ -3423,6 +3423,19 @@ tr.expanded-row > td {
   font-size: var(--font-size-1);
 }
 
+/* Quote Sweep: non-fatal warning notice (unreliable viewer state / truncated results) */
+.copy-user-warning {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  margin-bottom: var(--space-md);
+  padding: var(--space-sm) var(--space-md);
+  background: var(--yellow-1);
+  color: var(--yellow-8);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-1);
+}
+
 /* Target user card */
 .copy-user-target-card {
   display: flex;
@@ -3826,6 +3839,82 @@ tr.expanded-row > td {
   .copy-user-handle-input {
     width: 100%;
     max-width: 300px;
+  }
+}
+
+/* Quote Sweep — controls bar (reuses copy-user-* for cards, lists, and rows) */
+.quote-sweep-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-md);
+  margin: var(--space-md) 0;
+  padding: var(--space-sm) var(--space-md);
+  background: var(--surface-2);
+  border-radius: var(--radius-md);
+}
+
+.quote-sweep-action-toggle {
+  display: inline-flex;
+  gap: var(--space-xs);
+}
+
+.quote-sweep-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: var(--space-xs) var(--space-md);
+  background: var(--surface-1);
+  color: var(--text-2);
+  border: 1px solid var(--border-1, var(--gray-4));
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-1);
+  font-weight: var(--font-weight-5);
+  cursor: pointer;
+  transition: all var(--ease-2) 0.2s;
+}
+
+.quote-sweep-toggle-btn:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+
+.quote-sweep-toggle-btn.active {
+  background: var(--brand-primary);
+  color: white;
+  border-color: var(--brand-primary);
+}
+
+.quote-sweep-toggle-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.quote-sweep-duration {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.quote-sweep-duration-label {
+  font-size: var(--font-size-1);
+  color: var(--text-2);
+}
+
+.quote-sweep-duration-select {
+  padding: var(--space-xs) var(--space-sm);
+  background: var(--surface-1);
+  color: var(--text-1);
+  border: 1px solid var(--border-1, var(--gray-4));
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-1);
+  cursor: pointer;
+}
+
+@media (max-width: 768px) {
+  .quote-sweep-controls {
+    flex-direction: column;
+    align-items: stretch;
   }
 }
 

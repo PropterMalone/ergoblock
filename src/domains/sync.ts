@@ -33,7 +33,18 @@ const log = createLogger('bg:sync');
 export const syncMutex = new Mutex();
 
 /**
- * Fetch all blocks from Bluesky with pagination (profile data)
+ * Propagation grace window. A block/mute just created (e.g. seconds ago) may not yet be
+ * reflected in the AppView's getBlocks/getMutes due to eventual consistency. We must NOT
+ * treat such an entry's absence from a remote fetch as "externally removed" and delete it,
+ * or freshly-created temp actions vanish ("blocks then vanishes" bug). Entries younger than
+ * this are skipped during reconciliation-delete.
+ */
+const SYNC_PROPAGATION_GRACE_MS = 5 * 60 * 1000;
+
+/**
+ * Fetch all blocks from Bluesky with pagination (profile data).
+ * Throws on a null/undefined page response so a partial/failed fetch fails the whole sync
+ * rather than silently contributing zero rows (which would trigger spurious deletions).
  */
 async function fetchAllBlocks(auth: AuthData): Promise<ProfileView[]> {
   const allBlocks: ProfileView[] = [];
@@ -53,10 +64,13 @@ async function fetchAllBlocks(auth: AuthData): Promise<ProfileView[]> {
       auth.pdsUrl
     );
 
-    if (response?.blocks) {
+    if (!response) {
+      throw new Error('getBlocks returned no response (incomplete fetch); aborting sync');
+    }
+    if (response.blocks) {
       allBlocks.push(...response.blocks);
     }
-    cursor = response?.cursor;
+    cursor = response.cursor;
 
     if (cursor) {
       await sleep(PAGINATION_DELAY);
@@ -87,10 +101,13 @@ async function fetchAllBlockRecords(auth: AuthData): Promise<BlockRecord[]> {
       auth.pdsUrl
     );
 
-    if (response?.records) {
+    if (!response) {
+      throw new Error('listRecords(blocks) returned no response (incomplete fetch); aborting sync');
+    }
+    if (response.records) {
       allRecords.push(...response.records);
     }
-    cursor = response?.cursor;
+    cursor = response.cursor;
 
     if (cursor) {
       await sleep(PAGINATION_DELAY);
@@ -121,10 +138,13 @@ async function fetchAllMutes(auth: AuthData): Promise<ProfileView[]> {
       auth.pdsUrl
     );
 
-    if (response?.mutes) {
+    if (!response) {
+      throw new Error('getMutes returned no response (incomplete fetch); aborting sync');
+    }
+    if (response.mutes) {
       allMutes.push(...response.mutes);
     }
-    cursor = response?.cursor;
+    cursor = response.cursor;
 
     if (cursor) {
       await sleep(PAGINATION_DELAY);
@@ -238,9 +258,21 @@ async function syncBlocks(
     }
   }
 
-  // Check for temp blocks that no longer exist in Bluesky (user unblocked externally)
+  // Check for temp blocks that no longer exist in Bluesky (user unblocked externally).
+  // The fetch is provably complete here — fetchAllBlocks throws on any null page, so we
+  // only reach this point with every page fetched and the cursor exhausted. Still, skip
+  // entries within the propagation grace window: a just-created block may not yet appear
+  // in the AppView, and deleting it would erase a valid action ("blocks then vanishes").
   for (const did of Object.keys(tempBlocks)) {
     if (!bskyBlockDids.has(did)) {
+      const createdAt = tempBlocks[did].createdAt;
+      if (createdAt && now - createdAt < SYNC_PROPAGATION_GRACE_MS) {
+        log.info(
+          'Skipping reconciliation-delete for recently-created block:',
+          tempBlocks[did].handle
+        );
+        continue;
+      }
       log.info('Temp block removed externally:', tempBlocks[did].handle);
       await removeTempBlock(did);
       await addHistoryEntry({
@@ -336,9 +368,19 @@ async function syncMutes(auth: AuthData): Promise<{ added: number; removed: numb
     }
   }
 
-  // Check for temp mutes that no longer exist in Bluesky (user unmuted externally)
+  // Check for temp mutes that no longer exist in Bluesky (user unmuted externally).
+  // Same reasoning as syncBlocks: fetch is provably complete (fetchAllMutes throws on a
+  // null page), and we skip entries within the propagation grace window.
   for (const did of Object.keys(tempMutes)) {
     if (!bskyMuteDids.has(did)) {
+      const createdAt = tempMutes[did].createdAt;
+      if (createdAt && now - createdAt < SYNC_PROPAGATION_GRACE_MS) {
+        log.info(
+          'Skipping reconciliation-delete for recently-created mute:',
+          tempMutes[did].handle
+        );
+        continue;
+      }
       log.info('Temp mute removed externally:', tempMutes[did].handle);
       await removeTempMute(did);
       await addHistoryEntry({

@@ -251,6 +251,20 @@ export interface PermanentBlockMute {
 }
 
 /**
+ * A single quoter row returned by GET_QUOTE_POSTERS and rendered in the Quote Sweep tab.
+ * Canonical definition — imported by the domain handler, the message registry, and the
+ * manager signals so the three never drift.
+ */
+export interface QuotePoster {
+  did: string;
+  handle: string;
+  displayName?: string;
+  avatar?: string;
+  alreadyBlocked: boolean;
+  alreadyMuted: boolean;
+}
+
+/**
  * Combined block/mute entry for manager UI
  */
 export interface ManagedEntry {
@@ -303,6 +317,14 @@ export interface PostContext {
   notificationType?: NotificationReason; // Type of notification that triggered the block
   notificationSubjectUri?: string; // The post/content that generated the notification
 }
+
+/**
+ * Post context serialized in the content script (DOM-derived) and passed across
+ * the CREATE_TEMP_ACTION message boundary to the background create primitive,
+ * which persists it. The `id` is assigned by the primitive on persist, so it is
+ * omitted here. Everything else mirrors PostContext and must be structured-clonable.
+ */
+export type SerializedPostContext = Omit<PostContext, 'id'>;
 
 /**
  * An interaction between two users (reply, quote, or mention)

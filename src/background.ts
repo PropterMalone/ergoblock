@@ -70,6 +70,7 @@ import {
   handleDebugFindOrphanBlocks,
 } from './domains/pds-tools.js';
 import { handleResolveHandle, handleFetchPostsPublic } from './domains/public-api.js';
+import { handleFetchQuotePosters, handleBulkTempAction } from './domains/quote-sweep.js';
 import { handleImportData } from './domains/import-export.js';
 import {
   handleClearClearskyCache,
@@ -188,8 +189,8 @@ const handlers = createHandlerMap({
   SYNC_NOW: async () => performFullSync(),
 
   // ── Block/mute operations ──────────────────────────────────────────────
-  CREATE_TEMP_ACTION: async ({ did, handle, durationMs, isMute, isPermanent }) =>
-    handleCreateTempAction(did, handle, durationMs, isMute, isPermanent),
+  CREATE_TEMP_ACTION: async ({ did, handle, durationMs, isMute, isPermanent, postContext }) =>
+    handleCreateTempAction(did, handle, durationMs, isMute, isPermanent, postContext),
   UNBLOCK_USER: async ({ did }) => handleUnblockRequest(did),
   UNMUTE_USER: async ({ did }) => handleUnmuteRequest(did),
   TEMP_UNBLOCK_FOR_VIEW: async ({ did }) => handleTempUnblockForView(did),
@@ -281,6 +282,11 @@ const handlers = createHandlerMap({
   DEBUG_FIND_ORPHAN_BLOCKS: async () => handleDebugFindOrphanBlocks(),
   FETCH_POSTS_PUBLIC: async ({ uris }) => handleFetchPostsPublic(uris),
   IMPORT_DATA: async ({ data, options }) => handleImportData(data, options),
+
+  // ── Quote Sweep ────────────────────────────────────────────────────────
+  GET_QUOTE_POSTERS: async ({ postRef }) => handleFetchQuotePosters(postRef),
+  BULK_TEMP_ACTION: async ({ dids, handles, isMute, durationMs, isPermanent }) =>
+    handleBulkTempAction(dids, handles, isMute, durationMs, isPermanent),
 
   // ── Review Queue ────────────────────────────────────────────────────
   ASSIGN_DURATION_TO_PERMANENT: async ({ did, actionType, duration }) =>

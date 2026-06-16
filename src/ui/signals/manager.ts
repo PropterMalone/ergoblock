@@ -18,6 +18,7 @@ import type {
   MassOpsSettings,
   ProfileWithViewer,
   PermanentBlockMute,
+  QuotePoster,
 } from '../../types.js';
 import { DEFAULT_MASS_OPS_SETTINGS } from '../../types.js';
 
@@ -169,6 +170,7 @@ export type TabType =
   | 'repost-filters'
   | 'mass-ops'
   | 'copy-user'
+  | 'quote-sweep'
   | 'settings';
 export type SortColumn = 'user' | 'type' | 'source' | 'status' | 'amnesty' | 'expires' | 'date';
 export type SortDirection = 'asc' | 'desc';
@@ -539,4 +541,63 @@ export function selectAllCopyUserBlocks(dids: string[]): void {
  */
 export function deselectAllCopyUserBlocks(): void {
   copyUserSelectedBlocks.value = new Set();
+}
+
+// ============================================================================
+// Quote Sweep State
+// ============================================================================
+
+// QuotePoster is the canonical shape (types.ts); re-export so existing importers
+// (e.g. QuoteSweepTab) keep their `from '../../signals/manager.js'` import path.
+export type { QuotePoster };
+
+export type QuoteActionType = 'block' | 'mute';
+
+export const quotePostRef = signal<string>('');
+export const quoteSubject = signal<string | null>(null);
+export const quoteQuoters = signal<QuotePoster[]>([]);
+export const quoteSelected = signal<Set<string>>(new Set());
+export const quoteActionType = signal<QuoteActionType>('block');
+// Duration in ms; -1 = permanent (matches the create primitive's isPermanent gate).
+export const quoteDuration = signal<number>(7 * 24 * 60 * 60 * 1000);
+export const quoteLoading = signal(false);
+export const quoteExecuting = signal(false);
+export const quoteError = signal<string | null>(null);
+// True when the last fetch couldn't resolve viewer state (no auth / short profile fetch):
+// the already-blocked/muted flags are unreliable, so the tab warns and skips select-all.
+export const quoteViewerStateUnavailable = signal(false);
+// True when the last fetch hit the pagination cap (quoter list is incomplete).
+export const quoteTruncated = signal(false);
+// Set true by the URL-param auto-fill so the tab fires one fetch on mount; the tab clears it.
+export const quoteAutoFetch = signal(false);
+
+/** Reset all quote-sweep state (used when starting a fresh sweep). */
+export function resetQuoteSweepState(): void {
+  quotePostRef.value = '';
+  quoteSubject.value = null;
+  quoteQuoters.value = [];
+  quoteSelected.value = new Set();
+  quoteLoading.value = false;
+  quoteExecuting.value = false;
+  quoteError.value = null;
+  quoteViewerStateUnavailable.value = false;
+  quoteTruncated.value = false;
+}
+
+export function toggleQuoteSelection(did: string): void {
+  const newSet = new Set(quoteSelected.value);
+  if (newSet.has(did)) {
+    newSet.delete(did);
+  } else {
+    newSet.add(did);
+  }
+  quoteSelected.value = newSet;
+}
+
+export function selectAllQuoters(dids: string[]): void {
+  quoteSelected.value = new Set(dids);
+}
+
+export function clearQuoteSelection(): void {
+  quoteSelected.value = new Set();
 }

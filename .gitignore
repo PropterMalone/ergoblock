@@ -33,3 +33,6 @@ mempalace.yaml
 
 # internal beads issue-tracker data — never publish
 .beads/
+
+# Local Claude Code settings (never commit)
+.claude/
