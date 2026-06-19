@@ -76,6 +76,11 @@ describe('carService', () => {
     });
 
     it('returns isStale=false when cache is exactly at 24 hour boundary', async () => {
+      // Pin the clock so the timestamp set here and the Date.now() read inside
+      // checkCarCacheStatus agree exactly — otherwise the few ms of elapsed wall
+      // time tip the strict `>` staleness check past the boundary (flaky under load).
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
       const exactlyAtTTL = Date.now() - CACHE_TTL_MS;
       mockGetCarCacheMetadata.mockResolvedValue({
         did: 'did:plc:user',
@@ -90,6 +95,7 @@ describe('carService', () => {
 
       expect(status.hasCached).toBe(true);
       expect(status.isStale).toBe(false); // At boundary, not past it
+      vi.useRealTimers();
     });
   });
 

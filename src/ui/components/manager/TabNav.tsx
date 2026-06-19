@@ -55,6 +55,12 @@ const TABS: Tab[] = [
     group: 'advanced',
   },
   {
+    id: 'quote-sweep',
+    label: 'Quote Sweep',
+    tooltip: 'Fetch everyone who quote-posted a post and bulk block/mute them',
+    group: 'advanced',
+  },
+  {
     id: 'settings',
     label: 'Settings',
     tooltip: 'Configure ErgoBlock behavior and appearance',

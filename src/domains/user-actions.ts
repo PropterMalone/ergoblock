@@ -6,6 +6,7 @@ import { getAuthToken } from './api-client.js';
 import { unblockUser, unmuteUser, blockUser, muteUser } from './graph-ops.js';
 import {
   getTempBlocks,
+  getTempMutes,
   getPermanentBlocks,
   setPermanentBlocks,
   getPermanentMutes,
@@ -14,8 +15,14 @@ import {
   addTempMute,
   addHistoryEntry,
   setHasCreatedAction,
+  addPostContext,
+  addPendingRollback,
+  preCheckStorageQuota,
+  calculateEntrySize,
+  StorageQuotaError,
 } from '../platform/storage.js';
-import { createLogger } from '../platform/utils.js';
+import type { SerializedPostContext } from '../types.js';
+import { createLogger, generateId } from '../platform/utils.js';
 
 const log = createLogger('bg:user-actions');
 
@@ -148,21 +155,57 @@ export async function handleReblockUser(
 }
 
 /**
- * Handle creating a block or mute from the popup (action-surface).
- * Uses the cached background auth, so the user must have already
- * synced auth from a Bluesky tab at least once.
+ * Unified create primitive for block/mute — the single seam behind CREATE_TEMP_ACTION.
+ *
+ * This encapsulates the only correct ordering for a create, previously duplicated
+ * (and partly wrong) across content.tsx, popup, and this handler:
+ *
+ *   1. Resolve auth; bail with an actionable error if missing.
+ *   2. Quota pre-check BEFORE the API call (temp only) so a block can't succeed on
+ *      Bluesky while local storage has no room — the historical desync.
+ *   3. Call the graph API; if a block returns null/falsy, THROW (never write storage
+ *      or report success on a soft API failure).
+ *   4. Write storage WITH rollback: on storage failure undo the API action; if the
+ *      undo also fails, queue a pendingRollback (repo = owner did) for retry.
+ *   5. Read-back verification: re-read storage and confirm the entry landed before
+ *      reporting success.
+ *
+ * `isPermanent` is the sole gate for routing: permanent → permanent storage (LOCAL),
+ * temp → temp storage (SYNC). A permanent action never flows through a 0/-1 duration.
+ *
+ * DID resolution stays in the content script (the background has no page session), so
+ * callers pass a resolved `did`. An optional serialized post-context (DOM-derived in
+ * the content script) is persisted here when present.
  */
 export async function handleCreateTempAction(
   did: string,
   handle: string,
   durationMs: number,
   isMute: boolean,
-  isPermanent: boolean
+  isPermanent: boolean,
+  postContext?: SerializedPostContext | null
 ): Promise<{ success: boolean; error?: string }> {
   try {
+    // Permanent normalization: callers historically passed 0 (popup/content) or -1
+    // (quote-sweep) for "permanent". Collapse to a single convention so a stray -1 can
+    // never reach addTempBlock/addTempMute as a duration. Permanent ignores durationMs.
+    if (isPermanent) durationMs = 0;
+
     const auth = await getAuthToken();
     if (!auth?.accessJwt || !auth?.did || !auth?.pdsUrl) {
+      // Actionable, pre-formatted error STRING (no auth → no API call).
       return { success: false, error: 'Not authenticated. Open Bluesky in a tab to connect.' };
+    }
+
+    // Quota pre-check BEFORE the API call (temp writes go to bounded sync storage).
+    // Permanent writes go to local storage, which is not quota-constrained here.
+    if (!isPermanent) {
+      const quotaError = await checkQuotaForTempEntry(did, handle, durationMs);
+      if (quotaError) {
+        // Return a plain pre-formatted error string — StorageQuotaError is a class and
+        // must not cross the message boundary.
+        return { success: false, error: quotaError };
+      }
     }
 
     const now = Date.now();
@@ -170,25 +213,71 @@ export async function handleCreateTempAction(
     if (isMute) {
       await muteUser(did, auth.accessJwt, auth.pdsUrl);
 
-      if (isPermanent) {
-        const permanentMutes = await getPermanentMutes();
-        permanentMutes[did] = { did, handle, createdAt: now, syncedAt: now };
-        await setPermanentMutes(permanentMutes);
-        await setHasCreatedAction();
-      } else {
-        await addTempMute(did, handle, durationMs);
+      try {
+        if (isPermanent) {
+          const permanentMutes = await getPermanentMutes();
+          permanentMutes[did] = { did, handle, createdAt: now, syncedAt: now };
+          await setPermanentMutes(permanentMutes);
+          await setHasCreatedAction();
+        } else {
+          await addTempMute(did, handle, durationMs);
+        }
+      } catch (storageError) {
+        return rollbackMute(did, handle, auth, storageError);
+      }
+
+      // Read-back verification (TEMP only): confirm the mute landed in the quota-constrained
+      // sync store. For PERMANENT (local storage), a non-throwing set() is authoritative — a
+      // read-back miss from a storage-read race must NOT trigger an unmute (wrong-direction
+      // desync: we'd undo a mute that actually succeeded).
+      if (!isPermanent) {
+        const verified = !!(await getTempMutes())[did];
+        if (!verified) {
+          return rollbackMute(
+            did,
+            handle,
+            auth,
+            new Error('Storage verification failed: mute not found after write')
+          );
+        }
       }
     } else {
       const result = await blockUser(did, auth.accessJwt, auth.did, auth.pdsUrl);
-      const rkey = result?.uri ? result.uri.split('/').pop() : undefined;
+      // A null/falsy result is a soft (non-throwing) API failure — do NOT write storage
+      // or report success. Throwing here surfaces the failure to the caller.
+      if (!result) {
+        throw new Error('Block API call did not return a record (block may not have taken)');
+      }
+      const rkey = result.uri ? result.uri.split('/').pop() || undefined : undefined;
 
-      if (isPermanent) {
-        const permanentBlocks = await getPermanentBlocks();
-        permanentBlocks[did] = { did, handle, createdAt: now, syncedAt: now, rkey };
-        await setPermanentBlocks(permanentBlocks);
-        await setHasCreatedAction();
-      } else {
-        await addTempBlock(did, handle, durationMs, rkey);
+      try {
+        if (isPermanent) {
+          const permanentBlocks = await getPermanentBlocks();
+          permanentBlocks[did] = { did, handle, createdAt: now, syncedAt: now, rkey };
+          await setPermanentBlocks(permanentBlocks);
+          await setHasCreatedAction();
+        } else {
+          await addTempBlock(did, handle, durationMs, rkey);
+        }
+      } catch (storageError) {
+        return rollbackBlock(did, handle, rkey, auth, storageError);
+      }
+
+      // Read-back verification (TEMP only): confirm the block landed in the quota-constrained
+      // sync store. For PERMANENT (local storage), a non-throwing set() is authoritative — a
+      // read-back miss from a storage-read race must NOT trigger an unblock (wrong-direction
+      // desync: we'd undo a block that actually succeeded).
+      if (!isPermanent) {
+        const verified = !!(await getTempBlocks())[did];
+        if (!verified) {
+          return rollbackBlock(
+            did,
+            handle,
+            rkey,
+            auth,
+            new Error('Storage verification failed: block not found after write')
+          );
+        }
       }
     }
 
@@ -202,9 +291,100 @@ export async function handleCreateTempAction(
       duration: isPermanent ? undefined : durationMs,
     });
 
+    if (postContext) {
+      try {
+        await addPostContext({ id: generateId('ctx'), ...postContext });
+      } catch (e) {
+        // Post context is best-effort; never fail the create over it.
+        log.warn('Failed to persist post context:', e);
+      }
+    }
+
     return { success: true };
   } catch (error) {
     log.error('Create temp action failed:', error);
     return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
   }
+}
+
+/**
+ * Pre-check quota for a temp entry. Returns a pre-formatted error STRING when the
+ * write would exceed quota (so it can cross the message boundary), or null when OK.
+ */
+async function checkQuotaForTempEntry(
+  did: string,
+  handle: string,
+  durationMs: number
+): Promise<string | null> {
+  try {
+    const estimatedSize = calculateEntrySize(did, handle, durationMs);
+    await preCheckStorageQuota(estimatedSize);
+    return null;
+  } catch (quotaError) {
+    if (quotaError instanceof StorageQuotaError) {
+      return (
+        `Storage full (${Math.round(quotaError.quotaInfo.percentUsed * 100)}% used). ` +
+        `Please remove some temp blocks/mutes first.`
+      );
+    }
+    // Non-quota failures from the pre-check are unexpected; surface their message.
+    return quotaError instanceof Error ? quotaError.message : 'Storage pre-check failed';
+  }
+}
+
+/**
+ * Undo a block whose storage write failed. Tries an immediate unblock; if that also
+ * fails, queues a pendingRollback (repo = owner did) for the background to retry.
+ * Always returns a failure result for the create.
+ */
+async function rollbackBlock(
+  did: string,
+  handle: string,
+  rkey: string | undefined,
+  auth: { accessJwt: string; did: string; pdsUrl: string },
+  storageError: unknown
+): Promise<{ success: false; error: string }> {
+  log.error('Storage failed after block, rolling back:', storageError);
+  try {
+    await unblockUser(did, auth.accessJwt, auth.did, auth.pdsUrl, rkey);
+    log.info('Rollback successful - user unblocked');
+  } catch (rollbackError) {
+    log.error('Immediate unblock rollback failed, queuing for retry:', rollbackError);
+    try {
+      await addPendingRollback({ type: 'unblock', did, handle, rkey });
+    } catch (queueError) {
+      log.error('Failed to queue unblock rollback:', queueError);
+    }
+  }
+  return {
+    success: false,
+    error: storageError instanceof Error ? storageError.message : 'Storage write failed',
+  };
+}
+
+/**
+ * Undo a mute whose storage write failed. Mirrors rollbackBlock for mutes.
+ */
+async function rollbackMute(
+  did: string,
+  handle: string,
+  auth: { accessJwt: string; pdsUrl: string },
+  storageError: unknown
+): Promise<{ success: false; error: string }> {
+  log.error('Storage failed after mute, rolling back:', storageError);
+  try {
+    await unmuteUser(did, auth.accessJwt, auth.pdsUrl);
+    log.info('Rollback successful - user unmuted');
+  } catch (rollbackError) {
+    log.error('Immediate unmute rollback failed, queuing for retry:', rollbackError);
+    try {
+      await addPendingRollback({ type: 'unmute', did, handle });
+    } catch (queueError) {
+      log.error('Failed to queue unmute rollback:', queueError);
+    }
+  }
+  return {
+    success: false,
+    error: storageError instanceof Error ? storageError.message : 'Storage write failed',
+  };
 }

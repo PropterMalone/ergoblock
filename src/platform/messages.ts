@@ -23,6 +23,8 @@ import type {
   ExportData,
   ImportOptions,
   ImportResult,
+  SerializedPostContext,
+  QuotePoster,
 } from '../types.js';
 import type { DismissedCluster } from './storage.js';
 import type { CarCacheStatusInfo } from '../ui/signals/manager.js';
@@ -86,6 +88,7 @@ export interface MessageRegistry {
       durationMs: number;
       isMute: boolean;
       isPermanent: boolean;
+      postContext?: SerializedPostContext | null;
     };
     response: { success: boolean; error?: string };
   };
@@ -359,6 +362,32 @@ export interface MessageRegistry {
   IMPORT_DATA: {
     request: { data: ExportData; options: ImportOptions };
     response: ImportResult;
+  };
+
+  // ── Quote Sweep ──────────────────────────────────────────────────────
+  GET_QUOTE_POSTERS: {
+    request: { postRef: string };
+    response: {
+      success: boolean;
+      subject?: string;
+      quoters?: QuotePoster[];
+      // True when viewer state couldn't be resolved (no auth / short profile fetch) — the
+      // alreadyBlocked/alreadyMuted flags are unreliable, so the tab must NOT select-all.
+      viewerStateUnavailable?: boolean;
+      // True when pagination hit the MAX_QUOTES_PAGES cap (quoter list is incomplete).
+      truncated?: boolean;
+      error?: string;
+    };
+  };
+  BULK_TEMP_ACTION: {
+    request: {
+      dids: string[];
+      handles: Record<string, string>;
+      isMute: boolean;
+      durationMs: number;
+      isPermanent: boolean;
+    };
+    response: { created: number; failed: number; skipped: number; errors: string[] };
   };
 
   // ── Review Queue ────────────────────────────────────────────────────

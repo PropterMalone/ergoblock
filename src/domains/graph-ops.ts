@@ -55,21 +55,24 @@ export async function unblockUser(
 
     const blockRecord = blocks?.records?.find((r) => r.value.subject === did);
     if (blockRecord) {
-      foundRkey = blockRecord.uri.split('/').pop();
-      break;
+      const rkeyPart = blockRecord.uri.split('/').pop();
+      // Guard against an empty trailing segment (malformed uri) — treat as not found
+      // so we keep scanning / ultimately throw rather than delete with an empty rkey.
+      if (rkeyPart) {
+        foundRkey = rkeyPart;
+        break;
+      }
     }
 
     // Check if there are more pages
     if (!blocks?.cursor) {
-      log.info('No block record found for', did);
-      return false;
+      // Scan is provably complete (cursor exhausted) and we found no usable rkey.
+      // THROW rather than return false: the caller (expiration) must preserve the local
+      // record and retry instead of deleting it and orphaning the block on Bluesky.
+      log.info('No block record found for', did, 'after complete scan');
+      throw new Error(`No block record found for ${did} (unblock rkey unresolved)`);
     }
     cursor = blocks.cursor;
-  }
-
-  if (!foundRkey) {
-    log.info('Could not determine rkey for', did);
-    return false;
   }
 
   await bgApiRequest(

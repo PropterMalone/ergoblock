@@ -177,12 +177,14 @@ export async function checkExpirations(): Promise<void> {
   const blocks = await getTempBlocks();
   const mutes = await getTempMutes();
 
+  // An entry expires strictly after its expiresAt instant; `< now` (not `<= now`)
+  // avoids expiring an entry the very millisecond it is created when duration is 0-ish.
   const expiredBlocks = Object.entries(blocks)
-    .filter(([, data]) => data.expiresAt <= now)
+    .filter(([, data]) => data.expiresAt < now)
     .map(([did, data]) => ({ did, data }));
 
   const expiredMutes = Object.entries(mutes)
-    .filter(([, data]) => data.expiresAt <= now)
+    .filter(([, data]) => data.expiresAt < now)
     .map(([did, data]) => ({ did, data }));
 
   log.info(`Found ${expiredBlocks.length} expired blocks, ${expiredMutes.length} expired mutes`);
@@ -279,11 +281,10 @@ async function processPendingRollbacks(): Promise<void> {
 
   log.info(`Processing ${rollbacks.length} pending rollbacks`);
 
-  // Get auth for API calls
-  const authResult = await browser.storage.local.get(['authToken']);
-  const auth = authResult.authToken as { accessJwt: string; pdsUrl: string } | undefined;
-
-  if (!auth?.accessJwt) {
+  // Get auth via getAuthToken() (includes .did and the refresh fallback) rather than
+  // reading storage.local.authToken directly, so a stale token can still be refreshed.
+  const auth = await getAuthToken();
+  if (!auth?.accessJwt || !auth?.did || !auth?.pdsUrl) {
     log.warn('No auth token available for rollback processing');
     return;
   }
@@ -293,12 +294,14 @@ async function processPendingRollbacks(): Promise<void> {
       log.info(`Processing rollback: ${rollback.type} for ${rollback.handle}`);
 
       if (rollback.type === 'unblock') {
-        // Unblock the user
+        // Delete the block record. repo MUST be the OWNER did (our own repo), not the
+        // blocked user's did — the previous `repo: auth.pdsUrl ? undefined : rollback.did`
+        // sent undefined (PDS rejects) so block rollbacks never succeeded.
         await executeApiRequest(
           `com.atproto.repo.deleteRecord`,
           'POST',
           {
-            repo: auth.pdsUrl ? undefined : rollback.did, // Will be set by executeApiRequest
+            repo: auth.did,
             collection: 'app.bsky.graph.block',
             rkey: rollback.rkey,
           },

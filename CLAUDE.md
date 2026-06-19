@@ -11,7 +11,7 @@ All `gh` CLI operations use the **PropterMalone** account. Run `gh auth switch -
 
 | Item | Value |
 |------|-------|
-| Version | 1.17.0 |
+| Version | 1.18.0 |
 | Type | Chrome/Firefox Extension (Manifest V3) |
 | Stack | TypeScript, Preact, esbuild |
 | Node | >= 22.0.0 |
@@ -22,6 +22,8 @@ Temporary blocking and muting for Bluesky. Users can block/mute accounts for con
 
 ### Key Features
 - **Temp Block/Mute**: Configurable durations with auto-expiration
+- **Quote Sweep (v1.18+)**: Fetch everyone who quote-posted a Bluesky post into a selectable grid (manager tab + in-page "Sweep quotes" post-menu item), then bulk temp-block/mute the selected accounts. Already-blocked accounts are marked and skipped; the bulk action is idempotent.
+- **Unified create path (v1.18)**: All block/mute creation (popup, content script, Quote Sweep) routes through one hardened background primitive (quota pre-check → API → storage with rollback → read-back verification). Fixes intermittent "fails to take" failures, chiefly by adding session-token refresh (tab-first, then a direct `com.atproto.server.refreshSession` fallback when no Bluesky tab is open).
 - **Popup as action-surface (v1.17+)**: Click extension on a Bluesky profile → block/mute with duration grid directly from popup
 - **Post Context**: Captures which post triggered the action
 - **Engagement Context**: Tracks when blocks originate from liked-by/reposted-by pages
@@ -52,6 +54,7 @@ ergoblock/
 │   │   ├── clearskyService.ts # Clearsky API integration
 │   │   ├── post-context.ts    # Post context capture
 │   │   ├── qt-peek.ts         # QT Peek: concealed quote detection + resolution
+│   │   ├── quote-sweep.ts     # Quote Sweep: fetch quoters of a post + bulk action
 │   │   └── feed-filter.ts     # Feed filtering logic
 │   │
 │   ├── platform/              # Browser/protocol abstractions
@@ -74,7 +77,7 @@ ergoblock/
 │   │   ├── signals/           # Preact signals for manager state
 │   │   └── constants/         # Centralized UI text (tooltips)
 │   │
-│   └── __tests__/             # 23 test files, 519 tests
+│   └── __tests__/             # test suite, 580 tests (colocated + __tests__)
 ├── dist/                      # Built extension (load this in browser)
 ├── scripts/                   # bundle.js, sync-version.js, copy-assets.js
 ├── manifest.json              # Chrome manifest

@@ -12,6 +12,7 @@ export * from './ReviewQueueTab.js';
 export * from './RepostFiltersTab.js';
 export * from './MassOpsTab.js';
 export * from './CopyUserTab.js';
+export * from './QuoteSweepTab.js';
 export * from './SettingsTab.js';
 export * from './ExportSection.js';
 export * from './utils.js';

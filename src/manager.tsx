@@ -6,6 +6,7 @@ import { useEffect, useCallback } from 'preact/hooks';
 import type { JSX } from 'preact';
 import { send } from './platform/messages.js';
 import { createLogger } from './platform/utils.js';
+import { KOFI_URL, SUPPORT_LABEL } from './ui/constants/support.js';
 
 const log = createLogger('manager');
 import {
@@ -41,6 +42,8 @@ import {
   selectedItems,
   clearSelection,
   loading,
+  quotePostRef,
+  quoteAutoFetch,
   tempUnblockTimers,
   setInteractions,
   setExpandedLoading,
@@ -58,6 +61,7 @@ import {
   RepostFiltersTab,
   MassOpsTab,
   CopyUserTab,
+  QuoteSweepTab,
   SettingsTab,
   ExportSection,
   formatTimeAgo,
@@ -115,6 +119,20 @@ function ManagerApp(): JSX.Element {
     const interval = setInterval(loadData, 30000);
     return () => clearInterval(interval);
   }, [loadData]);
+
+  // Auto-fill from URL params: ?tab=quote-sweep&postUri=<encoded at-uri>
+  // Switches to the Quote Sweep tab and prefills/auto-triggers the fetch.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('tab') === 'quote-sweep') {
+      currentTab.value = 'quote-sweep';
+      const postUri = params.get('postUri');
+      if (postUri) {
+        quotePostRef.value = postUri;
+        quoteAutoFetch.value = true;
+      }
+    }
+  }, []);
 
   // Sync handler
   const handleSync = async () => {
@@ -403,6 +421,8 @@ function ManagerApp(): JSX.Element {
         return <MassOpsTab onReload={loadData} />;
       case 'copy-user':
         return <CopyUserTab onReload={loadData} />;
+      case 'quote-sweep':
+        return <QuoteSweepTab onReload={loadData} />;
       case 'settings':
         return <SettingsTab onReload={loadData} />;
       default:
@@ -435,6 +455,12 @@ function ManagerApp(): JSX.Element {
         <Toolbar onBulkRemove={handleBulkRemove} />
         <div class="table-container">{renderTabContent()}</div>
         <ExportSection />
+        <footer class="support-footer">
+          <a href={KOFI_URL} target="_blank" rel="noopener noreferrer">
+            {SUPPORT_LABEL}
+          </a>
+          <span class="support-footer__note">Free &amp; open source. Tips keep it maintained.</span>
+        </footer>
       </div>
     </>
   );

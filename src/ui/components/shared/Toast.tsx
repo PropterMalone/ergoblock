@@ -34,7 +34,9 @@ export function Toast({
 
   return (
     <div class={classes} role="alert">
-      <span class="toast-message">{message}</span>
+      <span class="toast-message" style={{ whiteSpace: 'pre-line' }}>
+        {message}
+      </span>
       {onClose && (
         <button
           type="button"
