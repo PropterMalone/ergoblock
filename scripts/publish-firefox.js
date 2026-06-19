@@ -28,7 +28,7 @@ function createJwt() {
   const issuedAt = Math.floor(Date.now() / 1000);
   const payload = {
     iss: process.env.AMO_JWT_ISSUER,
-    jti: Math.random().toString(),
+    jti: crypto.randomUUID(),
     iat: issuedAt,
     exp: issuedAt + 60,
   };
@@ -142,12 +142,24 @@ async function pollUpload(uuid) {
   throw new Error(`Upload validation timed out after ${POLL_TIMEOUT_MS / 1000}s`);
 }
 
-async function createVersion(guid, uploadUuid) {
-  return amoFetch(`/addons/addon/${guid}/versions/`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ upload: uploadUuid }),
-  });
+async function createVersion(guid, uploadUuid, version) {
+  try {
+    return await amoFetch(`/addons/addon/${guid}/versions/`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ upload: uploadUuid }),
+    });
+  } catch (err) {
+    // Idempotency: AMO rejects a version that already exists (409 / "already
+    // exists"). The desired effect — that version present on AMO — already
+    // holds, so a re-dispatch or delete-tag recovery should treat it as
+    // success, not a hard failure that leaves a split cross-store state.
+    const msg = String(err?.message ?? err);
+    if (/already exists/i.test(msg) || /\b409\b/.test(msg)) {
+      return { version, alreadyExists: true };
+    }
+    throw err;
+  }
 }
 
 async function main() {
@@ -192,9 +204,13 @@ async function main() {
   }
 
   console.log('Creating version...');
-  const versionResult = await createVersion(guid, upload.uuid);
-  console.log(`Version ${versionResult.version} submitted for review.`);
-  console.log('AMO will review and publish the listed add-on automatically once approved.');
+  const versionResult = await createVersion(guid, upload.uuid, version);
+  if (versionResult.alreadyExists) {
+    console.log(`Version ${version} already exists on AMO — idempotent no-op (nothing to submit).`);
+  } else {
+    console.log(`Version ${versionResult.version} submitted for review.`);
+    console.log('AMO will review and publish the listed add-on automatically once approved.');
+  }
 }
 
 main().catch((err) => {

@@ -105,11 +105,18 @@ jobs:
           prerelease: false
 
       - name: Publish to Chrome Web Store
+        id: cws
         continue-on-error: true # CWS rejects uploads while a review is pending
-        if: steps.check-tag.outputs.exists == 'false' && env.CWS_CLIENT_ID != ''
+        # Gated to a push on main (or a manual dispatch ON main) so a dispatch
+        # from a feature branch can't push an arbitrary build to the store.
+        if: steps.check-tag.outputs.exists == 'false' && env.CWS_CLIENT_ID != '' && github.ref == 'refs/heads/main'
         # Full publish (upload + submit for review) for hands-off releases.
         run: npm run publish:chrome -- ergoblock-v${{ steps.package-version.outputs.version }}-chrome.zip
 
+      - name: Flag CWS publish failure (continue-on-error masks it otherwise)
+        if: steps.check-tag.outputs.exists == 'false' && steps.cws.outcome == 'failure'
+        run: echo "::warning::Chrome Web Store publish failed (tolerated via continue-on-error). If this was not a pending-review rejection, verify in the CWS dashboard — do not assume it shipped."
+
       - name: Publish to Firefox AMO
-        if: steps.check-tag.outputs.exists == 'false' && env.AMO_JWT_ISSUER != ''
+        if: steps.check-tag.outputs.exists == 'false' && env.AMO_JWT_ISSUER != '' && github.ref == 'refs/heads/main'
         run: npm run publish:firefox -- ergoblock-v${{ steps.package-version.outputs.version }}-firefox.zip

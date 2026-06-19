@@ -93,8 +93,13 @@ async function main() {
 
   const uploadResult = await store.uploadExisting(zipStream);
 
-  if (uploadResult.uploadState === 'FAILURE') {
-    console.error('Upload failed:', JSON.stringify(uploadResult, null, 2));
+  // Whitelist SUCCESS: IN_PROGRESS/FAILURE/NOT_FOUND must not fall through to
+  // publish() (IN_PROGRESS means CWS is still processing a large zip).
+  if (uploadResult.uploadState !== 'SUCCESS') {
+    console.error(
+      `Upload not successful (state: ${uploadResult.uploadState}):`,
+      JSON.stringify(uploadResult, null, 2)
+    );
     process.exit(1);
   }
 
