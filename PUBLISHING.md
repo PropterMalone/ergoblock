@@ -237,5 +237,6 @@ When releasing new versions:
 1. Bump version in `package.json` (auto-syncs to manifests)
 2. Commit and push to main
 3. CI builds, tests, tags, creates GitHub release, and uploads to CWS + AMO
-4. Approve the CWS submission in the developer dashboard (or switch to auto-publish)
+4. CWS submission is automatic (full `publish:chrome` submits for review) — no dashboard step. Switch the workflow to `publish:chrome:upload` if you ever want a manual submit gate.
 5. AMO submission enters review queue automatically
+6. Both stores still gate on their own review before going live
