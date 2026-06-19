@@ -34,6 +34,7 @@ Temporary blocking and muting for Bluesky. Users can block/mute accounts for con
 - **Cross-Device Sync**: Uses Chrome sync storage
 - **Column Configuration**: Table columns can be shown/hidden per user preference
 - **First-Run Onboarding**: Actionable empty states for new users
+- **Tip Jar (v1.18+)**: "Support ErgoBlock" Ko-fi link in the options + manager footers (`src/ui/constants/support.ts` centralizes the URL); `.github/FUNDING.yml` adds the repo Sponsor button
 
 ## Project Structure
 

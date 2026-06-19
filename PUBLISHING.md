@@ -2,7 +2,7 @@
 
 ## Chrome Web Store — Automated Publishing
 
-The release workflow (`.github/workflows/release.yml`) automatically builds both Chrome and Firefox, creates a GitHub release with both zips, and uploads to both stores. Chrome is currently configured as **upload-only** (manual review submission required). Change `publish:chrome:upload` to `publish:chrome` in the workflow to enable auto-publish.
+The release workflow (`.github/workflows/release.yml`) automatically builds both Chrome and Firefox, creates a GitHub release with both zips, and uploads to both stores. Chrome is configured for **full auto-publish** (`publish:chrome` — uploads and submits for review). Change it back to `publish:chrome:upload` if you ever want a manual review gate before submission.
 
 ### One-Time OAuth Setup
 
@@ -37,6 +37,17 @@ You need a Google OAuth refresh token with Chrome Web Store API access.
    - Go to [Chrome Web Store Developer Dashboard](https://chrome.google.com/webstore/devconsole)
    - Your extension ID is in the URL or listed on the extension detail page
 
+> **⚠️ Publish the consent screen or the token expires every 7 days.** While
+> the OAuth consent screen is in **Testing**, Google expires refresh tokens
+> after 7 days — the publish step then fails with
+> `Invalid grant: The authentication keys are probably invalid or expired`.
+> Fix: [Google Auth Platform](https://console.cloud.google.com/apis/credentials/consent)
+> → **Audience** → **Publish app** (Testing → In production) in the
+> `ergoblock CWS` project, then mint a fresh refresh token via the OAuth
+> Playground (step 4 above). In production, tokens don't expire. (In the newer
+> "Google Auth Platform" UI the publish control lives under **Audience**, not a
+> standalone consent-screen page.)
+
 6. **Store the Credentials**
 
    For CI (GitHub Actions):
@@ -68,9 +79,9 @@ Without arguments, the script picks up the most recent `packages/ergoblock-v*-ch
 
 ### CI Behavior
 
-The release workflow runs `publish:chrome:upload` after creating the GitHub release. This uploads the new version to CWS but does **not** submit it for review — you still approve it in the developer dashboard. To switch to fully automatic publishing, change the workflow step to use `publish:chrome` instead.
+The release workflow runs `publish:chrome` after creating the GitHub release — it uploads the new version to CWS **and submits it for review** (hands-off). Switch to `publish:chrome:upload` if you want to gate submission manually in the dashboard.
 
-The publish step is conditional on `CWS_CLIENT_ID` being set, so it won't break builds if secrets aren't configured yet.
+The publish step is conditional on `CWS_CLIENT_ID` being set, so it won't break builds if secrets aren't configured yet. Secrets are mapped at **job level** in the workflow — step-level env is invisible to a step's own `if` guard, so job-level is required for the conditional to fire.
 
 ---
 
