@@ -6,6 +6,7 @@ import { useEffect, useCallback } from 'preact/hooks';
 import type { JSX } from 'preact';
 import { send } from './platform/messages.js';
 import { createLogger } from './platform/utils.js';
+import { KOFI_URL, SUPPORT_LABEL } from './ui/constants/support.js';
 
 const log = createLogger('manager');
 import {
@@ -454,6 +455,12 @@ function ManagerApp(): JSX.Element {
         <Toolbar onBulkRemove={handleBulkRemove} />
         <div class="table-container">{renderTabContent()}</div>
         <ExportSection />
+        <footer class="support-footer">
+          <a href={KOFI_URL} target="_blank" rel="noopener noreferrer">
+            {SUPPORT_LABEL}
+          </a>
+          <span class="support-footer__note">Free &amp; open source. Tips keep it maintained.</span>
+        </footer>
       </div>
     </>
   );

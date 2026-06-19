@@ -2458,6 +2458,31 @@ tr.expanded-row > td {
   color: var(--text-2);
 }
 
+.support-footer {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+  margin-top: var(--space-lg);
+  padding-top: var(--space-md);
+  border-top: 1px solid var(--border-color);
+}
+
+.support-footer a {
+  color: var(--blue-7);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.support-footer a:hover {
+  text-decoration: underline;
+}
+
+.support-footer__note {
+  font-size: var(--font-size-0);
+  color: var(--text-2);
+}
+
 .member-sample {
   display: block;
   font-size: var(--font-size-0);

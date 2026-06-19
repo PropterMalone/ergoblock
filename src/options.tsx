@@ -4,6 +4,7 @@ import { getOptions, setOptions } from './platform/storage.js';
 import { DEFAULT_OPTIONS, type ExtensionOptions } from './types.js';
 import { Tooltip } from './ui/components/shared/Tooltip.js';
 import { SETTINGS_TOOLTIPS } from './ui/constants/tooltips.js';
+import { KOFI_URL, SUPPORT_LABEL } from './ui/constants/support.js';
 import { createLogger } from './platform/utils.js';
 
 const log = createLogger('options');
@@ -206,6 +207,13 @@ function OptionsApp() {
           Reset to Defaults
         </button>
       </div>
+
+      <footer class="support-footer">
+        <a href={KOFI_URL} target="_blank" rel="noopener noreferrer">
+          {SUPPORT_LABEL}
+        </a>
+        <span class="support-footer__note">Free &amp; open source. Tips keep it maintained.</span>
+      </footer>
     </div>
   );
 }
