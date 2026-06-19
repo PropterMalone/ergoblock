@@ -8,12 +8,25 @@ on:
     paths-ignore:
       - '.github/**'
       - '**.md'
+  workflow_dispatch: # Allow manual re-publish without a version bump
 
 jobs:
   check-and-release:
     runs-on: ubuntu-latest
     permissions:
       contents: write # Needed to create releases and tags
+
+    # Secrets mapped at job level so they are visible to each step's `if`
+    # guard. Step-level env is NOT available to that same step's `if`, which is
+    # why the publish steps silently skipped before (v1.18.0 shipped to the
+    # GitHub release but never reached the stores).
+    env:
+      CWS_CLIENT_ID: ${{ secrets.CWS_CLIENT_ID }}
+      CWS_CLIENT_SECRET: ${{ secrets.CWS_CLIENT_SECRET }}
+      CWS_REFRESH_TOKEN: ${{ secrets.CWS_REFRESH_TOKEN }}
+      CWS_EXTENSION_ID: ${{ secrets.CWS_EXTENSION_ID }}
+      AMO_JWT_ISSUER: ${{ secrets.AMO_JWT_ISSUER }}
+      AMO_JWT_SECRET: ${{ secrets.AMO_JWT_SECRET }}
 
     steps:
       - uses: actions/checkout@v4
@@ -92,18 +105,10 @@ jobs:
           prerelease: false
 
       - name: Publish to Chrome Web Store
-        continue-on-error: true
+        continue-on-error: true # CWS rejects uploads while a review is pending
         if: steps.check-tag.outputs.exists == 'false' && env.CWS_CLIENT_ID != ''
-        env:
-          CWS_CLIENT_ID: ${{ secrets.CWS_CLIENT_ID }}
-          CWS_CLIENT_SECRET: ${{ secrets.CWS_CLIENT_SECRET }}
-          CWS_REFRESH_TOKEN: ${{ secrets.CWS_REFRESH_TOKEN }}
-          CWS_EXTENSION_ID: ${{ secrets.CWS_EXTENSION_ID }}
         run: npm run publish:chrome:upload -- ergoblock-v${{ steps.package-version.outputs.version }}-chrome.zip
 
       - name: Publish to Firefox AMO
         if: steps.check-tag.outputs.exists == 'false' && env.AMO_JWT_ISSUER != ''
-        env:
-          AMO_JWT_ISSUER: ${{ secrets.AMO_JWT_ISSUER }}
-          AMO_JWT_SECRET: ${{ secrets.AMO_JWT_SECRET }}
         run: npm run publish:firefox -- ergoblock-v${{ steps.package-version.outputs.version }}-firefox.zip
