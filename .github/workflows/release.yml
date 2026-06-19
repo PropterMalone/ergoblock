@@ -107,7 +107,8 @@ jobs:
       - name: Publish to Chrome Web Store
         continue-on-error: true # CWS rejects uploads while a review is pending
         if: steps.check-tag.outputs.exists == 'false' && env.CWS_CLIENT_ID != ''
-        run: npm run publish:chrome:upload -- ergoblock-v${{ steps.package-version.outputs.version }}-chrome.zip
+        # Full publish (upload + submit for review) for hands-off releases.
+        run: npm run publish:chrome -- ergoblock-v${{ steps.package-version.outputs.version }}-chrome.zip
 
       - name: Publish to Firefox AMO
         if: steps.check-tag.outputs.exists == 'false' && env.AMO_JWT_ISSUER != ''
