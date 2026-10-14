@@ -30,6 +30,10 @@ import {
 import { Tooltip } from '../shared/Tooltip.js';
 import { SETTINGS_TOOLTIPS } from '../../constants/tooltips.js';
 import { send } from '../../../platform/messages.js';
+import { useId } from 'preact/hooks';
+import { associateSettingControl, type SettingControlProps } from '../shared/SettingControl.js';
+import { CHECK_INTERVAL_OPTIONS } from '../../../platform/check-interval.js';
+import { useTheme } from '../../hooks/useTheme.js';
 
 type Theme = 'light' | 'dark' | 'auto';
 
@@ -55,6 +59,7 @@ export function SettingsTab({ onReload }: SettingsTabProps): JSX.Element {
   const [options, setLocalOptions] = useState<ExtensionOptions>(DEFAULT_OPTIONS);
   const [columnVisibility, setColumnVisibilityState] =
     useState<ColumnVisibility>(DEFAULT_COLUMN_VISIBILITY);
+  useTheme(options.theme);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState<StatusState | null>(null);
@@ -456,8 +461,12 @@ interface SettingRowProps {
 }
 
 function SettingRow({ label, description, children, tooltip }: SettingRowProps): JSX.Element {
+  const id = useId();
   const labelElement = (
-    <div style={{ fontSize: '13px', fontWeight: '500', color: 'var(--text-primary, #333)' }}>
+    <div
+      id={`${id}-label`}
+      style={{ fontSize: '13px', fontWeight: '500', color: 'var(--text-primary, #333)' }}
+    >
       {label}
     </div>
   );
@@ -480,23 +489,27 @@ function SettingRow({ label, description, children, tooltip }: SettingRowProps):
         ) : (
           labelElement
         )}
-        <div style={{ fontSize: '12px', color: 'var(--text-secondary, #666)', marginTop: '2px' }}>
+        <div
+          id={`${id}-description`}
+          style={{ fontSize: '12px', color: 'var(--text-secondary, #666)', marginTop: '2px' }}
+        >
           {description}
         </div>
       </div>
-      <div style={{ flexShrink: 0 }}>{children}</div>
+      <div style={{ flexShrink: 0 }}>{associateSettingControl(children, id)}</div>
     </div>
   );
 }
 
-interface DurationSelectProps {
+interface DurationSelectProps extends SettingControlProps {
   value: number;
   onChange: (value: number) => void;
 }
 
-function DurationSelect({ value, onChange }: DurationSelectProps): JSX.Element {
+function DurationSelect({ value, onChange, ...controlProps }: DurationSelectProps): JSX.Element {
   return (
     <select
+      {...controlProps}
       value={value}
       onChange={(e) => onChange(parseInt((e.target as HTMLSelectElement).value, 10))}
       style={{
@@ -574,26 +587,15 @@ function RangeSlider({ id, min, max, value, unit, onChange }: RangeSliderProps):
   );
 }
 
-const CHECK_INTERVAL_OPTIONS = [
-  { value: 1, label: '1 minute' },
-  { value: 5, label: '5 minutes' },
-  { value: 15, label: '15 minutes' },
-  { value: 30, label: '30 minutes' },
-  { value: 60, label: '1 hour' },
-  { value: 120, label: '2 hours' },
-  { value: 360, label: '6 hours' },
-  { value: 720, label: '12 hours' },
-  { value: 1440, label: '24 hours' },
-];
-
-interface IntervalSelectProps {
+interface IntervalSelectProps extends SettingControlProps {
   value: number;
   onChange: (value: number) => void;
 }
 
-function IntervalSelect({ value, onChange }: IntervalSelectProps): JSX.Element {
+function IntervalSelect({ value, onChange, ...controlProps }: IntervalSelectProps): JSX.Element {
   return (
     <select
+      {...controlProps}
       value={value}
       onChange={(e) => onChange(parseInt((e.target as HTMLSelectElement).value, 10))}
       style={{
@@ -615,7 +617,7 @@ function IntervalSelect({ value, onChange }: IntervalSelectProps): JSX.Element {
   );
 }
 
-interface NumberInputProps {
+interface NumberInputProps extends SettingControlProps {
   id: string;
   value: number;
   min: number;
@@ -624,11 +626,20 @@ interface NumberInputProps {
   onChange: (value: number) => void;
 }
 
-function NumberInput({ id, value, min, max, unit, onChange }: NumberInputProps): JSX.Element {
+function NumberInput({
+  id,
+  value,
+  min,
+  max,
+  unit,
+  onChange,
+  ...controlProps
+}: NumberInputProps): JSX.Element {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
       <input
         type="number"
+        {...controlProps}
         id={id}
         min={min}
         max={max}

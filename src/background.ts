@@ -13,6 +13,7 @@ import { handleGetProfilesBatched } from './domains/graph-ops.js';
 import { syncFollowsOnly, setupFollowsSyncAlarm } from './domains/social-graph.js';
 import { performFullSync, setupSyncAlarm } from './domains/sync.js';
 import { checkExpirations, setupAlarm } from './domains/expiration.js';
+import { registerExpirationSettingsListener } from './domains/expiration-settings.js';
 import {
   handleUnblockRequest,
   handleUnmuteRequest,
@@ -70,7 +71,11 @@ import {
   handleDebugFindOrphanBlocks,
 } from './domains/pds-tools.js';
 import { handleResolveHandle, handleFetchPostsPublic } from './domains/public-api.js';
-import { handleFetchQuotePosters, handleBulkTempAction } from './domains/quote-sweep.js';
+import {
+  handleFetchQuotePosters,
+  handleBulkTempAction,
+  cancelPostAudienceFetch,
+} from './domains/quote-sweep.js';
 import { handleImportData } from './domains/import-export.js';
 import {
   handleClearClearskyCache,
@@ -284,7 +289,12 @@ const handlers = createHandlerMap({
   IMPORT_DATA: async ({ data, options }) => handleImportData(data, options),
 
   // ── Quote Sweep ────────────────────────────────────────────────────────
-  GET_QUOTE_POSTERS: async ({ postRef }) => handleFetchQuotePosters(postRef),
+  GET_QUOTE_POSTERS: async ({ postRef, audience, requestId }) =>
+    handleFetchQuotePosters(postRef, audience, requestId),
+  CANCEL_POST_AUDIENCE_FETCH: ({ requestId }) => {
+    cancelPostAudienceFetch(requestId);
+    return { success: true };
+  },
   BULK_TEMP_ACTION: async ({ dids, handles, isMute, durationMs, isPermanent }) =>
     handleBulkTempAction(dids, handles, isMute, durationMs, isPermanent),
 
@@ -329,6 +339,7 @@ async function initialize(trigger: 'installed' | 'started' | 'script-load'): Pro
   setTimeout(() => rectifyFailedAmnestyUnblocks(), 10000);
 }
 
+registerExpirationSettingsListener();
 browser.runtime.onInstalled.addListener(() => initialize('installed'));
 browser.runtime.onStartup.addListener(() => initialize('started'));
 initialize('script-load');

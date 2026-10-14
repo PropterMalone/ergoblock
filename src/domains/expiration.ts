@@ -4,6 +4,7 @@
  */
 
 import browser from '../platform/browser.js';
+import { normalizeCheckInterval } from '../platform/check-interval.js';
 import { getAuthToken, requestFreshAuth, sendNotification } from './api-client.js';
 import { unblockUser, unmuteUser } from './graph-ops.js';
 import {
@@ -21,9 +22,10 @@ import {
 } from '../platform/storage.js';
 import { AuthData } from '../types.js';
 import { executeApiRequest } from '../platform/api.js';
-import { createLogger } from '../platform/utils.js';
+import { createLogger, Mutex } from '../platform/utils.js';
 
 const log = createLogger('bg:expiration');
+const alarmSetupMutex = new Mutex();
 
 // Maximum concurrent expiration operations (prevents overwhelming the API)
 const MAX_CONCURRENT_EXPIRATIONS = 5;
@@ -347,13 +349,16 @@ export async function setupAlarm(
   alarmName = 'checkExpirations',
   options?: { periodInMinutes?: number }
 ): Promise<void> {
-  const userOptions = await getOptions();
-  const intervalMinutes =
-    options?.periodInMinutes ?? Math.max(1, Math.min(10, userOptions.checkInterval));
+  await alarmSetupMutex.runExclusive(async () => {
+    const userOptions = await getOptions();
+    const intervalMinutes = normalizeCheckInterval(
+      options?.periodInMinutes ?? userOptions.checkInterval
+    );
 
-  await browser.alarms.clear(alarmName);
-  await browser.alarms.create(alarmName, {
-    periodInMinutes: intervalMinutes,
+    await browser.alarms.clear(alarmName);
+    await browser.alarms.create(alarmName, {
+      periodInMinutes: intervalMinutes,
+    });
+    log.info('Alarm set up with interval:', intervalMinutes, 'minutes');
   });
-  log.info('Alarm set up with interval:', intervalMinutes, 'minutes');
 }

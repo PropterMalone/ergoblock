@@ -25,6 +25,7 @@ import type {
   ImportResult,
   SerializedPostContext,
   QuotePoster,
+  PostAudience,
 } from '../types.js';
 import type { DismissedCluster } from './storage.js';
 import type { CarCacheStatusInfo } from '../ui/signals/manager.js';
@@ -365,8 +366,12 @@ export interface MessageRegistry {
   };
 
   // ── Quote Sweep ──────────────────────────────────────────────────────
+  CANCEL_POST_AUDIENCE_FETCH: {
+    request: { requestId: string };
+    response: { success: boolean };
+  };
   GET_QUOTE_POSTERS: {
-    request: { postRef: string };
+    request: { postRef: string; audience?: PostAudience; requestId?: string };
     response: {
       success: boolean;
       subject?: string;

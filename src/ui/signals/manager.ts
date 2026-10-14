@@ -19,6 +19,7 @@ import type {
   ProfileWithViewer,
   PermanentBlockMute,
   QuotePoster,
+  PostAudience,
 } from '../../types.js';
 import { DEFAULT_MASS_OPS_SETTINGS } from '../../types.js';
 
@@ -553,6 +554,7 @@ export type { QuotePoster };
 
 export type QuoteActionType = 'block' | 'mute';
 
+export const quoteAudience = signal<PostAudience | ''>('');
 export const quotePostRef = signal<string>('');
 export const quoteSubject = signal<string | null>(null);
 export const quoteQuoters = signal<QuotePoster[]>([]);
@@ -573,6 +575,8 @@ export const quoteAutoFetch = signal(false);
 
 /** Reset all quote-sweep state (used when starting a fresh sweep). */
 export function resetQuoteSweepState(): void {
+  quoteAudience.value = '';
+  quoteAutoFetch.value = false;
   quotePostRef.value = '';
   quoteSubject.value = null;
   quoteQuoters.value = [];

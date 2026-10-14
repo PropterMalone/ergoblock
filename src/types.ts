@@ -251,10 +251,12 @@ export interface PermanentBlockMute {
 }
 
 /**
- * A single quoter row returned by GET_QUOTE_POSTERS and rendered in the Quote Sweep tab.
+ * An account in a post audience, returned through the legacy GET_QUOTE_POSTERS message.
  * Canonical definition — imported by the domain handler, the message registry, and the
  * manager signals so the three never drift.
  */
+export type PostAudience = 'quotes' | 'reposts' | 'likes';
+
 export interface QuotePoster {
   did: string;
   handle: string;
@@ -262,6 +264,7 @@ export interface QuotePoster {
   avatar?: string;
   alreadyBlocked: boolean;
   alreadyMuted: boolean;
+  followed?: boolean;
 }
 
 /**

@@ -22,7 +22,7 @@ Temporary blocking and muting for Bluesky. Users can block/mute accounts for con
 
 ### Key Features
 - **Temp Block/Mute**: Configurable durations with auto-expiration
-- **Quote Sweep (v1.18+)**: Fetch everyone who quote-posted a Bluesky post into a selectable grid (manager tab + in-page "Sweep quotes" post-menu item), then bulk temp-block/mute the selected accounts. Already-blocked accounts are marked and skipped; the bulk action is idempotent.
+- **Post actions (trial)**: Fetch quote authors, reposters, or likers of a post into a selectable grid (manager tab + in-page "Post actions" menu item), then confirm a temporary or permanent block/mute of reviewed accounts. Protects self and follows when authenticated relationship data is available; unavailable data disables automatic selection. Preserves exclusions across action changes, supports fetch cancellation, and labels incomplete results. Uses the existing quote-sweep message and deep-link routes for compatibility.
 - **Unified create path (v1.18)**: All block/mute creation (popup, content script, Quote Sweep) routes through one hardened background primitive (quota pre-check → API → storage with rollback → read-back verification). Fixes intermittent "fails to take" failures, chiefly by adding session-token refresh (tab-first, then a direct `com.atproto.server.refreshSession` fallback when no Bluesky tab is open).
 - **Popup as action-surface (v1.17+)**: Click extension on a Bluesky profile → block/mute with duration grid directly from popup
 - **Post Context**: Captures which post triggered the action
@@ -55,7 +55,7 @@ ergoblock/
 │   │   ├── clearskyService.ts # Clearsky API integration
 │   │   ├── post-context.ts    # Post context capture
 │   │   ├── qt-peek.ts         # QT Peek: concealed quote detection + resolution
-│   │   ├── quote-sweep.ts     # Quote Sweep: fetch quoters of a post + bulk action
+│   │   ├── quote-sweep.ts     # Post audiences + confirmed bulk block/mute
 │   │   └── feed-filter.ts     # Feed filtering logic
 │   │
 │   ├── platform/              # Browser/protocol abstractions

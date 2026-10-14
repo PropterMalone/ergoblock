@@ -1,5 +1,6 @@
 import type { JSX } from 'preact';
-import { useState, useEffect } from 'preact/hooks';
+import { useState, useEffect, useRef } from 'preact/hooks';
+import type { PostAudience } from '../../../types.js';
 import {
   Search,
   Ban,
@@ -15,6 +16,7 @@ import { createLogger } from '../../../platform/utils.js';
 import { send } from '../../../platform/messages.js';
 import {
   quotePostRef,
+  quoteAudience,
   quoteSubject,
   quoteQuoters,
   quoteSelected,
@@ -80,6 +82,11 @@ export function QuoteSweepTab({ onReload }: QuoteSweepTabProps): JSX.Element {
     type: 'success' | 'error';
   } | null>(null);
 
+  const activeRequest = useRef<string | null>(null);
+  const audience = quoteAudience.value;
+  const audienceLabel = { quotes: 'Quote authors', reposts: 'Reposters', likes: 'Likers' }[
+    audience || 'quotes'
+  ];
   const postRef = quotePostRef.value;
   const subject = quoteSubject.value;
   const quoters = quoteQuoters.value;
@@ -94,14 +101,29 @@ export function QuoteSweepTab({ onReload }: QuoteSweepTabProps): JSX.Element {
 
   // Selectable = not already in the chosen action's terminal state.
   const isAlreadyDone = (q: QuotePoster): boolean =>
-    actionType === 'block' ? q.alreadyBlocked : q.alreadyMuted;
+    !!q.followed || (actionType === 'block' ? q.alreadyBlocked : q.alreadyMuted);
+
+  const cancelFetch = () => {
+    const requestId = activeRequest.current;
+    activeRequest.current = null;
+    quoteLoading.value = false;
+    if (requestId) {
+      send('CANCEL_POST_AUDIENCE_FETCH', { requestId }).catch((err: unknown) =>
+        log.warn('Could not cancel background fetch:', err)
+      );
+    }
+  };
+
+  useEffect(() => () => cancelFetch(), []);
   const selectableDids = quoters.filter((q) => !isAlreadyDone(q)).map((q) => q.did);
   const allSelected = selected.size === selectableDids.length && selectableDids.length > 0;
 
   const handleFetch = async () => {
     const ref = postRef.trim();
-    if (!ref) return;
-
+    if (!ref || !audience || quoteExecuting.value || quoteLoading.value) return;
+    const requestId = crypto.randomUUID();
+    activeRequest.current = requestId;
+    setResultToast(null);
     quoteLoading.value = true;
     quoteError.value = null;
     quoteSubject.value = null;
@@ -111,7 +133,8 @@ export function QuoteSweepTab({ onReload }: QuoteSweepTabProps): JSX.Element {
     clearQuoteSelection();
 
     try {
-      const result = await send('GET_QUOTE_POSTERS', { postRef: ref });
+      const result = await send('GET_QUOTE_POSTERS', { postRef: ref, audience, requestId });
+      if (activeRequest.current !== requestId) return;
       if (!result.success) {
         quoteError.value = result.error || 'Failed to fetch quote posters';
         return;
@@ -129,16 +152,22 @@ export function QuoteSweepTab({ onReload }: QuoteSweepTabProps): JSX.Element {
         // Default-select everyone NOT already in the chosen action's terminal state.
         selectAllQuoters(
           fetched
-            .filter((q) =>
-              quoteActionType.value === 'block' ? !q.alreadyBlocked : !q.alreadyMuted
+            .filter(
+              (q) =>
+                !q.followed &&
+                (quoteActionType.value === 'block' ? !q.alreadyBlocked : !q.alreadyMuted)
             )
             .map((q) => q.did)
         );
       }
     } catch (err) {
-      quoteError.value = err instanceof Error ? err.message : 'Unknown error';
+      if (activeRequest.current === requestId)
+        quoteError.value = err instanceof Error ? err.message : 'Unknown error';
     } finally {
-      quoteLoading.value = false;
+      if (activeRequest.current === requestId) {
+        activeRequest.current = null;
+        quoteLoading.value = false;
+      }
     }
   };
 
@@ -146,35 +175,43 @@ export function QuoteSweepTab({ onReload }: QuoteSweepTabProps): JSX.Element {
     if (e.key === 'Enter' && !loading) handleFetch();
   };
 
-  // Fire one fetch when arriving via a deep link (?tab=quote-sweep&postUri=...).
+  // Legacy deep links still prefill the post, but every audience now requires a human choice.
   useEffect(() => {
-    if (quoteAutoFetch.value && quotePostRef.value.trim() && !quoteLoading.value) {
-      quoteAutoFetch.value = false;
-      handleFetch();
-    }
+    quoteAutoFetch.value = false;
   }, []);
 
   const handleSelectAll = () => {
     if (allSelected) {
       clearQuoteSelection();
-    } else {
+    } else if (!viewerStateUnavailable) {
       selectAllQuoters(selectableDids);
     }
   };
 
   const handleActionTypeChange = (next: 'block' | 'mute') => {
+    if (next === quoteActionType.value) return;
+
+    const reviewedSelection = quoteSelected.value;
     quoteActionType.value = next;
-    // Re-default selection to those not already in the new action's terminal state.
+    if (viewerStateUnavailable) {
+      clearQuoteSelection();
+      return;
+    }
     selectAllQuoters(
       quoters
-        .filter((q) => (next === 'block' ? !q.alreadyBlocked : !q.alreadyMuted))
+        .filter(
+          (q) =>
+            reviewedSelection.has(q.did) &&
+            !q.followed &&
+            (next === 'block' ? !q.alreadyBlocked : !q.alreadyMuted)
+        )
         .map((q) => q.did)
     );
   };
 
   const handleExecute = async () => {
-    const dids = Array.from(selected);
-    if (dids.length === 0) return;
+    const dids = selectableDids.filter((did) => quoteSelected.value.has(did));
+    if (dids.length === 0 || quoteExecuting.value || quoteLoading.value || !audience) return;
 
     const isMute = actionType === 'mute';
     const isPermanent = duration === -1;
@@ -192,7 +229,7 @@ export function QuoteSweepTab({ onReload }: QuoteSweepTabProps): JSX.Element {
         ' until you remove them manually.'
       : '';
     const confirmMsg =
-      `${verb === 'mute' ? 'Mute' : 'Block'} ${dids.length} account(s)?` +
+      `${verb === 'mute' ? 'Mute' : 'Block'} ${dids.length} account(s) from ${audienceLabel}?` +
       subjectLine +
       durationLine +
       permanentWarning;
@@ -235,7 +272,8 @@ export function QuoteSweepTab({ onReload }: QuoteSweepTabProps): JSX.Element {
       // The AppView lags behind, so a re-fetch would still report them as not-blocked and
       // re-select them — letting a double-tap create duplicate records. Flipping the local
       // flag removes them from the selectable set immediately.
-      const actioned = new Set(dids);
+      // A partial response does not identify successful DIDs. Keep failures retryable.
+      const actioned = new Set(result.failed === 0 ? dids : []);
       quoteQuoters.value = quoteQuoters.value.map((q) =>
         actioned.has(q.did)
           ? isMute
@@ -270,12 +308,29 @@ export function QuoteSweepTab({ onReload }: QuoteSweepTabProps): JSX.Element {
           />
         )}
         <div class="copy-user-intro">
-          <h3>Quote Sweep</h3>
+          <h3>Post actions</h3>
           <p>
-            Fetch everyone who quote-posted a given Bluesky post, then bulk block or mute the
-            accounts you select. Paste a post URL or at:// URI below.
+            Choose quote authors, reposters or likers of a Bluesky post. Review the fetched
+            accounts, exclude anyone you want to keep, then confirm a block or mute. Your own
+            account and accounts you follow are protected when viewer state is available.
           </p>
-
+          <label>
+            Audience
+            <select
+              aria-label="Audience"
+              value={audience}
+              disabled={loading}
+              onChange={(e) => {
+                quoteAudience.value = (e.target as HTMLSelectElement).value as PostAudience | '';
+                clearQuoteSelection();
+              }}
+            >
+              <option value="">Choose an audience</option>
+              <option value="quotes">Quote authors</option>
+              <option value="reposts">Reposters</option>
+              <option value="likes">Likers</option>
+            </select>
+          </label>
           <div class="copy-user-input-row">
             <input
               type="text"
@@ -289,14 +344,19 @@ export function QuoteSweepTab({ onReload }: QuoteSweepTabProps): JSX.Element {
             <button
               class="copy-user-fetch-btn"
               onClick={handleFetch}
-              disabled={loading || !postRef.trim()}
+              disabled={loading || !postRef.trim() || !audience}
             >
               <Search size={16} class={loading ? 'spinner' : ''} />
-              {loading ? 'Fetching...' : 'Fetch quotes'}
+              {loading ? 'Fetching...' : 'Fetch accounts'}
             </button>
           </div>
 
-          {loading && <div class="copy-user-progress">Fetching quote posters...</div>}
+          {loading && (
+            <div class="copy-user-progress">
+              Fetching {audienceLabel.toLowerCase()}...
+              <button onClick={cancelFetch}>Cancel fetch</button>
+            </div>
+          )}
 
           {error && (
             <div class="copy-user-error">
@@ -323,7 +383,9 @@ export function QuoteSweepTab({ onReload }: QuoteSweepTabProps): JSX.Element {
       {/* Subject + new-sweep control */}
       <div class="copy-user-target-card">
         <div class="copy-user-target-info">
-          <div class="copy-user-target-name">{quoters.length} quote poster(s)</div>
+          <div class="copy-user-target-name">
+            {quoters.length} {audienceLabel.toLowerCase()} fetched
+          </div>
           {subject && (
             <a
               class="copy-user-target-handle"
@@ -348,14 +410,16 @@ export function QuoteSweepTab({ onReload }: QuoteSweepTabProps): JSX.Element {
       {viewerStateUnavailable && (
         <div class="copy-user-warning">
           <AlertTriangle size={16} />
-          Couldn't check who you already block — review selections carefully before acting.
+          Couldn't check all account relationships, including your own account, follows, blocks and
+          mutes — select accounts individually and review carefully before acting.
         </div>
       )}
 
       {truncated && (
         <div class="copy-user-warning">
           <AlertTriangle size={16} />
-          This post has more quoters than we could fetch — the list below is incomplete.
+          The fetched {audienceLabel.toLowerCase()} list is incomplete (page limit, repeated cursor
+          or interrupted read). Review only the accounts shown below.
         </div>
       )}
 
@@ -379,8 +443,11 @@ export function QuoteSweepTab({ onReload }: QuoteSweepTabProps): JSX.Element {
         </div>
 
         <div class="quote-sweep-duration">
-          <label class="quote-sweep-duration-label">Duration:</label>
+          <label class="quote-sweep-duration-label" for="post-action-duration">
+            Duration:
+          </label>
           <select
+            id="post-action-duration"
             class="quote-sweep-duration-select"
             value={String(duration)}
             onChange={(e) => (quoteDuration.value = Number((e.target as HTMLSelectElement).value))}
@@ -412,11 +479,13 @@ export function QuoteSweepTab({ onReload }: QuoteSweepTabProps): JSX.Element {
       {/* Quoter grid */}
       <div class="copy-user-list">
         <div class="copy-user-list-header">
-          <h4>Quote posters ({quoters.length})</h4>
+          <h4>
+            {audienceLabel} ({quoters.length} fetched)
+          </h4>
           <button
             class="copy-user-select-all-btn"
             onClick={handleSelectAll}
-            disabled={selectableDids.length === 0 || executing}
+            disabled={selectableDids.length === 0 || executing || viewerStateUnavailable}
           >
             {allSelected ? <CheckSquare size={14} /> : <Square size={14} />}
             {allSelected ? 'Deselect All' : 'Select All'}
@@ -431,13 +500,21 @@ export function QuoteSweepTab({ onReload }: QuoteSweepTabProps): JSX.Element {
                 quoter={q}
                 selected={selected.has(q.did)}
                 isAlreadyDone={alreadyDone}
-                alreadyLabel={actionType === 'block' ? 'Already blocked' : 'Already muted'}
+                alreadyLabel={
+                  q.followed
+                    ? 'You follow this account'
+                    : actionType === 'block'
+                      ? 'Already blocked'
+                      : 'Already muted'
+                }
                 onToggle={() => toggleQuoteSelection(q.did)}
                 disabled={executing}
               />
             );
           })}
-          {quoters.length === 0 && <div class="copy-user-empty">No quote posters found</div>}
+          {quoters.length === 0 && (
+            <div class="copy-user-empty">No {audienceLabel.toLowerCase()} found</div>
+          )}
         </div>
         <div class="copy-user-list-actions">
           <button
@@ -481,14 +558,15 @@ function QuoterRow({
       class={`copy-user-row ${selected ? 'selected' : ''} ${isAlreadyDone ? 'already-done' : ''}`}
       onClick={() => !isAlreadyDone && !disabled && onToggle()}
     >
-      <span class="copy-user-row-checkbox">
-        {isAlreadyDone ? (
-          <Check size={14} class="already-check" />
-        ) : selected ? (
-          <CheckSquare size={14} />
-        ) : (
-          <Square size={14} />
-        )}
+      <span class="copy-user-row-checkbox" onClick={(e) => e.stopPropagation()}>
+        <input
+          type="checkbox"
+          aria-label={`Select @${quoter.handle}`}
+          checked={selected}
+          disabled={disabled || isAlreadyDone}
+          onChange={onToggle}
+        />
+        {isAlreadyDone && <Check size={14} class="already-check" />}
       </span>
       <a
         class="copy-user-row-link"

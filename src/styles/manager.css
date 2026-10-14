@@ -195,7 +195,6 @@ header h1 {
   font-weight: var(--font-weight-5);
   color: var(--text-2);
   border-radius: var(--radius-md);
-  transition: all var(--ease-2) 0.2s;
 }
 
 .tab:hover {
@@ -203,7 +202,7 @@ header h1 {
 }
 
 .tab.active {
-  background: var(--brand-primary);
+  background: var(--blue-8);
   color: white;
 }
 
@@ -243,7 +242,7 @@ header h1 {
 }
 
 /* Dark mode adjustments */
-@media (prefers-color-scheme: dark) {
+:root[data-theme='dark'] {
   .tab[data-group-start="true"]:not(:first-child)::before {
     background: var(--gray-6);
   }
@@ -3897,17 +3896,21 @@ tr.expanded-row > td {
   font-size: var(--font-size-1);
   font-weight: var(--font-weight-5);
   cursor: pointer;
-  transition: all var(--ease-2) 0.2s;
 }
 
-.quote-sweep-toggle-btn:hover:not(:disabled) {
+.quote-sweep-toggle-btn:hover:not(:disabled):not(.active) {
   background: var(--surface-2);
 }
 
 .quote-sweep-toggle-btn.active {
-  background: var(--brand-primary);
+  background: var(--blue-8);
   color: white;
-  border-color: var(--brand-primary);
+  border-color: var(--blue-8);
+}
+
+.quote-sweep-toggle-btn.active:hover:not(:disabled) {
+  background: var(--blue-9);
+  border-color: var(--blue-9);
 }
 
 .quote-sweep-toggle-btn:disabled {
@@ -4102,7 +4105,7 @@ tr.expanded-row > td {
 }
 
 /* Dark mode */
-@media (prefers-color-scheme: dark) {
+:root[data-theme='dark'] {
   .first-run-empty-state {
     background: var(--gray-8);
   }
@@ -4196,7 +4199,7 @@ tr.expanded-row > td {
 }
 
 /* Dark mode */
-@media (prefers-color-scheme: dark) {
+:root[data-theme='dark'] {
   .column-toggle {
     background: var(--gray-8);
   }

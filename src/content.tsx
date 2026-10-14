@@ -1174,9 +1174,9 @@ function injectMenuItems(menu: Element): void {
 }
 
 /**
- * Inject a "Sweep quotes" item into a post menu. On click, open the manager's Quote
- * Sweep tab pre-filled with the post's at-uri so the user can fetch + bulk-block its
- * quote posters.
+ * Inject a "Post actions" item into a post menu. Open the manager prefilled with
+ * the post's at-uri; the user chooses quote authors, reposters or likers before
+ * fetching and reviewing accounts.
  *
  * Mirrors injectPeekOption's clone-and-modify pattern. The post at-uri comes from the
  * same lastClickedPostContainer / findPostContainer machinery the peek flow uses.
@@ -1207,7 +1207,7 @@ function injectSweepQuotesOption(menu: Element): void {
   sweepItem.setAttribute('data-ergoblock-sweep-quotes', 'true');
   sweepItem.setAttribute('tabindex', '0');
 
-  const textLabel = 'Sweep quotes';
+  const textLabel = 'Post actions';
   const updateText = (el: Element): boolean => {
     for (const child of el.childNodes) {
       if (child.nodeType === Node.TEXT_NODE && child.textContent?.trim()) {

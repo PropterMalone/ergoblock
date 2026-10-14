@@ -6,6 +6,7 @@ import { useEffect, useCallback } from 'preact/hooks';
 import type { JSX } from 'preact';
 import { send } from './platform/messages.js';
 import { createLogger } from './platform/utils.js';
+import { useStoredTheme } from './ui/hooks/useTheme.js';
 import { KOFI_URL, SUPPORT_LABEL } from './ui/constants/support.js';
 
 const log = createLogger('manager');
@@ -70,6 +71,7 @@ import {
 const TEMP_UNBLOCK_DURATION = 60 * 1000; // 60 seconds
 
 function ManagerApp(): JSX.Element {
+  useStoredTheme();
   // Load all data
   const loadData = useCallback(async () => {
     const [

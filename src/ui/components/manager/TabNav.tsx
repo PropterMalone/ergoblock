@@ -56,8 +56,9 @@ const TABS: Tab[] = [
   },
   {
     id: 'quote-sweep',
-    label: 'Quote Sweep',
-    tooltip: 'Fetch everyone who quote-posted a post and bulk block/mute them',
+    label: 'Post actions',
+    tooltip:
+      'Review quote authors, reposters or likers of a post, then block or mute selected accounts',
     group: 'advanced',
   },
   {

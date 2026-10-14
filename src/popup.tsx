@@ -15,6 +15,7 @@ import {
 } from './platform/storage.js';
 import { Mark, Wordmark, Btn, Icon } from './ui/components/shared/index.js';
 import { createLogger } from './platform/utils.js';
+import { useStoredTheme } from './ui/hooks/useTheme.js';
 
 const log = createLogger('popup');
 
@@ -36,6 +37,7 @@ type Screen =
   | { kind: 'loading' }
   | { kind: 'no-auth' }
   | { kind: 'no-profile' }
+  | { kind: 'error' }
   | { kind: 'action'; profile: ProfileData; existing: ExistingAction | null };
 
 type ActionTab = 'block' | 'mute';
@@ -104,25 +106,22 @@ function initialsFromName(name: string): string {
 // ── Data load ───────────────────────────────────────────────────────────────
 
 async function loadInitialState(): Promise<void> {
-  // 1. Auth check first — if not authenticated, show first-run/connect
-  const auth = await send('GET_AUTH_STATUS');
-  if (!auth.success || !auth.isAuthenticated) {
-    screen.value = { kind: 'no-auth' };
-    return;
-  }
-
-  // 2. Find active tab + extract profile handle if present
-  const tabs = await browser.tabs.query({ active: true, currentWindow: true });
-  const activeUrl = tabs[0]?.url;
-  const handle = parseHandleFromBlueskyUrl(activeUrl);
-
-  if (!handle) {
-    screen.value = { kind: 'no-profile' };
-    return;
-  }
-
-  // 3. Resolve handle → DID + profile data
+  screen.value = { kind: 'loading' };
   try {
+    const auth = await send('GET_AUTH_STATUS');
+    if (!auth || !auth.success || typeof auth.isAuthenticated !== 'boolean') {
+      throw new Error('Authentication status unavailable');
+    }
+    if (!auth.isAuthenticated) {
+      screen.value = { kind: 'no-auth' };
+      return;
+    }
+    const tabs = await browser.tabs.query({ active: true, currentWindow: true });
+    const handle = parseHandleFromBlueskyUrl(tabs[0]?.url);
+    if (!handle) {
+      screen.value = { kind: 'no-profile' };
+      return;
+    }
     const resolved = await send('RESOLVE_HANDLE', { handle });
     if (!resolved.success || !resolved.profile) {
       screen.value = { kind: 'no-profile' };
@@ -135,8 +134,8 @@ async function loadInitialState(): Promise<void> {
 
     screen.value = { kind: 'action', profile, existing };
   } catch (err) {
-    log.error('Failed to resolve handle:', err);
-    screen.value = { kind: 'no-profile' };
+    log.error('Failed to load popup:', err);
+    screen.value = { kind: 'error' };
   }
 }
 
@@ -514,7 +513,8 @@ function LoadingScreen() {
   );
 }
 
-function PopupApp() {
+export function PopupApp() {
+  useStoredTheme();
   useEffect(() => {
     void loadInitialState();
   }, []);
@@ -523,6 +523,20 @@ function PopupApp() {
   if (s.kind === 'loading') return <LoadingScreen />;
   if (s.kind === 'no-auth') return <NoAuthScreen />;
   if (s.kind === 'no-profile') return <NoProfileScreen />;
+  if (s.kind === 'error')
+    return (
+      <PopupShell>
+        <div class="empty-state">
+          <div role="alert">Could not load ErgoBlock. Please try again.</div>
+          <Btn variant="primary" onClick={() => void loadInitialState()}>
+            Retry
+          </Btn>
+          <Btn variant="secondary" onClick={openManager}>
+            Open manager
+          </Btn>
+        </div>
+      </PopupShell>
+    );
   if (s.existing) {
     return <AlreadyActionedScreen profile={s.profile} existing={s.existing} />;
   }

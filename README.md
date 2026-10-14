@@ -80,8 +80,8 @@ Pre-built releases will be available on the [Releases page](https://github.com/P
 
 This project uses GitHub Actions for automated quality control and releases:
 - **PR Checks**: Every Pull Request is checked for linting (ESLint), code formatting (Prettier), and test coverage (Vitest). All checks must pass before merging.
-- **Version Enforcement**: PRs must include a version bump in `package.json` to be merged.
-- **Auto-Release**: Merging to `main` automatically creates a GitHub Release and attaches the extension zip if the version is new.
+- **Versioning**: Bump `package.json` when preparing a release; trial and maintenance PRs can keep the current version.
+- **Auto-Release**: Merging a new version to `main` creates a GitHub Release and submits builds to the Chrome and Firefox stores. Keeping the existing version skips release and submission.
 
 ## Usage
 
@@ -90,6 +90,16 @@ This project uses GitHub Actions for automated quality control and releases:
 3. Select **Temp Mute...** or **Temp Block...**.
 4. Choose your desired duration.
 5. The user will be automatically unblocked/unmuted when the time expires.
+
+## Post actions
+
+Open **Post actions** in the manager, or choose it from a post's three-dot menu. Paste a Bluesky post URL or `at://` URI, explicitly choose **Quote authors**, **Reposters**, or **Likers**, then fetch accounts. Opening this page or fetching accounts never blocks or mutes anyone.
+
+Review the fetched accounts and deselect anyone you want to exclude. Your own account is excluded when signed in; accounts you follow and accounts already blocked or muted for the chosen action are protected. If relationship checks are unavailable, ErgoBlock warns you, starts with nothing selected, and disables Select All. Select accounts individually only after checking them.
+
+Choose block or mute and a duration: 1 hour, 24 hours, 7 days, 30 days, or Permanent. The confirmation names the audience, selected count, post, action and duration. **Permanent mutes and blocks do not expire**; remove them manually. Cancel the confirmation to make no changes.
+
+Fetching is limited to 50 pages of up to 100 entries (at most 5,000 unique accounts). Repeated cursors or interrupted reads also produce an incomplete-list warning. Counts describe fetched accounts, not every account that may have engaged. Cancel fetch stops further reads after any in-flight request finishes and discards late results. Existing `?tab=quote-sweep&postUri=...` links still prefill the post; you must choose an audience before fetching.
 
 ## Managing Active Temp Blocks/Mutes
 
