@@ -35,6 +35,8 @@ import {
   type QuotePoster,
 } from '../../signals/manager.js';
 import { Toast } from '../shared/Toast.js';
+import browser from '../../../platform/browser.js';
+import { PostBatchOutcomes, usePostBatches } from './PostBatchOutcomes.js';
 
 const log = createLogger('quote-sweep-tab');
 
@@ -82,6 +84,15 @@ export function QuoteSweepTab({ onReload }: QuoteSweepTabProps): JSX.Element {
     type: 'success' | 'error';
   } | null>(null);
 
+  const batches = usePostBatches();
+  const outcomes = (
+    <PostBatchOutcomes
+      runs={batches.runs}
+      error={batches.error}
+      refresh={batches.refresh}
+      onError={batches.setError}
+    />
+  );
   const activeRequest = useRef<string | null>(null);
   const audience = quoteAudience.value;
   const audienceLabel = { quotes: 'Quote authors', reposts: 'Reposters', likes: 'Likers' }[
@@ -94,7 +105,7 @@ export function QuoteSweepTab({ onReload }: QuoteSweepTabProps): JSX.Element {
   const actionType = quoteActionType.value;
   const duration = quoteDuration.value;
   const loading = quoteLoading.value;
-  const executing = quoteExecuting.value;
+  const executing = quoteExecuting.value || batches.busy;
   const error = quoteError.value;
   const viewerStateUnavailable = quoteViewerStateUnavailable.value;
   const truncated = quoteTruncated.value;
@@ -211,7 +222,17 @@ export function QuoteSweepTab({ onReload }: QuoteSweepTabProps): JSX.Element {
 
   const handleExecute = async () => {
     const dids = selectableDids.filter((did) => quoteSelected.value.has(did));
-    if (dids.length === 0 || quoteExecuting.value || quoteLoading.value || !audience) return;
+    if (dids.length === 0 || executing || quoteLoading.value || !audience || !subject) return;
+    const authData = await browser.storage.local.get('authToken');
+    const auth: unknown = authData.authToken;
+    const owner =
+      auth && typeof auth === 'object' && 'did' in auth && typeof auth.did === 'string'
+        ? auth.did
+        : null;
+    if (!owner) {
+      batches.setError('Open Bluesky and connect your account before confirming.');
+      return;
+    }
 
     const isMute = actionType === 'mute';
     const isPermanent = duration === -1;
@@ -230,59 +251,37 @@ export function QuoteSweepTab({ onReload }: QuoteSweepTabProps): JSX.Element {
       : '';
     const confirmMsg =
       `${verb === 'mute' ? 'Mute' : 'Block'} ${dids.length} account(s) from ${audienceLabel}?` +
+      `\nAccount: ${owner}` +
       subjectLine +
       durationLine +
       permanentWarning;
     if (!confirm(confirmMsg)) return;
 
-    const handles: Record<string, string> = {};
-    for (const q of quoters) handles[q.did] = q.handle;
+    const selectedSet = new Set(dids);
+    const targets = quoters
+      .filter((q) => selectedSet.has(q.did))
+      .map(({ did, handle }) => ({ did, handle }));
 
     quoteExecuting.value = true;
     setResultToast(null);
 
     try {
-      const result = await send('BULK_TEMP_ACTION', {
-        dids,
-        handles,
-        isMute,
+      await send('START_POST_BATCH', {
+        owner,
+        sourcePost: subject,
+        audience,
+        action: actionType,
         durationMs: duration,
-        isPermanent,
+        confirmed: true,
+        targets,
       });
-
-      if (result.failed > 0) {
-        log.warn('Bulk action partial failures:', result.errors);
-        // Surface the actual failed @handle: reason list, not just a count, so the user
-        // knows who didn't go through and why.
-        const detail = result.errors.length > 0 ? `\n${result.errors.join('\n')}` : '';
-        const skippedNote = result.skipped > 0 ? `, ${result.skipped} skipped` : '';
-        setResultToast({
-          message: `${result.created} ${verb}ed, ${result.failed} failed${skippedNote}${detail}`,
-          type: 'error',
-        });
-      } else {
-        const skippedNote = result.skipped > 0 ? ` (${result.skipped} already done)` : '';
-        setResultToast({
-          message: `${verb === 'mute' ? 'Muted' : 'Blocked'} ${result.created} account(s)${skippedNote}`,
-          type: 'success',
-        });
-      }
-
-      // Mark the just-actioned DIDs as done locally instead of re-fetching + select-all.
-      // The AppView lags behind, so a re-fetch would still report them as not-blocked and
-      // re-select them — letting a double-tap create duplicate records. Flipping the local
-      // flag removes them from the selectable set immediately.
-      // A partial response does not identify successful DIDs. Keep failures retryable.
-      const actioned = new Set(result.failed === 0 ? dids : []);
-      quoteQuoters.value = quoteQuoters.value.map((q) =>
-        actioned.has(q.did)
-          ? isMute
-            ? { ...q, alreadyMuted: true }
-            : { ...q, alreadyBlocked: true }
-          : q
-      );
       clearQuoteSelection();
+      await batches.refresh();
       await onReload();
+      setResultToast({
+        message: 'Operation saved. Follow progress and account outcomes below.',
+        type: 'success',
+      });
     } catch (err) {
       log.error('Bulk action failed:', err);
       setResultToast({
@@ -298,6 +297,7 @@ export function QuoteSweepTab({ onReload }: QuoteSweepTabProps): JSX.Element {
   if (quoters.length === 0 && !subject) {
     return (
       <div class="copy-user-container">
+        {outcomes}
         {resultToast && (
           <Toast
             message={resultToast.message}
@@ -372,6 +372,7 @@ export function QuoteSweepTab({ onReload }: QuoteSweepTabProps): JSX.Element {
   // ── Results state ─────────────────────────────────────────────────────────
   return (
     <div class="copy-user-container">
+      {outcomes}
       {resultToast && (
         <Toast
           message={resultToast.message}

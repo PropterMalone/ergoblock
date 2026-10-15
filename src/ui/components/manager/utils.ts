@@ -1,7 +1,7 @@
 /**
  * Utility functions for Manager page
  */
-import type { ManagedEntry, HistoryEntry, PostContext, ListMember } from '../../../types.js';
+import type { ManagedEntry, HistoryEntry, PostContext } from '../../../types.js';
 import type { SortColumn, SortDirection, FilterType } from '../../signals/manager.js';
 
 export function formatTimeAgo(timestamp: number): string {
@@ -93,7 +93,6 @@ export function filterAndSort<T extends ManagedEntry | HistoryEntry | PostContex
   sourceFilter: string,
   column: SortColumn,
   direction: SortDirection,
-  amnestyMap?: Map<string, 'denied'>,
   typeFilter?: FilterType
 ): T[] {
   let filtered = items.filter((item) => {
@@ -138,15 +137,6 @@ export function filterAndSort<T extends ManagedEntry | HistoryEntry | PostContex
         cmp = sourceA.localeCompare(sourceB);
         break;
       }
-      case 'amnesty': {
-        // Denied sorts before Unreviewed
-        const didA = 'did' in a ? (a as ManagedEntry).did : '';
-        const didB = 'did' in b ? (b as ManagedEntry).did : '';
-        const statusA = amnestyMap?.get(didA) === 'denied' ? 0 : 1;
-        const statusB = amnestyMap?.get(didB) === 'denied' ? 0 : 1;
-        cmp = statusA - statusB;
-        break;
-      }
       case 'expires': {
         const expA = 'expiresAt' in a ? (a as ManagedEntry).expiresAt || Infinity : Infinity;
         const expB = 'expiresAt' in b ? (b as ManagedEntry).expiresAt || Infinity : Infinity;
@@ -166,79 +156,4 @@ export function filterAndSort<T extends ManagedEntry | HistoryEntry | PostContex
   });
 
   return filtered;
-}
-
-// Forgiveness period options
-export const FORGIVENESS_OPTIONS = [
-  { value: 30, label: '1 month' },
-  { value: 60, label: '2 months' },
-  { value: 90, label: '3 months' },
-  { value: 180, label: '6 months' },
-  { value: 365, label: '1 year' },
-];
-
-export function getForgivenessPeriodMs(days: number): number {
-  return days * 24 * 60 * 60 * 1000;
-}
-
-export function getAmnestyCandidates(
-  allBlocks: ManagedEntry[],
-  allMutes: ManagedEntry[],
-  forgivenessDays: number,
-  reviewedDids: Set<string>
-): ManagedEntry[] {
-  const now = Date.now();
-  const cutoff = now - getForgivenessPeriodMs(forgivenessDays);
-
-  const blockCandidates = allBlocks.filter((block) => {
-    const blockDate = block.createdAt || block.syncedAt || now;
-    if (blockDate > cutoff) return false;
-    if (block.viewer?.blockedBy) return false;
-    if (reviewedDids.has(block.did)) return false;
-    return true;
-  });
-
-  const muteCandidates = allMutes.filter((mute) => {
-    const muteDate = mute.createdAt || mute.syncedAt || now;
-    if (muteDate > cutoff) return false;
-    if (reviewedDids.has(mute.did)) return false;
-    return true;
-  });
-
-  return [...blockCandidates, ...muteCandidates];
-}
-
-export function selectRandomCandidate(candidates: ManagedEntry[]): ManagedEntry | null {
-  if (candidates.length === 0) return null;
-  const index = Math.floor(Math.random() * candidates.length);
-  return candidates[index] ?? null;
-}
-
-export function postUriToUrl(postUri: string): string {
-  return postUri
-    .replace('at://', 'https://bsky.app/profile/')
-    .replace('/app.bsky.feed.post/', '/post/');
-}
-
-// ============================================================================
-// List Audit Utilities
-// ============================================================================
-
-/**
- * Get list audit candidates - members that haven't been reviewed yet
- */
-export function getListAuditCandidates(
-  members: ListMember[],
-  reviewedDids: Set<string>
-): ListMember[] {
-  return members.filter((member) => !reviewedDids.has(member.did));
-}
-
-/**
- * Select a random candidate from list audit candidates
- */
-export function selectRandomListMember(candidates: ListMember[]): ListMember | null {
-  if (candidates.length === 0) return null;
-  const index = Math.floor(Math.random() * candidates.length);
-  return candidates[index] ?? null;
 }

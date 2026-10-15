@@ -14,7 +14,7 @@ interface ToolbarProps {
 export function Toolbar({ onBulkRemove }: ToolbarProps): JSX.Element {
   const count = selectedItems.value.size;
   const tab = currentTab.value;
-  const isHidden = tab === 'amnesty' || tab === 'blocklist-audit';
+  const isHidden = tab !== 'actions';
 
   if (isHidden) {
     return <></>;

@@ -90,8 +90,14 @@ export function OptionsApp() {
     if (confirm('Reset all settings to defaults?')) {
       setSaving(true);
       try {
-        await setOptions(DEFAULT_OPTIONS);
-        setLocalOptions(DEFAULT_OPTIONS);
+        const resetOptions = {
+          ...DEFAULT_OPTIONS,
+          savePostContext: options.savePostContext,
+          postContextRetentionDays: options.postContextRetentionDays,
+          forgivenessPeriodDays: options.forgivenessPeriodDays,
+        };
+        await setOptions(resetOptions);
+        setLocalOptions(resetOptions);
         showStatus('Settings reset to defaults', 'success');
       } catch (error) {
         log.error('Failed to reset options:', error);

@@ -235,6 +235,8 @@ export interface GetMutesResponse {
  * Permanent block/mute from Bluesky (not managed by ErgoBlock)
  */
 export interface PermanentBlockMute {
+  ownerDid?: string;
+  trackingId?: string;
   did: string;
   handle: string;
   displayName?: string;
@@ -245,8 +247,8 @@ export interface PermanentBlockMute {
   mutualBlock?: boolean; // True if user has also blocked us back
   // Relationship state (from getProfiles viewer)
   viewer?: ProfileViewerState;
-  // Review queue fields
-  needsReview?: boolean; // True if this block/mute was created externally and needs review
+  // Legacy metadata retained for stored-data compatibility; no new review classification.
+  needsReview?: boolean;
   source?: 'ergoblock' | 'external'; // Origin of this block/mute
 }
 

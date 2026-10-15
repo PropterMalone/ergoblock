@@ -25,11 +25,9 @@ Temporary blocking and muting for Bluesky. Users can block/mute accounts for con
 - **Post actions (trial)**: Fetch quote authors, reposters, or likers of a post into a selectable grid (manager tab + in-page "Post actions" menu item), then confirm a temporary or permanent block/mute of reviewed accounts. Protects self and follows when authenticated relationship data is available; unavailable data disables automatic selection. Preserves exclusions across action changes, supports fetch cancellation, and labels incomplete results. Uses the existing quote-sweep message and deep-link routes for compatibility.
 - **Unified create path (v1.18)**: All block/mute creation (popup, content script, Quote Sweep) routes through one hardened background primitive (quota pre-check → API → storage with rollback → read-back verification). Fixes intermittent "fails to take" failures, chiefly by adding session-token refresh (tab-first, then a direct `com.atproto.server.refreshSession` fallback when no Bluesky tab is open).
 - **Popup as action-surface (v1.17+)**: Click extension on a Bluesky profile → block/mute with duration grid directly from popup
-- **Post Context**: Captures which post triggered the action
-- **Engagement Context**: Tracks when blocks originate from liked-by/reposted-by pages
-- **Amnesty Tab**: Review old blocks (3+ months) to decide if they should continue
-- **Blocklist Audit**: Find interactions between you and blocked users via CAR file parsing
-- **Manager UI**: Full-page interface at manager.html for managing all blocks, mutes, and history
+- **Manager UI**: Primary sections Blocks & Mutes, Post actions, Settings. Mass Ops and Copy User live in a collapsed Advanced disclosure.
+- **Set expiration**: Add tracking to an existing permanent block or mute without creating another server action (`domains/action-duration.ts`).
+- **Retired features**: Amnesty, Blocklist Audit, Review Queue, repost hiding, automatic context capture and later interaction/context search are removed. Legacy data is preserved; ordinary action history and saved contexts remain exportable.
 - **QT Peek**: Reveal concealed (blocked/detached) quoted posts via public API, rendered inline with Shadow DOM
 - **Cross-Device Sync**: Uses Chrome sync storage
 - **Column Configuration**: Table columns can be shown/hidden per user preference
@@ -49,14 +47,13 @@ ergoblock/
 │   ├── types.ts               # Universal TypeScript interfaces
 │   │
 │   ├── domains/               # Business logic
-│   │   ├── (bg handlers)      # amnesty, api-client, expiration, graph-ops, etc.
-│   │   ├── carRepo.ts         # CAR file parsing
+│   │   ├── (bg handlers)      # api-client, expiration, graph-ops, etc.
+│   │   ├── carRepo.ts         # CAR parsing shared by Mass Ops and Copy User
 │   │   ├── carService.ts      # CAR download + caching orchestration
-│   │   ├── clearskyService.ts # Clearsky API integration
-│   │   ├── post-context.ts    # Post context capture
-│   │   ├── qt-peek.ts         # QT Peek: concealed quote detection + resolution
-│   │   ├── quote-sweep.ts     # Post audiences + confirmed bulk block/mute
-│   │   └── feed-filter.ts     # Feed filtering logic
+│   │   ├── action-duration.ts # Add tracking to an existing block/mute
+│   │   ├── post-container.ts  # DOM post targeting for menus and QT Peek
+│   │   ├── qt-peek.ts         # Concealed quote detection + resolution
+│   │   └── quote-sweep.ts     # Post audiences + confirmed bulk block/mute
 │   │
 │   ├── platform/              # Browser/protocol abstractions
 │   │   ├── api.ts             # Bluesky AT Protocol wrapper
@@ -65,7 +62,6 @@ ergoblock/
 │   │   ├── storage.ts         # Storage barrel re-export
 │   │   ├── storage/           # Storage submodules (keys, state, history, etc.)
 │   │   ├── carCache.ts        # CAR file IndexedDB cache
-│   │   ├── clearskyCache.ts   # Clearsky IndexedDB cache
 │   │   ├── idb-helpers.ts     # IndexedDB utilities
 │   │   └── utils.ts           # Shared utilities (retry, logging, formatting)
 │   │
@@ -117,9 +113,10 @@ Content Script ──► Background Service Worker ──► Bluesky API (AT Pro
 
 ### Key Mechanisms
 - **Menu Injection**: MutationObserver detects `[role="menu"]` elements, injects duration picker
-- **Expiration**: Chrome alarm fires every 60s, checks storage for expired timestamps
+- **Expiration**: Configured 1–10 minute alarm, owner-checked execution and visible health for overdue actions, sign-in problems, and deferred recovery. Checks are best effort while the browser/network/session are available.
+- **Post operations**: Local durable per-account journal; cooperative Stop, restart pause without uncertain replay, account-pinned requests, and exact-receipt Undo for unchanged own blocks only. Mutes require manual removal. See `domains/post-batch*.ts` and `platform/storage/tracking.ts`.
 - **Auth Sync**: Content script extracts JWT from Bluesky's localStorage, syncs to background worker
-- **Context Search**: Uses @atcute/car to parse user repos for finding interactions
+- **CAR consumers**: Mass Ops and Copy User share repository parsing and caching.
 - **QT Peek**: Detects concealed quote placeholders in DOM, resolves via public API through background worker (`FETCH_POSTS_PUBLIC` message), renders inline with Shadow DOM
 
 ## Quality Standards
@@ -145,7 +142,6 @@ Content Script ──► Background Service Worker ──► Bluesky API (AT Pro
 |------|----------|-------|
 | types.ts | 100% | Type guards and utilities |
 | domains/carRepo.ts | ~91% | CAR file parsing |
-| domains/post-context.ts | ~82% | Context capture |
 | platform/storage.ts | ~70% | Storage helpers |
 | platform/api.ts | ~47% | API wrapper |
 | background.ts | ~15% | Service worker (complex, hard to test) |

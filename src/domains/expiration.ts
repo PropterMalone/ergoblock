@@ -1,11 +1,15 @@
-/**
- * Expiration Engine - Auto-expire temporary blocks and mutes
- * Processes expired items and handles rollbacks from failed storage operations
- */
-
 import browser from '../platform/browser.js';
 import { normalizeCheckInterval } from '../platform/check-interval.js';
-import { getAuthToken, requestFreshAuth, sendNotification } from './api-client.js';
+import {
+  getAuthToken,
+  requestFreshAuth,
+  withAuthSession,
+  pinnedApiRequest,
+  AuthSessionChangedError,
+  isExpiredTokenError,
+  captureAuthGeneration,
+  refreshedAuthGeneration,
+} from './api-client.js';
 import { unblockUser, unmuteUser } from './graph-ops.js';
 import {
   getTempBlocks,
@@ -13,338 +17,276 @@ import {
   removeTempBlock,
   removeTempMute,
   addHistoryEntry,
-  cleanupExpiredPostContexts,
   getOptions,
   getProcessableRollbacks,
+  getPendingRollbacks,
   updatePendingRollback,
   removePendingRollback,
-  cleanupOldRollbacks,
+  withTrackingLock,
+  trackingMatches,
 } from '../platform/storage.js';
-import { AuthData } from '../types.js';
-import { executeApiRequest } from '../platform/api.js';
+import type { TrackingIdentity } from '../platform/storage/tracking.js';
+import {
+  emptyExpirationHealth,
+  getExpirationHealth,
+  saveExpirationHealth,
+  type ExpirationHealth,
+  type ExpirationOutcome,
+} from '../platform/expiration-health.js';
+import type { AuthData } from '../types.js';
 import { createLogger, Mutex } from '../platform/utils.js';
 
 const log = createLogger('bg:expiration');
 const alarmSetupMutex = new Mutex();
+const expirationMutex = new Mutex();
+interface ItemResult {
+  success: boolean;
+  authError: boolean;
+  reason?: string;
+}
+interface ExpiringItem extends TrackingIdentity {
+  handle: string;
+  expiresAt: number;
+  createdAt?: number;
+  rkey?: string;
+}
+function validAuth(auth: AuthData | null | undefined): auth is AuthData {
+  return !!(auth?.accessJwt && auth.did && auth.pdsUrl);
+}
 
-// Maximum concurrent expiration operations (prevents overwhelming the API)
-const MAX_CONCURRENT_EXPIRATIONS = 5;
-
-/**
- * Process a single expired block
- */
-async function processExpiredBlock(
+async function processExpiredItem(
+  kind: 'block' | 'mute',
   did: string,
-  data: { handle: string; expiresAt: number; createdAt?: number; rkey?: string },
-  auth: AuthData
-): Promise<{ success: boolean; authError: boolean }> {
-  log.info('Unblocking expired:', data.handle);
+  data: ExpiringItem,
+  auth: AuthData,
+  generation: number
+): Promise<ItemResult> {
+  if (data.ownerDid && data.ownerDid !== auth.did)
+    return {
+      success: false,
+      authError: true,
+      reason: `This expiration belongs to ${data.ownerDid}. Connect that account to expire it; tracking was preserved.`,
+    };
+  let backendSucceeded = false;
   try {
-    await unblockUser(did, auth.accessJwt, auth.did, auth.pdsUrl, data.rkey);
-    await removeTempBlock(did);
-    await addHistoryEntry({
-      did,
-      handle: data.handle,
-      action: 'unblocked',
-      timestamp: Date.now(),
-      trigger: 'auto_expire',
-      success: true,
-      duration: data.createdAt ? Date.now() - data.createdAt : undefined,
+    const succeeded = await withTrackingLock(async () => {
+      const checkTracking = async () => {
+        const current = (kind === 'block' ? await getTempBlocks() : await getTempMutes())[did];
+        if (!trackingMatches(current, data) || !current || current.expiresAt >= Date.now())
+          throw new Error('Expiration tracking was renewed or changed.');
+        if (current.ownerDid && current.ownerDid !== auth.did) throw new AuthSessionChangedError();
+      };
+      await checkTracking();
+      const options = { expectedGeneration: generation, beforeRequest: checkTracking };
+      // No auth lock or automatic refresh while holding the shared tracking mutation lock.
+      return kind === 'block'
+        ? unblockUser(did, auth.accessJwt, auth.did, auth.pdsUrl, data.rkey, auth, options)
+        : unmuteUser(did, auth.accessJwt, auth.pdsUrl, auth, options);
     });
-    log.info('Successfully unblocked:', data.handle);
-    await sendNotification('expired_success', data.handle, 'block');
+    if (!succeeded) throw new Error('Expiration action did not complete');
+    backendSucceeded = true;
+    await withAuthSession(
+      auth,
+      async () => {
+        const removed =
+          kind === 'block' ? await removeTempBlock(did, data) : await removeTempMute(did, data);
+        if (!removed) throw new Error('Tracking changed during expiration.');
+        await addHistoryEntry({
+          did,
+          handle: data.handle,
+          action: kind === 'block' ? 'unblocked' : 'unmuted',
+          timestamp: Date.now(),
+          trigger: 'auto_expire',
+          success: true,
+          duration: data.createdAt ? Date.now() - data.createdAt : undefined,
+        });
+      },
+      generation
+    );
     return { success: true, authError: false };
   } catch (error) {
-    log.error('Failed to unblock:', data.handle, error);
-
-    const isAuthError =
+    const authError =
+      !backendSucceeded &&
       error instanceof Error &&
-      (error.message.includes('401') || error.message.includes('Auth error'));
-
-    if (!isAuthError) {
-      // Only log non-auth failures (auth failures will be retried on next check)
-      await addHistoryEntry({
-        did,
-        handle: data.handle,
-        action: 'unblocked',
-        timestamp: Date.now(),
-        trigger: 'auto_expire',
-        success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
-      });
-      await sendNotification(
-        'expired_failure',
-        data.handle,
-        'block',
-        error instanceof Error ? error.message : 'Unknown error'
-      );
-    }
-
-    return { success: false, authError: isAuthError };
+      (error instanceof AuthSessionChangedError ||
+        isExpiredTokenError(error) ||
+        error.message.includes('401') ||
+        error.message.includes('Auth error'));
+    const reason = backendSucceeded
+      ? 'Bluesky action succeeded, but local tracking or history could not be updated. Check the account on Bluesky before retrying.'
+      : authError
+        ? 'Open Bluesky, sign in to the same account, then retry.'
+        : 'An expiration action failed. Check your connection, then retry.';
+    log.error(reason);
+    return { success: false, authError, reason };
   }
 }
 
-/**
- * Process a single expired mute
- */
-async function processExpiredMute(
-  did: string,
-  data: { handle: string; expiresAt: number; createdAt?: number },
-  auth: AuthData
-): Promise<{ success: boolean; authError: boolean }> {
-  log.info('Unmuting expired:', data.handle);
-  try {
-    await unmuteUser(did, auth.accessJwt, auth.pdsUrl);
-    await removeTempMute(did);
-    await addHistoryEntry({
-      did,
-      handle: data.handle,
-      action: 'unmuted',
-      timestamp: Date.now(),
-      trigger: 'auto_expire',
-      success: true,
-      duration: data.createdAt ? Date.now() - data.createdAt : undefined,
-    });
-    log.info('Successfully unmuted:', data.handle);
-    await sendNotification('expired_success', data.handle, 'mute');
-    return { success: true, authError: false };
-  } catch (error) {
-    log.error('Failed to unmute:', data.handle, error);
-
-    const isAuthError =
-      error instanceof Error &&
-      (error.message.includes('401') || error.message.includes('Auth error'));
-
-    if (!isAuthError) {
-      // Only log non-auth failures (auth failures will be retried on next check)
-      await addHistoryEntry({
-        did,
-        handle: data.handle,
-        action: 'unmuted',
-        timestamp: Date.now(),
-        trigger: 'auto_expire',
-        success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
-      });
-      await sendNotification(
-        'expired_failure',
-        data.handle,
-        'mute',
-        error instanceof Error ? error.message : 'Unknown error'
-      );
+/** Serialized separately from user actions so slow checks do not lock out Undo. */
+export async function checkExpirations(): Promise<ExpirationOutcome> {
+  return expirationMutex.runExclusive(async () => {
+    let health: ExpirationHealth = {
+      ...emptyExpirationHealth(),
+      lastAttemptAt: Date.now(),
+      status: 'running',
+    };
+    let healthSaved = true;
+    let finalSession: { auth: AuthData; generation: number } | undefined;
+    try {
+      const previous = await getExpirationHealth();
+      health.lastSuccessAt = previous.lastSuccessAt;
+    } catch {
+      log.error('Could not read previous expiration health.');
+      healthSaved = false;
     }
-
-    return { success: false, authError: isAuthError };
-  }
-}
-
-/**
- * Process items in batches with concurrency limit
- */
-async function processBatch<T, R>(
-  items: T[],
-  processor: (item: T) => Promise<R>,
-  maxConcurrent: number
-): Promise<R[]> {
-  const results: R[] = [];
-  for (let i = 0; i < items.length; i += maxConcurrent) {
-    const batch = items.slice(i, i + maxConcurrent);
-    const batchResults = await Promise.all(batch.map(processor));
-    results.push(...batchResults);
-  }
-  return results;
-}
-
-export async function checkExpirations(): Promise<void> {
-  log.info('Checking expirations...');
-
-  // Clean up expired screenshots based on retention policy
-  await cleanupExpiredPostContexts();
-
-  let auth = await getAuthToken();
-  if (!auth?.accessJwt || !auth?.did || !auth?.pdsUrl) {
-    log.info('No auth token available, trying to get fresh auth...');
-    auth = await requestFreshAuth();
-    if (!auth) {
-      log.info('Could not get auth, skipping check');
-      await browser.storage.local.set({ authStatus: 'invalid' });
-      return;
-    }
-  }
-
-  log.info('Using PDS:', auth.pdsUrl);
-  const now = Date.now();
-
-  // Collect expired blocks and mutes
-  const blocks = await getTempBlocks();
-  const mutes = await getTempMutes();
-
-  // An entry expires strictly after its expiresAt instant; `< now` (not `<= now`)
-  // avoids expiring an entry the very millisecond it is created when duration is 0-ish.
-  const expiredBlocks = Object.entries(blocks)
-    .filter(([, data]) => data.expiresAt < now)
-    .map(([did, data]) => ({ did, data }));
-
-  const expiredMutes = Object.entries(mutes)
-    .filter(([, data]) => data.expiresAt < now)
-    .map(([did, data]) => ({ did, data }));
-
-  log.info(`Found ${expiredBlocks.length} expired blocks, ${expiredMutes.length} expired mutes`);
-
-  // At this point auth is guaranteed non-null (we return early above if null)
-  let currentAuth: AuthData = auth;
-
-  // Process expired blocks in parallel batches
-  if (expiredBlocks.length > 0) {
-    let blockResults = await processBatch(
-      expiredBlocks,
-      ({ did, data }) => processExpiredBlock(did, data, currentAuth),
-      MAX_CONCURRENT_EXPIRATIONS
-    );
-
-    // If auth errors occurred, try to get fresh auth and retry failed blocks
-    if (blockResults.some((r) => r.authError)) {
-      log.info('Auth error during block expiration, requesting fresh auth...');
-      const freshAuth = await requestFreshAuth();
-      if (freshAuth) {
-        currentAuth = freshAuth;
-        // Find blocks that failed due to auth and retry them
-        const failedBlocks = expiredBlocks.filter((_, i) => blockResults[i].authError);
-        if (failedBlocks.length > 0) {
-          log.info(`Retrying ${failedBlocks.length} blocks with fresh auth`);
-          const retryResults = await processBatch(
-            failedBlocks,
-            ({ did, data }) => processExpiredBlock(did, data, currentAuth),
-            MAX_CONCURRENT_EXPIRATIONS
-          );
-          // Update results for logging
-          blockResults = retryResults;
-        }
+    healthSaved = (await saveExpirationHealth(health)) && healthSaved;
+    try {
+      let generation = captureAuthGeneration();
+      let auth = await getAuthToken();
+      if (!validAuth(auth)) {
+        auth = await requestFreshAuth();
+        if (auth) generation = refreshedAuthGeneration(auth) ?? generation;
       }
-    }
-
-    // Log final result
-    const stillFailed = blockResults.filter((r) => r.authError).length;
-    if (stillFailed > 0) {
-      log.info(`${stillFailed} blocks still failed after retry - will try again on next check`);
-    }
-  }
-
-  // Process expired mutes in parallel batches
-  if (expiredMutes.length > 0) {
-    let muteResults = await processBatch(
-      expiredMutes,
-      ({ did, data }) => processExpiredMute(did, data, currentAuth),
-      MAX_CONCURRENT_EXPIRATIONS
-    );
-
-    // If auth errors occurred, try to get fresh auth and retry failed mutes
-    if (muteResults.some((r) => r.authError)) {
-      log.info('Auth error during mute expiration, requesting fresh auth...');
-      const freshAuth = await requestFreshAuth();
-      if (freshAuth) {
-        currentAuth = freshAuth;
-        // Find mutes that failed due to auth and retry them
-        const failedMutes = expiredMutes.filter((_, i) => muteResults[i].authError);
-        if (failedMutes.length > 0) {
-          log.info(`Retrying ${failedMutes.length} mutes with fresh auth`);
-          const retryResults = await processBatch(
-            failedMutes,
-            ({ did, data }) => processExpiredMute(did, data, currentAuth),
-            MAX_CONCURRENT_EXPIRATIONS
-          );
-          // Update results for logging
-          muteResults = retryResults;
+      if (!validAuth(auth)) {
+        health.status = 'needs_auth';
+        health.authNeedsAttention = true;
+        health.reason =
+          'Open Bluesky and sign in, then select Check now. No expiration actions were checked.';
+        try {
+          await browser.storage.local.set({ authStatus: 'invalid' });
+        } catch {
+          log.error('Could not save sign-in attention status.');
+          healthSaved = false;
         }
+      } else {
+        health.accountDid = auth.did;
+        const owner = auth.did;
+        const blocks = await getTempBlocks();
+        const mutes = await getTempMutes();
+        const now = Date.now();
+        const items = [
+          ...Object.entries(blocks)
+            .filter(([, data]) => data.expiresAt < now)
+            .map(([did, data]) => ({ kind: 'block' as const, did, data })),
+          ...Object.entries(mutes)
+            .filter(([, data]) => data.expiresAt < now)
+            .map(([did, data]) => ({ kind: 'mute' as const, did, data })),
+        ];
+        // Sequential processing keeps tracking and history outcomes ordered.
+        for (const { kind, did, data } of items) {
+          let result = await processExpiredItem(kind, did, data, auth, generation);
+          if (result.authError && (!data.ownerDid || data.ownerDid === owner)) {
+            const freshAuth = await requestFreshAuth(auth);
+            if (validAuth(freshAuth) && freshAuth.did === owner) {
+              auth = freshAuth;
+              generation = refreshedAuthGeneration(freshAuth) ?? generation;
+              result = await processExpiredItem(kind, did, data, auth, generation);
+            }
+          }
+          if (result.success) health.completedCount++;
+          else {
+            health.failedCount++;
+            health.authNeedsAttention ||= result.authError;
+            // Prefer actionable local-tracking errors over a generic connectivity message.
+            if (!health.reason || result.reason?.startsWith('Bluesky action succeeded'))
+              health.reason = result.reason;
+          }
+        }
+        const rollbackFailures = await processPendingRollbacks(auth, generation);
+        health.failedCount += rollbackFailures;
+        const pendingRecovery = await getPendingRollbacks();
+        health.pendingRecoveryCount = pendingRecovery.length;
+        health.exhaustedRecoveryCount = pendingRecovery.filter(
+          (entry) => entry.attempts >= 5
+        ).length;
+        if (health.pendingRecoveryCount && !health.reason)
+          health.reason = health.exhaustedRecoveryCount
+            ? 'Pending recovery has exhausted automatic retries. Check the account on Bluesky; recovery remains queued.'
+            : 'Pending recovery is waiting for its next retry. Check again after the retry delay.';
+        health.status =
+          health.failedCount || health.pendingRecoveryCount
+            ? health.completedCount
+              ? 'partial'
+              : 'failed'
+            : 'success';
+        finalSession = { auth, generation };
       }
+    } catch {
+      log.error(
+        'Expiration check could not finish. Check your connection and local storage, then retry.'
+      );
+      health.status = health.completedCount ? 'partial' : 'failed';
+      health.failedCount++;
+      health.reason =
+        'Expiration check could not finish. Check your connection and local storage, then retry.';
     }
-
-    // Log final result
-    const stillFailed = muteResults.filter((r) => r.authError).length;
-    if (stillFailed > 0) {
-      log.info(`${stillFailed} mutes still failed after retry - will try again on next check`);
-    }
-  }
-
-  log.info('Expiration check complete');
-
-  // Also process any pending rollbacks (from failed storage operations)
-  await processPendingRollbacks();
+    health.finishedAt = Date.now();
+    if (finalSession) {
+      try {
+        await withAuthSession(
+          finalSession.auth,
+          async () => {
+            if (health.status === 'success') health.lastSuccessAt = Date.now();
+            healthSaved = (await saveExpirationHealth(health)) && healthSaved;
+          },
+          finalSession.generation
+        );
+      } catch {
+        health.status = health.completedCount
+          ? 'partial'
+          : health.failedCount
+            ? 'failed'
+            : 'needs_auth';
+        health.authNeedsAttention = true;
+        health.reason ??=
+          'The connected account or session changed during this check. Reconnect the intended account and check again.';
+        healthSaved = (await saveExpirationHealth(health)) && healthSaved;
+      }
+    } else healthSaved = (await saveExpirationHealth(health)) && healthSaved;
+    return { ...health, healthSaved };
+  });
 }
 
-/**
- * Process pending rollbacks from the queue
- * These are unblock/unmute operations that failed after a block/mute API call succeeded
- * but local storage failed, requiring the API action to be undone
- */
-async function processPendingRollbacks(): Promise<void> {
+async function processPendingRollbacks(auth: AuthData, generation: number): Promise<number> {
   const rollbacks = await getProcessableRollbacks();
-  if (rollbacks.length === 0) return;
-
-  log.info(`Processing ${rollbacks.length} pending rollbacks`);
-
-  // Get auth via getAuthToken() (includes .did and the refresh fallback) rather than
-  // reading storage.local.authToken directly, so a stale token can still be refreshed.
-  const auth = await getAuthToken();
-  if (!auth?.accessJwt || !auth?.did || !auth?.pdsUrl) {
-    log.warn('No auth token available for rollback processing');
-    return;
-  }
-
+  let failures = 0;
   for (const rollback of rollbacks) {
     try {
-      log.info(`Processing rollback: ${rollback.type} for ${rollback.handle}`);
-
       if (rollback.type === 'unblock') {
-        // Delete the block record. repo MUST be the OWNER did (our own repo), not the
-        // blocked user's did — the previous `repo: auth.pdsUrl ? undefined : rollback.did`
-        // sent undefined (PDS rejects) so block rollbacks never succeeded.
-        await executeApiRequest(
-          `com.atproto.repo.deleteRecord`,
+        await pinnedApiRequest(
+          'com.atproto.repo.deleteRecord',
           'POST',
           {
             repo: auth.did,
             collection: 'app.bsky.graph.block',
             rkey: rollback.rkey,
           },
-          auth
+          auth,
+          { refresh: false, expectedGeneration: generation }
         );
       } else if (rollback.type === 'unmute') {
-        // Unmute the user
-        await executeApiRequest(
+        await pinnedApiRequest(
           'app.bsky.graph.unmuteActor',
           'POST',
           { actor: rollback.did },
-          auth
+          auth,
+          { refresh: false, expectedGeneration: generation }
         );
       }
-
-      // Success - remove from queue
-      await removePendingRollback(rollback.id);
-      log.info(`Rollback successful for ${rollback.handle}`);
-    } catch (error) {
-      // Update attempt count
+      await withAuthSession(auth, () => removePendingRollback(rollback.id), generation);
+    } catch {
+      failures++;
+      log.error('Pending recovery action failed; it remains queued for retry.');
       await updatePendingRollback(rollback.id, {
         attempts: rollback.attempts + 1,
         lastAttempt: Date.now(),
-        error: error instanceof Error ? error.message : 'Unknown error',
+        error: 'Recovery action failed. Check connection and authentication.',
       });
-      log.error(`Rollback failed for ${rollback.handle}:`, error);
     }
   }
-
-  // Periodically clean up old rollbacks that have exceeded max attempts
-  const cleaned = await cleanupOldRollbacks();
-  if (cleaned > 0) {
-    log.info(`Cleaned up ${cleaned} old rollbacks`);
-  }
+  return failures;
 }
 
-/**
- * Set up expiration check alarm
- * @param alarmName - Name for the alarm (default: 'checkExpirations')
- * @param options - Alarm options (periodInMinutes from user settings)
- */
 export async function setupAlarm(
   alarmName = 'checkExpirations',
   options?: { periodInMinutes?: number }
@@ -354,11 +296,8 @@ export async function setupAlarm(
     const intervalMinutes = normalizeCheckInterval(
       options?.periodInMinutes ?? userOptions.checkInterval
     );
-
     await browser.alarms.clear(alarmName);
-    await browser.alarms.create(alarmName, {
-      periodInMinutes: intervalMinutes,
-    });
+    await browser.alarms.create(alarmName, { periodInMinutes: intervalMinutes });
     log.info('Alarm set up with interval:', intervalMinutes, 'minutes');
   });
 }

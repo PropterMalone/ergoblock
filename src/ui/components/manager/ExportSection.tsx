@@ -116,7 +116,7 @@ export function ExportSection(): JSX.Element {
           Export History (CSV)
         </button>
         <button class="export-btn" onClick={exportContextsCSV}>
-          Export Post Contexts (CSV)
+          Export Legacy Post Contexts (CSV)
         </button>
         <button class="export-btn" onClick={exportAllJSON}>
           Export Everything (JSON)

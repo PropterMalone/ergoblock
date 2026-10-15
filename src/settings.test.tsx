@@ -152,8 +152,28 @@ describe.each(screens)('$name', ({ component, intervalRole }) => {
     expect(
       document.getElementById(interval.getAttribute('aria-describedby') ?? '')?.textContent
     ).toMatch(/How often/);
-    if (intervalRole === 'combobox')
-      expect(view.getByRole('spinbutton', { name: 'Forgiveness period' })).toBeTruthy();
+    expect(view.queryByRole('spinbutton', { name: 'Forgiveness period' })).toBeNull();
+    expect(view.queryByText('Save post context')).toBeNull();
+    expect(view.queryByText('Amnesty')).toBeNull();
+  });
+
+  it('preserves retired option values when resetting active settings', async () => {
+    vi.stubGlobal('confirm', vi.fn().mockReturnValue(true));
+    await setOptions({
+      ...DEFAULT_OPTIONS,
+      savePostContext: false,
+      postContextRetentionDays: 123,
+      forgivenessPeriodDays: 45,
+    });
+    const view = render(component());
+    fireEvent.click(await view.findByRole('button', { name: 'Reset to Defaults' }));
+    await waitFor(async () =>
+      expect(await getOptions()).toMatchObject({
+        savePostContext: false,
+        postContextRetentionDays: 123,
+        forgivenessPeriodDays: 45,
+      })
+    );
   });
 
   it('normalizes legacy intervals to the value actually scheduled', async () => {

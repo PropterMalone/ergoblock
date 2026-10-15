@@ -5,34 +5,22 @@
 import { render } from 'preact';
 import browser from './platform/browser.js';
 import { send } from './platform/messages.js';
-import { getSession, getProfile, getProfiles, muteUser, unmuteUser } from './platform/api.js';
-import {
-  isRepostFiltered,
-  addRepostFilteredUser,
-  removeRepostFilteredUser,
-  getOptions,
-} from './platform/storage.js';
-import type { RepostFilteredUser, LastWordOptions } from './types.js';
-import {
-  buildPostContext,
-  capturePostContext,
-  findPostContainer,
-  type EngagementContext,
-  type NotificationContext,
-} from './domains/post-context.js';
-import type { NotificationReason } from './types.js';
+import { getSession, getProfile, muteUser, unmuteUser } from './platform/api.js';
+import { getOptions } from './platform/storage.js';
+import type { LastWordOptions } from './types.js';
+import { findPostContainer } from './domains/post-container.js';
 import { DurationPicker, type DurationOption } from './ui/components/content/DurationPicker.js';
 import { ContentToast } from './ui/components/content/ContentToast.js';
 import { NotificationMenu } from './ui/components/content/NotificationMenu.js';
 import { PeekedQuote } from './ui/components/content/PeekedQuote.js';
-import { initFeedFilter } from './domains/feed-filter.js';
+
 import {
   detectConcealedQuote,
   resolveQuoteEmbed,
   type ConcealedQuoteInfo,
   type PeekedQuoteContent,
 } from './domains/qt-peek.js';
-import { actionRateLimiter, createLogger, normalizeAtUri } from './platform/utils.js';
+import { actionRateLimiter, createLogger } from './platform/utils.js';
 
 const log = createLogger('content');
 
@@ -97,17 +85,6 @@ let profileFetchAbortController: AbortController | null = null;
 // Picker session ID to prevent stale profile fetches from updating wrong picker
 let currentPickerSessionId = 0;
 
-// Engagement context tracking (liked-by/reposted-by pages)
-let currentEngagementContext: EngagementContext | null = null;
-
-// Captured notification info when clicking block/mute in a notification menu
-// NOTE: This is a race condition risk - should be passed as parameters instead
-// TODO: Refactor to pass notification info through the call chain
-let capturedNotificationInfo: {
-  notificationType: NotificationReason | null;
-  subjectUri: string | null;
-} | null = null;
-
 /**
  * Clear stale DOM references to prevent memory leaks
  * Called periodically and after operations complete
@@ -159,7 +136,6 @@ function clearAllDomRefs(): void {
   lastClickedElement = null;
   capturedPostContainer = null;
   lastClickedPostContainer = null;
-  capturedNotificationInfo = null;
   lastDomRefTimestamp = 0;
 }
 
@@ -171,138 +147,10 @@ function touchDomRefs(): void {
 }
 
 /**
- * Extract engagement context from URL (liked-by or reposted-by pages)
- */
-function getEngagementContextFromUrl(url: string): EngagementContext | null {
-  const likedMatch = url.match(CONFIG.REGEX.LIKED_BY);
-  if (likedMatch) {
-    const [, handle, rkey] = likedMatch;
-    return {
-      type: 'like',
-      postUri: `at://${handle}/app.bsky.feed.post/${rkey}`,
-      sourceUrl: url,
-    };
-  }
-
-  const repostedMatch = url.match(CONFIG.REGEX.REPOSTED_BY);
-  if (repostedMatch) {
-    const [, handle, rkey] = repostedMatch;
-    return {
-      type: 'repost',
-      postUri: `at://${handle}/app.bsky.feed.post/${rkey}`,
-      sourceUrl: url,
-    };
-  }
-
-  return null;
-}
-
-/**
- * Check if current URL should preserve engagement context
- * Context is preserved on: engagement pages, profile pages, and the original post
- *
- * FIX: Now normalizes AT URIs before comparison to handle case differences
- */
-function shouldPreserveEngagementContext(url: string, context: EngagementContext | null): boolean {
-  if (!context) return false;
-
-  // Still on the same engagement page
-  if (url === context.sourceUrl) return true;
-
-  // On the original engagement page type (liked-by or reposted-by)
-  if (url.match(CONFIG.REGEX.LIKED_BY) || url.match(CONFIG.REGEX.REPOSTED_BY)) {
-    // Check if it's for the same post - normalize URIs for comparison
-    const newContext = getEngagementContextFromUrl(url);
-    if (newContext) {
-      const normalizedNew = normalizeAtUri(newContext.postUri);
-      const normalizedContext = normalizeAtUri(context.postUri);
-      if (normalizedNew === normalizedContext) return true;
-    }
-    // Different engagement page - will get new context
-    return false;
-  }
-
-  // On a profile page - preserve context (user clicked through to view profile)
-  if (url.match(/\/profile\/[^/]+$/) || url.match(/\/profile\/[^/]+\/?$/)) {
-    return true;
-  }
-
-  // On the original post page - preserve context
-  if (context.postUri) {
-    const postMatch = context.postUri.match(/at:\/\/([^/]+)\/app\.bsky\.feed\.post\/([^/]+)/);
-    if (postMatch) {
-      const [, handle, rkey] = postMatch;
-      // Case-insensitive comparison for handle portion
-      if (url.toLowerCase().includes(`/profile/${handle.toLowerCase()}/post/${rkey}`)) return true;
-    }
-  }
-
-  // Any other page - clear context
-  return false;
-}
-
-/**
- * Update engagement context based on current URL
- */
-function updateEngagementContext(): void {
-  const url = window.location.href;
-
-  // Check if we're on an engagement page
-  const newContext = getEngagementContextFromUrl(url);
-  if (newContext) {
-    currentEngagementContext = newContext;
-    log.info('Engagement context set:', newContext.type, newContext.postUri);
-    return;
-  }
-
-  // Check if we should preserve existing context
-  if (currentEngagementContext && !shouldPreserveEngagementContext(url, currentEngagementContext)) {
-    log.info('Engagement context cleared (navigated away)');
-    currentEngagementContext = null;
-  }
-}
-
-/**
  * Check if we're on the notifications page
  */
 function isNotificationsPage(): boolean {
   return CONFIG.REGEX.NOTIFICATIONS_PAGE.test(window.location.pathname);
-}
-
-/**
- * Detect notification type from a notification item's text content
- */
-function detectNotificationType(notificationItem: Element): NotificationReason | null {
-  const text = notificationItem.textContent?.toLowerCase() || '';
-
-  // Check for keywords that indicate notification type
-  if (text.includes('liked your') || text.includes('liked this')) return 'like';
-  if (text.includes('reposted your') || text.includes('reposted this')) return 'repost';
-  if (text.includes('followed you') || text.includes('started following')) return 'follow';
-  if (text.includes('mentioned you')) return 'mention';
-  if (text.includes('replied to') || text.includes('replied:')) return 'reply';
-  if (text.includes('quoted your') || text.includes('quoted this')) return 'quote';
-
-  return null;
-}
-
-/**
- * Extract the subject URI (post that was liked/reposted/replied to) from a notification item
- */
-function extractNotificationSubjectUri(notificationItem: Element): string | null {
-  // Look for post links within the notification
-  const postLinks = notificationItem.querySelectorAll('a[href*="/post/"]');
-
-  for (const link of postLinks) {
-    const href = (link as HTMLAnchorElement).href;
-    const match = href.match(CONFIG.REGEX.POST_URL);
-    if (match) {
-      const [, handle, rkey] = match;
-      return `at://${handle}/app.bsky.feed.post/${rkey}`;
-    }
-  }
-
-  return null;
 }
 
 /**
@@ -313,8 +161,6 @@ function extractUserFromNotification(
   triggerElement: HTMLElement | null
 ): {
   handle: string;
-  notificationType: NotificationReason | null;
-  subjectUri: string | null;
 } | null {
   // Find notification container
   const notificationItem =
@@ -322,8 +168,6 @@ function extractUserFromNotification(
     triggerElement?.closest(CONFIG.SELECTORS.NOTIFICATION_CONTAINER);
 
   if (!notificationItem) return null;
-
-  const notificationType = detectNotificationType(notificationItem);
 
   // For quote notifications, there are TWO profile links in the DOM:
   // 1. The quoting user (notification actor) - who we want to block
@@ -344,8 +188,6 @@ function extractUserFromNotification(
         if (match) {
           return {
             handle: match[1],
-            notificationType,
-            subjectUri: extractNotificationSubjectUri(notificationItem),
           };
         }
       }
@@ -364,8 +206,6 @@ function extractUserFromNotification(
 
   return {
     handle: handleMatch[1],
-    notificationType,
-    subjectUri: extractNotificationSubjectUri(notificationItem),
   };
 }
 
@@ -433,10 +273,7 @@ document.addEventListener(
 /**
  * Extract user info from the current page context
  */
-function extractUserFromPage(): {
-  handle: string;
-  notificationInfo?: { notificationType: NotificationReason | null; subjectUri: string | null };
-} | null {
+function extractUserFromPage(): { handle: string } | null {
   const profileMatch = window.location.pathname.match(CONFIG.REGEX.PROFILE_PATH);
   if (profileMatch) {
     return { handle: profileMatch[1] };
@@ -446,12 +283,9 @@ function extractUserFromPage(): {
 
 /**
  * Extract user info from a dropdown menu context
- * Returns handle and optionally notification context if on notifications page
+ * Uses notification actor targeting on the notifications page.
  */
-function extractUserFromMenu(menuElement: Element): {
-  handle: string;
-  notificationInfo?: { notificationType: NotificationReason | null; subjectUri: string | null };
-} | null {
+function extractUserFromMenu(menuElement: Element): { handle: string } | null {
   // Get current user's handle to avoid self-targeting
   const session = getSession();
   const currentUserHandle = session?.handle?.toLowerCase() || '';
@@ -466,18 +300,8 @@ function extractUserFromMenu(menuElement: Element): {
   if (isNotificationsPage()) {
     const notificationInfo = extractUserFromNotification(menuElement, lastClickedElement);
     if (notificationInfo && !isSelf(notificationInfo.handle)) {
-      log.info(
-        'Found user from notification context:',
-        notificationInfo.handle,
-        notificationInfo.notificationType
-      );
-      return {
-        handle: notificationInfo.handle,
-        notificationInfo: {
-          notificationType: notificationInfo.notificationType,
-          subjectUri: notificationInfo.subjectUri,
-        },
-      };
+      log.info('Found notification user:', notificationInfo.handle);
+      return { handle: notificationInfo.handle };
     }
   }
 
@@ -714,19 +538,6 @@ function closeMenus(): void {
 }
 
 /**
- * Build a NotificationContext from the most-recently captured notification info,
- * or null when the action did not originate from a notification.
- */
-function buildNotificationContext(): NotificationContext | null {
-  if (!capturedNotificationInfo?.notificationType) return null;
-  return {
-    notificationType: capturedNotificationInfo.notificationType,
-    subjectUri: capturedNotificationInfo.subjectUri || undefined,
-    sourceUrl: window.location.href,
-  };
-}
-
-/**
  * Handle temp block action
  */
 async function handleTempBlock(
@@ -742,8 +553,6 @@ async function handleTempBlock(
       throw new Error(`Too many actions. Please wait ${waitTime}s before blocking again.`);
     }
     actionRateLimiter.recordAction();
-
-    const postContainer = capturedPostContainer;
 
     const profile = await getProfile(handle);
     if (!profile?.did) {
@@ -765,36 +574,18 @@ async function handleTempBlock(
         durationMs,
         durationLabel,
         false, // not permanent
-        postContainer,
         lastWordOptions.delaySeconds
       );
       return;
     }
 
-    // Serialize DOM-derived post context here (the background has no page session),
-    // then delegate the create (quota pre-check, API call, storage write, rollback,
-    // read-back verification) to the unified background primitive.
-    const postContext = await buildPostContext(
-      postContainer,
-      handle,
-      profile.did,
-      'block',
-      false,
-      currentEngagementContext,
-      buildNotificationContext()
-    );
-
-    // Clear captured DOM refs after serialization to prevent memory leaks
-    capturedNotificationInfo = null;
     capturedPostContainer = null;
-
     const result = await send('CREATE_TEMP_ACTION', {
       did: profile.did,
       handle: profile.handle || handle,
       durationMs,
       isMute: false,
       isPermanent: false,
-      postContext,
     });
     if (!result.success) {
       throw new Error(result.error || 'Failed to block');
@@ -827,8 +618,6 @@ async function handleTempMute(
     }
     actionRateLimiter.recordAction();
 
-    const postContainer = capturedPostContainer;
-
     const profile = await getProfile(handle);
     if (!profile?.did) {
       throw new Error('Could not get user profile');
@@ -841,29 +630,13 @@ async function handleTempMute(
       throw new Error('Cannot mute yourself');
     }
 
-    // Serialize DOM-derived post context, then delegate to the unified primitive
-    // (quota pre-check, API call, storage write, rollback, read-back verification).
-    const postContext = await buildPostContext(
-      postContainer,
-      handle,
-      profile.did,
-      'mute',
-      false,
-      currentEngagementContext,
-      buildNotificationContext()
-    );
-
-    // Clear captured DOM refs after serialization to prevent memory leaks
-    capturedNotificationInfo = null;
     capturedPostContainer = null;
-
     const result = await send('CREATE_TEMP_ACTION', {
       did: profile.did,
       handle: profile.handle || handle,
       durationMs,
       isMute: true,
       isPermanent: false,
-      postContext,
     });
     if (!result.success) {
       throw new Error(result.error || 'Failed to mute');
@@ -889,7 +662,6 @@ async function handleLastWordBlock(
   blockDurationMs: number,
   _durationLabel: string,
   permanent: boolean,
-  postContainer: HTMLElement | null,
   delaySeconds: number = 60
 ): Promise<void> {
   try {
@@ -933,21 +705,6 @@ async function handleLastWordBlock(
       throw new Error(response?.error || 'Failed to schedule delayed block');
     }
 
-    // Capture post context now (before the delayed block happens). The delayed-block
-    // path persists locally here because the block itself fires later in the background.
-    capturePostContext(
-      postContainer,
-      handle,
-      did,
-      'block',
-      permanent,
-      currentEngagementContext,
-      buildNotificationContext()
-    ).catch((e) => log.warn('Post context capture failed:', e));
-
-    // Clear captured notification info after use
-    capturedNotificationInfo = null;
-    // Clear captured post container to prevent memory leak
     capturedPostContainer = null;
 
     closeMenus();
@@ -975,8 +732,6 @@ async function handlePermanentAction(
   lastWordOptions?: LastWordOptions
 ): Promise<void> {
   try {
-    const postContainer = capturedPostContainer;
-
     const profile = await getProfile(handle);
     if (!profile?.did) {
       throw new Error('Could not get user profile');
@@ -997,37 +752,18 @@ async function handlePermanentAction(
         -1, // permanent
         'Permanent',
         true,
-        postContainer,
         lastWordOptions.delaySeconds
       );
       return;
     }
 
-    // Serialize DOM-derived post context, then delegate to the unified primitive.
-    // Permanent actions route through the same primitive (isPermanent gates storage),
-    // which also writes permanent LOCAL storage — previously the content path wrote
-    // none, leaving permanent actions untracked locally.
-    const postContext = await buildPostContext(
-      postContainer,
-      handle,
-      profile.did,
-      actionType,
-      true,
-      currentEngagementContext,
-      buildNotificationContext()
-    );
-
-    // Clear captured DOM refs after serialization to prevent memory leaks
-    capturedNotificationInfo = null;
     capturedPostContainer = null;
-
     const result = await send('CREATE_TEMP_ACTION', {
       did: profile.did,
       handle: profile.handle || handle,
       durationMs: 0, // ignored for permanent actions; isPermanent is the sole gate
       isMute: actionType === 'mute',
       isPermanent: true,
-      postContext,
     });
     if (!result.success) {
       throw new Error(result.error || `Failed to ${actionType}`);
@@ -1049,12 +785,7 @@ async function handlePermanentAction(
 /**
  * Intercept a native menu item to show duration picker instead
  */
-function interceptMenuItem(
-  item: HTMLElement,
-  actionType: 'block' | 'mute',
-  handle: string,
-  notificationInfo?: { notificationType: NotificationReason | null; subjectUri: string | null }
-): void {
+function interceptMenuItem(item: HTMLElement, actionType: 'block' | 'mute', handle: string): void {
   const clone = item.cloneNode(true) as HTMLElement;
 
   clone.addEventListener(
@@ -1065,9 +796,6 @@ function interceptMenuItem(
       e.stopImmediatePropagation();
 
       capturedPostContainer = lastClickedPostContainer;
-      // Capture notification info for later use in the action handlers
-      capturedNotificationInfo = notificationInfo || null;
-
       closeMenus();
       showDurationPicker(actionType, handle);
     },
@@ -1111,8 +839,6 @@ function injectMenuItems(menu: Element): void {
   // Fallback handle from DOM extraction (may be wrong in thread contexts)
   const fallbackHandle = userInfo?.handle;
 
-  // Extract notification info if available (from notification context)
-  const notificationInfo = userInfo?.notificationInfo;
   const menuItemsList = menuItems.querySelectorAll(CONFIG.SELECTORS.MENU_ITEM);
 
   for (const item of menuItemsList) {
@@ -1136,7 +862,7 @@ function injectMenuItems(menu: Element): void {
       if (nativeHandle && fallbackHandle && nativeHandle !== fallbackHandle) {
         log.debug('Using native menu handle:', nativeHandle, '(fallback was:', fallbackHandle, ')');
       }
-      interceptMenuItem(item as HTMLElement, 'block', handle, notificationInfo);
+      interceptMenuItem(item as HTMLElement, 'block', handle);
     }
 
     if (
@@ -1156,14 +882,8 @@ function injectMenuItems(menu: Element): void {
       if (nativeHandle && fallbackHandle && nativeHandle !== fallbackHandle) {
         log.debug('Using native menu handle:', nativeHandle, '(fallback was:', fallbackHandle, ')');
       }
-      interceptMenuItem(item as HTMLElement, 'mute', handle, notificationInfo);
+      interceptMenuItem(item as HTMLElement, 'mute', handle);
     }
-  }
-
-  // Try to inject repost filter option (only on profile menus for followed users)
-  // Use fallback handle since repost filter is not a native item
-  if (fallbackHandle) {
-    injectRepostFilterOption(menu, fallbackHandle);
   }
 
   // Try to inject QT Peek option (only if post has a concealed quote embed)
@@ -1243,122 +963,8 @@ function injectSweepQuotesOption(menu: Element): void {
 }
 
 /**
- * Check if we're on a profile page
- */
-function isProfilePage(): boolean {
-  return /\/profile\/[^/]+\/?$/.test(window.location.pathname);
-}
-
-/**
- * Inject "Disable/Enable Reposts" option into profile menus for followed users
- */
-async function injectRepostFilterOption(menu: Element, handle: string): Promise<void> {
-  // Only inject on profile pages for followed users
-  if (!isProfilePage()) return;
-
-  // Check if we already injected
-  if (menu.querySelector('[data-ergoblock-repost-filter]')) return;
-
-  // Use getProfiles() for real-time follow check (single API call)
-  // ProfileWithViewer includes viewer.following which is the actual follow state
-  const profiles = await getProfiles([handle]);
-  const profile = profiles[0];
-
-  // Check if we're following this user (real-time from API, not stale cache)
-  if (!profile?.viewer?.following) return;
-  if (!profile.did) return;
-
-  // Check if already filtered
-  const isFiltered = await isRepostFiltered(profile.did);
-
-  // Find a menu item to clone the style from (prefer mute item for similar styling)
-  const muteMenuItem = Array.from(menu.querySelectorAll(CONFIG.SELECTORS.MENU_ITEM)).find(
-    (item) => {
-      const text = item.textContent?.toLowerCase() || '';
-      return text.includes('mute') && !text.includes('unmute') && !text.includes('thread');
-    }
-  );
-  const existingMenuItem = muteMenuItem || menu.querySelector(CONFIG.SELECTORS.MENU_ITEM);
-  if (!existingMenuItem) return;
-
-  // Deep clone to preserve inner structure and styling
-  const repostMenuItem = existingMenuItem.cloneNode(true) as HTMLElement;
-  repostMenuItem.setAttribute('role', 'menuitem');
-  repostMenuItem.setAttribute('data-ergoblock-repost-filter', 'true');
-  repostMenuItem.setAttribute('tabindex', '0');
-
-  // Find and update the text content (may be in nested elements)
-  const textLabel = isFiltered ? 'Enable Reposts' : 'Disable Reposts';
-
-  // Try to find a text node or the innermost div with text
-  const updateText = (el: Element): boolean => {
-    // Check direct text nodes
-    for (const child of el.childNodes) {
-      if (child.nodeType === Node.TEXT_NODE && child.textContent?.trim()) {
-        child.textContent = textLabel;
-        return true;
-      }
-    }
-    // Recurse into child elements
-    for (const child of el.children) {
-      if (updateText(child)) return true;
-    }
-    return false;
-  };
-
-  if (!updateText(repostMenuItem)) {
-    // Fallback: just set textContent if no text node found
-    repostMenuItem.textContent = textLabel;
-  }
-
-  // Remove any SVG icons (we don't have a matching icon)
-  const svg = repostMenuItem.querySelector('svg');
-  if (svg) {
-    svg.remove();
-  }
-
-  // Handle click
-  repostMenuItem.addEventListener('click', async (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-
-    try {
-      if (isFiltered) {
-        // Remove from filter list
-        await removeRepostFilteredUser(profile.did);
-        showToast(`Enabled reposts from @${handle}`);
-      } else {
-        // Add to filter list
-        const user: RepostFilteredUser = {
-          did: profile.did,
-          handle: profile.handle || handle,
-          displayName: profile.displayName,
-          avatar: profile.avatar,
-          addedAt: Date.now(),
-        };
-        await addRepostFilteredUser(user);
-        showToast(`Disabled reposts from @${handle}`);
-      }
-      closeMenus();
-    } catch (error) {
-      log.error('Repost filter toggle failed:', error);
-      showToast('Failed to update repost filter', true);
-    }
-  });
-
-  // Insert after mute option or at the end
-  if (muteMenuItem && muteMenuItem.parentNode) {
-    muteMenuItem.parentNode.insertBefore(repostMenuItem, muteMenuItem.nextSibling);
-  } else {
-    // Append to menu
-    const menuContainer = menu.querySelector(CONFIG.SELECTORS.MENU) || menu;
-    menuContainer.appendChild(repostMenuItem);
-  }
-}
-
-/**
  * Inject "Peek at quote" option into post menus when a concealed quote embed is detected.
- * Follows the same clone-and-modify pattern as injectRepostFilterOption.
+ * Clones a native item to match Bluesky's menu styling.
  */
 async function injectPeekOption(menu: Element): Promise<void> {
   // Don't inject if already present
@@ -1607,8 +1213,6 @@ function injectNotificationMenu(notificationItem: Element): void {
   if (!handleMatch) return;
 
   const handle = handleMatch[1];
-  const notificationType = detectNotificationType(notificationItem);
-  const subjectUri = extractNotificationSubjectUri(notificationItem);
 
   // Find a suitable container to place the menu button
   // Bluesky places the ⋯ menu in the bottom right, after the action bar
@@ -1645,15 +1249,11 @@ function injectNotificationMenu(notificationItem: Element): void {
 
   // Handle block action
   const handleBlock = () => {
-    capturedPostContainer = notificationItem as HTMLElement;
-    capturedNotificationInfo = { notificationType, subjectUri };
     showDurationPicker('block', handle);
   };
 
   // Handle mute action
   const handleMute = () => {
-    capturedPostContainer = notificationItem as HTMLElement;
-    capturedNotificationInfo = { notificationType, subjectUri };
     showDurationPicker('mute', handle);
   };
 
@@ -1945,30 +1545,19 @@ function init(): void {
       observeMenus();
       observeNotifications();
       setTimeout(syncAuthToBackground, 2000);
-      // Initialize feed filtering for repost control
-      setTimeout(() => initFeedFilter().catch(log.error), 1000);
     });
   } else {
     observeMenus();
     observeNotifications();
     setTimeout(syncAuthToBackground, 2000);
-    // Initialize feed filtering for repost control
-    setTimeout(() => initFeedFilter().catch(log.error), 1000);
   }
 
   // Sync auth frequently to keep background tokens fresh
   // Bluesky tokens expire after ~2 hours, so sync every minute
   setInterval(syncAuthToBackground, 60 * 1000);
 
-  // Track URL changes for engagement context (liked-by/reposted-by pages)
-  // Check on init and whenever URL changes (SPA navigation)
-  updateEngagementContext();
-
-  // Listen for SPA navigation (popstate for back/forward)
-  window.addEventListener('popstate', () => {
-    updateEngagementContext();
-    observeNotifications();
-  });
+  // Refresh notification controls after SPA navigation.
+  window.addEventListener('popstate', observeNotifications);
 
   // Observe URL changes via History API (pushState/replaceState)
   // Bluesky uses client-side routing, so we need to detect these changes
@@ -1976,7 +1565,6 @@ function init(): void {
   const urlObserver = new MutationObserver(() => {
     if (window.location.href !== lastUrl) {
       lastUrl = window.location.href;
-      updateEngagementContext();
       observeNotifications();
     }
   });

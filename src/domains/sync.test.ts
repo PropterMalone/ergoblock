@@ -8,6 +8,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 vi.mock('./api-client.js', () => ({
   getAuthToken: vi.fn(),
+  withAuthSession: vi.fn(async (_auth: unknown, operation: () => Promise<unknown>) => operation()),
   bgApiRequest: vi.fn(),
   PAGINATION_DELAY: 0,
 }));
@@ -17,12 +18,22 @@ vi.mock('./graph-ops.js', () => ({
 }));
 
 vi.mock('../platform/storage.js', () => ({
+  updatePermanentBlocks: vi.fn(async (update: (map: Record<string, unknown>) => void) => {
+    const map = await getPermanentBlocks();
+    update(map);
+    await setPermanentBlocks(map);
+  }),
+  updatePermanentMutes: vi.fn(async (update: (map: Record<string, unknown>) => void) => {
+    const map = await getPermanentMutes();
+    update(map);
+    await setPermanentMutes(map);
+  }),
   getTempBlocks: vi.fn().mockResolvedValue({}),
-  removeTempBlock: vi.fn().mockResolvedValue(undefined),
+  removeTempBlock: vi.fn().mockResolvedValue(true),
   getPermanentBlocks: vi.fn().mockResolvedValue({}),
   setPermanentBlocks: vi.fn().mockResolvedValue(undefined),
   getTempMutes: vi.fn().mockResolvedValue({}),
-  removeTempMute: vi.fn().mockResolvedValue(undefined),
+  removeTempMute: vi.fn().mockResolvedValue(true),
   getPermanentMutes: vi.fn().mockResolvedValue({}),
   setPermanentMutes: vi.fn().mockResolvedValue(undefined),
   addHistoryEntry: vi.fn().mockResolvedValue(undefined),
@@ -41,6 +52,10 @@ import {
   removeTempBlock,
   getTempMutes,
   removeTempMute,
+  getPermanentBlocks,
+  getPermanentMutes,
+  setPermanentBlocks,
+  setPermanentMutes,
 } from '../platform/storage.js';
 
 const mockGetAuthToken = vi.mocked(getAuthToken);
@@ -75,7 +90,38 @@ describe('performFullSync — reconciliation grace window', () => {
     mockGetAuthToken.mockResolvedValue(AUTH);
     mockGetTempBlocks.mockResolvedValue({});
     mockGetTempMutes.mockResolvedValue({});
+    vi.mocked(getPermanentBlocks).mockResolvedValue({});
+    vi.mocked(getPermanentMutes).mockResolvedValue({});
     mockBgApiRequest.mockImplementation((endpoint: string) => emptyPagesImpl(endpoint) as never);
+  });
+
+  it('syncs new actions without classifying them for review and preserves existing legacy metadata', async () => {
+    const legacy = {
+      did: 'did:plc:legacy',
+      handle: 'legacy.test',
+      syncedAt: 1,
+      needsReview: true,
+      source: 'external' as const,
+    };
+    vi.mocked(getPermanentBlocks).mockResolvedValue({ [legacy.did]: legacy });
+    vi.mocked(getPermanentMutes).mockResolvedValue({ [legacy.did]: legacy });
+    const profiles = [
+      { did: 'did:plc:new', handle: 'new.test' },
+      { did: legacy.did, handle: legacy.handle },
+    ];
+    mockBgApiRequest.mockImplementation((endpoint) => {
+      if (endpoint.startsWith('app.bsky.graph.getBlocks'))
+        return Promise.resolve({ blocks: profiles }) as never;
+      if (endpoint.startsWith('app.bsky.graph.getMutes'))
+        return Promise.resolve({ mutes: profiles }) as never;
+      return emptyPagesImpl(endpoint) as never;
+    });
+    expect((await performFullSync()).success).toBe(true);
+    for (const setter of [setPermanentBlocks, setPermanentMutes]) {
+      const stored = vi.mocked(setter).mock.calls[0][0];
+      expect(stored['did:plc:new']).not.toHaveProperty('needsReview');
+      expect(stored[legacy.did]).toMatchObject({ needsReview: true, source: 'external' });
+    }
   });
 
   it('does NOT reconciliation-delete a freshly-created temp block (within grace window)', async () => {
@@ -100,7 +146,10 @@ describe('performFullSync — reconciliation grace window', () => {
     const result = await performFullSync();
 
     expect(result.success).toBe(true);
-    expect(mockRemoveTempBlock).toHaveBeenCalledWith('did:plc:stale');
+    expect(mockRemoveTempBlock).toHaveBeenCalledWith(
+      'did:plc:stale',
+      expect.objectContaining({ handle: 'stale.bsky' })
+    );
   });
 
   it('a null block page throws & aborts the block sync with NO deletions', async () => {

@@ -101,12 +101,23 @@ Choose block or mute and a duration: 1 hour, 24 hours, 7 days, 30 days, or Perma
 
 Fetching is limited to 50 pages of up to 100 entries (at most 5,000 unique accounts). Repeated cursors or interrupted reads also produce an incomplete-list warning. Counts describe fetched accounts, not every account that may have engaged. Cancel fetch stops further reads after any in-flight request finishes and discards late results. Existing `?tab=quote-sweep&postUri=...` links still prefill the post; you must choose an audience before fetching.
 
+Confirmed operations save a local per-account outcome record. **Stop after current request** leaves the remaining accounts untouched; closing the manager does not itself stop an operation. If the background worker restarts or an outcome cannot be saved reliably, the operation pauses for review rather than silently repeating uncertain requests. Account changes also stop further work. The history shows created, skipped, failed, uncertain, and unattempted accounts after you reopen the manager.
+
+**Undo** is available only for unchanged blocks that the operation can identify as its own. Replaced, renewed, expired, or preexisting actions are not removed. Mutes remain recorded but require manual removal: they have no immutable identity that lets ErgoBlock distinguish an operation's mute from a later re-mute. Local storage bounds can limit a selection below 5,000 accounts; unresolved operation records are not silently discarded to make room.
+
+## Manager
+
+The primary sections are **Blocks & Mutes**, **Post actions**, and **Settings**. **Advanced** starts collapsed and contains Mass Ops and Copy User.
+
+Use **Set block expiration** or **Set mute expiration** in Blocks & Mutes to add a timer to an existing permanent action. This tracks the existing action; it does not create a duplicate block or mute. QT Peek and delayed blocking remain available.
+
+ErgoBlock no longer offers Amnesty, Blocklist Audit, Review Queue, repost hiding, automatic post-context capture, or later context/interaction searches. Bluesky provides native repost controls. Existing blocks, mutes, saved settings, and retired-feature data are not purged. Ordinary action history and previously saved post contexts remain exportable.
+
 ## Managing Active Temp Blocks/Mutes
 
-Click the extension icon in Chrome's toolbar to see:
-- All active temporary blocks with time remaining.
-- All active temporary mutes with time remaining.
-- Option to manually check expirations.
+Open **Blocks & Mutes** in the manager to see active actions and their expiration times. The **Expiration health** panel shows overdue counts, the last attempt and successful check, and any sign-in or recovery work that needs attention. Use **Check now** to retry.
+
+Expiration is best effort, not a guaranteed wall-clock deadline. The browser must be running, connected, and able to use the intended Bluesky account. Older stored actions lack account ownership metadata, so a successful check does not establish coverage across accounts.
 
 ## How It Works
 
@@ -114,7 +125,7 @@ Click the extension icon in Chrome's toolbar to see:
 - **Bundling**: `esbuild` bundles the source into single-file entry points in `dist/`.
 - **API**: Uses the Bluesky AT Protocol.
 - **Storage**: Expiration times are stored in `chrome.storage.sync`.
-- **Background**: A service worker (`background.ts`) checks every minute for expired entries and handles unblocking.
+- **Background**: A service worker (`background.ts`) checks for expired entries at the configured 1–10 minute interval and removes them when the browser, network, and session are available.
 
 ## Permissions
 
@@ -130,7 +141,7 @@ Click the extension icon in Chrome's toolbar to see:
 - Make sure you're on bsky.app (not other Bluesky clients).
 
 **Auto-expiration not working:**
-- Open the extension popup and click "Check Expirations Now".
+- Open the manager's Blocks & Mutes section, inspect Expiration health, and choose "Check now".
 - Make sure you're logged into Bluesky in at least one tab.
 
 **API errors:**

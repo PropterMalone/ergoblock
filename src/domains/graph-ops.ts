@@ -6,7 +6,31 @@ import type {
   AuthData,
 } from '../types.js';
 import { sleep, createLogger } from '../platform/utils.js';
-import { bgApiRequest, getAuthToken } from './api-client.js';
+import {
+  bgApiRequest,
+  getAuthToken,
+  pinnedApiRequest,
+  type PinnedRequestOptions,
+} from './api-client.js';
+
+export type GraphRequestOptions = Pick<
+  PinnedRequestOptions,
+  'expectedGeneration' | 'beforeRequest'
+>;
+
+function graphRequest<T>(
+  endpoint: string,
+  method: string,
+  body: unknown,
+  token: string,
+  pdsUrl: string,
+  expectedAuth?: AuthData,
+  options: GraphRequestOptions = {}
+): Promise<T | null> {
+  return expectedAuth
+    ? pinnedApiRequest<T>(endpoint, method, body, expectedAuth, { ...options, refresh: false })
+    : bgApiRequest<T>(endpoint, method, body, token, pdsUrl);
+}
 
 const log = createLogger('bg:graph-ops');
 
@@ -22,12 +46,14 @@ export async function unblockUser(
   token: string,
   ownerDid: string,
   pdsUrl: string,
-  rkey?: string
+  rkey?: string,
+  expectedAuth?: AuthData,
+  options: GraphRequestOptions = {}
 ): Promise<boolean> {
   // If we have the rkey, delete directly (O(1))
   if (rkey) {
     log.info('Unblocking using direct rkey:', rkey);
-    await bgApiRequest(
+    await graphRequest(
       'com.atproto.repo.deleteRecord',
       'POST',
       {
@@ -36,7 +62,9 @@ export async function unblockUser(
         rkey,
       },
       token,
-      pdsUrl
+      pdsUrl,
+      expectedAuth,
+      options
     );
     return true;
   }
@@ -51,7 +79,15 @@ export async function unblockUser(
       ? `com.atproto.repo.listRecords?repo=${ownerDid}&collection=app.bsky.graph.block&limit=100&cursor=${cursor}`
       : `com.atproto.repo.listRecords?repo=${ownerDid}&collection=app.bsky.graph.block&limit=100`;
 
-    const blocks = await bgApiRequest<ListRecordsResponse>(url, 'GET', null, token, pdsUrl);
+    const blocks = await graphRequest<ListRecordsResponse>(
+      url,
+      'GET',
+      null,
+      token,
+      pdsUrl,
+      expectedAuth,
+      options
+    );
 
     const blockRecord = blocks?.records?.find((r) => r.value.subject === did);
     if (blockRecord) {
@@ -75,7 +111,7 @@ export async function unblockUser(
     cursor = blocks.cursor;
   }
 
-  await bgApiRequest(
+  await graphRequest(
     'com.atproto.repo.deleteRecord',
     'POST',
     {
@@ -84,14 +120,30 @@ export async function unblockUser(
       rkey: foundRkey,
     },
     token,
-    pdsUrl
+    pdsUrl,
+    expectedAuth,
+    options
   );
 
   return true;
 }
 
-export async function unmuteUser(did: string, token: string, pdsUrl: string): Promise<boolean> {
-  await bgApiRequest('app.bsky.graph.unmuteActor', 'POST', { actor: did }, token, pdsUrl);
+export async function unmuteUser(
+  did: string,
+  token: string,
+  pdsUrl: string,
+  expectedAuth?: AuthData,
+  options: GraphRequestOptions = {}
+): Promise<boolean> {
+  await graphRequest(
+    'app.bsky.graph.unmuteActor',
+    'POST',
+    { actor: did },
+    token,
+    pdsUrl,
+    expectedAuth,
+    options
+  );
   return true;
 }
 

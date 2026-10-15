@@ -66,6 +66,14 @@ export {
   cleanupExpiredPostContexts,
 } from './storage/history.js';
 
+export {
+  withTrackingLock,
+  trackingMatches,
+  type TrackingIdentity,
+  type TrackingLock,
+} from './storage/tracking.js';
+export { updatePermanentBlocks, updatePermanentMutes } from './storage/permanent.js';
+
 // ── Permanent blocks/mutes & merged views ────────────────────────────────────
 export {
   getPermanentBlocks,

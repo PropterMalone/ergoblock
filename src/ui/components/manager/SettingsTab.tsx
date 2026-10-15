@@ -135,8 +135,14 @@ export function SettingsTab({ onReload }: SettingsTabProps): JSX.Element {
     if (confirm('Reset all settings to defaults?')) {
       setSaving(true);
       try {
-        await setOptions(DEFAULT_OPTIONS);
-        setLocalOptions(DEFAULT_OPTIONS);
+        const resetOptions = {
+          ...DEFAULT_OPTIONS,
+          savePostContext: options.savePostContext,
+          postContextRetentionDays: options.postContextRetentionDays,
+          forgivenessPeriodDays: options.forgivenessPeriodDays,
+        };
+        await setOptions(resetOptions);
+        setLocalOptions(resetOptions);
         await onReload();
         showStatus('Settings reset to defaults', 'success');
       } catch (error) {
@@ -271,71 +277,39 @@ export function SettingsTab({ onReload }: SettingsTabProps): JSX.Element {
             table easier to read.
           </div>
           <div class="column-visibility-options">
-            {(Object.keys(COLUMN_METADATA) as Array<TableColumn>).map((column) => {
-              const meta = COLUMN_METADATA[column];
-              const isChecked = columnVisibility[column];
-              const isDisabled = meta.alwaysVisible === true;
+            {(Object.keys(COLUMN_METADATA) as Array<TableColumn>)
+              .filter((column) => column !== 'context' && column !== 'amnesty')
+              .map((column) => {
+                const meta = COLUMN_METADATA[column];
+                const isChecked = columnVisibility[column];
+                const isDisabled = meta.alwaysVisible === true;
 
-              return (
-                <label key={column} class={`column-toggle ${isDisabled ? 'disabled' : ''}`}>
-                  <input
-                    type="checkbox"
-                    checked={isChecked}
-                    disabled={isDisabled}
-                    onChange={() => handleColumnToggle(column)}
-                  />
-                  <span class="column-label">{meta.label}</span>
-                  <span class="column-description">{meta.description}</span>
-                </label>
-              );
-            })}
+                return (
+                  <label key={column} class={`column-toggle ${isDisabled ? 'disabled' : ''}`}>
+                    <input
+                      type="checkbox"
+                      checked={isChecked}
+                      disabled={isDisabled}
+                      onChange={() => handleColumnToggle(column)}
+                    />
+                    <span class="column-label">{meta.label}</span>
+                    <span class="column-description">{meta.description}</span>
+                  </label>
+                );
+              })}
           </div>
         </SettingsSection>
 
-        {/* Post Context */}
-        <SettingsSection title="Post Context">
+        <SettingsSection title="QT Peek">
           <SettingRow
-            label="Save post context"
-            description="Remember the post that triggered a block/mute"
+            label="Enable feature"
+            description="Reveal concealed quoted posts using the public API"
           >
             <Checkbox
-              id="settings-savePostContext"
-              label="Save context"
-              checked={options.savePostContext}
-              onChange={(checked) => updateOption('savePostContext', checked)}
-            />
-          </SettingRow>
-
-          <SettingRow
-            label="Context retention"
-            description="How long to keep post context (0 = forever)"
-            tooltip={SETTINGS_TOOLTIPS.postContextRetention}
-          >
-            <NumberInput
-              id="settings-postContextRetentionDays"
-              value={options.postContextRetentionDays}
-              min={0}
-              max={365}
-              unit="days"
-              onChange={(value) => updateOption('postContextRetentionDays', value)}
-            />
-          </SettingRow>
-        </SettingsSection>
-
-        {/* Amnesty */}
-        <SettingsSection title="Amnesty">
-          <SettingRow
-            label="Forgiveness period"
-            description="How old a block must be to appear in Amnesty review"
-            tooltip={SETTINGS_TOOLTIPS.forgivenessPeriod}
-          >
-            <NumberInput
-              id="settings-forgivenessPeriodDays"
-              value={options.forgivenessPeriodDays}
-              min={1}
-              max={365}
-              unit="days"
-              onChange={(value) => updateOption('forgivenessPeriodDays', value)}
+              id="settings-qtPeekEnabled"
+              label="Enable Peek at quote"
+              checked={options.qtPeekEnabled}
+              onChange={(checked) => updateOption('qtPeekEnabled', checked)}
             />
           </SettingRow>
         </SettingsSection>
@@ -554,35 +528,6 @@ function Checkbox({ id, label, checked, onChange }: CheckboxProps): JSX.Element 
       >
         {label}
       </label>
-    </div>
-  );
-}
-
-interface RangeSliderProps {
-  id: string;
-  min: number;
-  max: number;
-  value: number;
-  unit: string;
-  onChange: (value: number) => void;
-}
-
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-function RangeSlider({ id, min, max, value, unit, onChange }: RangeSliderProps): JSX.Element {
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-      <input
-        type="range"
-        id={id}
-        min={min}
-        max={max}
-        value={value}
-        onInput={(e) => onChange(parseInt((e.target as HTMLInputElement).value, 10))}
-        style={{ width: '100px', cursor: 'pointer' }}
-      />
-      <span style={{ fontSize: '13px', color: 'var(--text-primary, #333)', minWidth: '50px' }}>
-        {value} {unit}
-      </span>
     </div>
   );
 }
