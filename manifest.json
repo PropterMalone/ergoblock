@@ -7,8 +7,7 @@
   "host_permissions": [
     "https://*.bsky.app/*",
     "https://*.bsky.social/*",
-    "https://*.bsky.network/*",
-    "https://*.clearsky.services/*"
+    "https://*.bsky.network/*"
   ],
   "content_security_policy": {
     "extension_pages": "script-src 'self'; object-src 'self'; style-src 'self' 'unsafe-inline'"

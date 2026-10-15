@@ -6,6 +6,13 @@ import { Tooltip } from './ui/components/shared/Tooltip.js';
 import { SETTINGS_TOOLTIPS } from './ui/constants/tooltips.js';
 import { KOFI_URL, SUPPORT_LABEL } from './ui/constants/support.js';
 import { createLogger } from './platform/utils.js';
+import {
+  associateSettingControl,
+  type SettingControlProps,
+} from './ui/components/shared/SettingControl.js';
+import { useId } from 'preact/hooks';
+import { MIN_CHECK_INTERVAL, MAX_CHECK_INTERVAL } from './platform/check-interval.js';
+import { useTheme } from './ui/hooks/useTheme.js';
 
 const log = createLogger('options');
 
@@ -25,8 +32,9 @@ const DURATION_OPTIONS = [
   { value: 604800000, label: '1 week' },
 ];
 
-function OptionsApp() {
+export function OptionsApp() {
   const [options, setLocalOptions] = useState<ExtensionOptions>(DEFAULT_OPTIONS);
+  useTheme(options.theme);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState<StatusState | null>(null);
@@ -82,8 +90,14 @@ function OptionsApp() {
     if (confirm('Reset all settings to defaults?')) {
       setSaving(true);
       try {
-        await setOptions(DEFAULT_OPTIONS);
-        setLocalOptions(DEFAULT_OPTIONS);
+        const resetOptions = {
+          ...DEFAULT_OPTIONS,
+          savePostContext: options.savePostContext,
+          postContextRetentionDays: options.postContextRetentionDays,
+          forgivenessPeriodDays: options.forgivenessPeriodDays,
+        };
+        await setOptions(resetOptions);
+        setLocalOptions(resetOptions);
         showStatus('Settings reset to defaults', 'success');
       } catch (error) {
         log.error('Failed to reset options:', error);
@@ -161,17 +175,14 @@ function OptionsApp() {
 
       <SettingsSection title="Expiration Check">
         <SettingRow
-          label={
-            <Tooltip text={SETTINGS_TOOLTIPS.checkInterval} position="right">
-              <span>Check interval</span>
-            </Tooltip>
-          }
+          label="Check interval"
+          tooltip={SETTINGS_TOOLTIPS.checkInterval}
           description="How often to check for expired blocks/mutes"
         >
           <RangeSlider
             id="checkInterval"
-            min={1}
-            max={10}
+            min={MIN_CHECK_INTERVAL}
+            max={MAX_CHECK_INTERVAL}
             value={options.checkInterval}
             unit="min"
             onChange={(value) => updateOption('checkInterval', value)}
@@ -238,28 +249,44 @@ interface SettingRowProps {
   label: preact.ComponentChildren;
   description: string;
   children: preact.ComponentChildren;
+  tooltip?: string;
 }
 
-function SettingRow({ label, description, children }: SettingRowProps) {
+function SettingRow({ label, description, children, tooltip }: SettingRowProps) {
+  const id = useId();
+  const labelElement = (
+    <div id={`${id}-label`} class="setting-label">
+      {label}
+    </div>
+  );
   return (
     <div class="setting-group">
       <div>
-        <div class="setting-label">{label}</div>
-        <div class="setting-description">{description}</div>
+        {tooltip ? (
+          <Tooltip text={tooltip} position="right">
+            {labelElement}
+          </Tooltip>
+        ) : (
+          labelElement
+        )}
+        <div id={`${id}-description`} class="setting-description">
+          {description}
+        </div>
       </div>
-      <div class="setting-control">{children}</div>
+      <div class="setting-control">{associateSettingControl(children, id)}</div>
     </div>
   );
 }
 
-interface DurationSelectProps {
+interface DurationSelectProps extends SettingControlProps {
   value: number;
   onChange: (value: number) => void;
 }
 
-function DurationSelect({ value, onChange }: DurationSelectProps) {
+function DurationSelect({ value, onChange, ...controlProps }: DurationSelectProps) {
   return (
     <select
+      {...controlProps}
       value={value}
       onChange={(e) => onChange(parseInt((e.target as HTMLSelectElement).value, 10))}
     >
@@ -293,7 +320,7 @@ function Checkbox({ id, label, checked, onChange }: CheckboxProps) {
   );
 }
 
-interface RangeSliderProps {
+interface RangeSliderProps extends SettingControlProps {
   id: string;
   min: number;
   max: number;
@@ -302,11 +329,12 @@ interface RangeSliderProps {
   onChange: (value: number) => void;
 }
 
-function RangeSlider({ id, min, max, value, unit, onChange }: RangeSliderProps) {
+function RangeSlider({ id, min, max, value, unit, onChange, ...controlProps }: RangeSliderProps) {
   return (
     <div class="slider-container">
       <input
         type="range"
+        {...controlProps}
         id={id}
         min={min}
         max={max}

@@ -30,6 +30,10 @@ import {
 import { Tooltip } from '../shared/Tooltip.js';
 import { SETTINGS_TOOLTIPS } from '../../constants/tooltips.js';
 import { send } from '../../../platform/messages.js';
+import { useId } from 'preact/hooks';
+import { associateSettingControl, type SettingControlProps } from '../shared/SettingControl.js';
+import { CHECK_INTERVAL_OPTIONS } from '../../../platform/check-interval.js';
+import { useTheme } from '../../hooks/useTheme.js';
 
 type Theme = 'light' | 'dark' | 'auto';
 
@@ -55,6 +59,7 @@ export function SettingsTab({ onReload }: SettingsTabProps): JSX.Element {
   const [options, setLocalOptions] = useState<ExtensionOptions>(DEFAULT_OPTIONS);
   const [columnVisibility, setColumnVisibilityState] =
     useState<ColumnVisibility>(DEFAULT_COLUMN_VISIBILITY);
+  useTheme(options.theme);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState<StatusState | null>(null);
@@ -130,8 +135,14 @@ export function SettingsTab({ onReload }: SettingsTabProps): JSX.Element {
     if (confirm('Reset all settings to defaults?')) {
       setSaving(true);
       try {
-        await setOptions(DEFAULT_OPTIONS);
-        setLocalOptions(DEFAULT_OPTIONS);
+        const resetOptions = {
+          ...DEFAULT_OPTIONS,
+          savePostContext: options.savePostContext,
+          postContextRetentionDays: options.postContextRetentionDays,
+          forgivenessPeriodDays: options.forgivenessPeriodDays,
+        };
+        await setOptions(resetOptions);
+        setLocalOptions(resetOptions);
         await onReload();
         showStatus('Settings reset to defaults', 'success');
       } catch (error) {
@@ -266,71 +277,39 @@ export function SettingsTab({ onReload }: SettingsTabProps): JSX.Element {
             table easier to read.
           </div>
           <div class="column-visibility-options">
-            {(Object.keys(COLUMN_METADATA) as Array<TableColumn>).map((column) => {
-              const meta = COLUMN_METADATA[column];
-              const isChecked = columnVisibility[column];
-              const isDisabled = meta.alwaysVisible === true;
+            {(Object.keys(COLUMN_METADATA) as Array<TableColumn>)
+              .filter((column) => column !== 'context' && column !== 'amnesty')
+              .map((column) => {
+                const meta = COLUMN_METADATA[column];
+                const isChecked = columnVisibility[column];
+                const isDisabled = meta.alwaysVisible === true;
 
-              return (
-                <label key={column} class={`column-toggle ${isDisabled ? 'disabled' : ''}`}>
-                  <input
-                    type="checkbox"
-                    checked={isChecked}
-                    disabled={isDisabled}
-                    onChange={() => handleColumnToggle(column)}
-                  />
-                  <span class="column-label">{meta.label}</span>
-                  <span class="column-description">{meta.description}</span>
-                </label>
-              );
-            })}
+                return (
+                  <label key={column} class={`column-toggle ${isDisabled ? 'disabled' : ''}`}>
+                    <input
+                      type="checkbox"
+                      checked={isChecked}
+                      disabled={isDisabled}
+                      onChange={() => handleColumnToggle(column)}
+                    />
+                    <span class="column-label">{meta.label}</span>
+                    <span class="column-description">{meta.description}</span>
+                  </label>
+                );
+              })}
           </div>
         </SettingsSection>
 
-        {/* Post Context */}
-        <SettingsSection title="Post Context">
+        <SettingsSection title="QT Peek">
           <SettingRow
-            label="Save post context"
-            description="Remember the post that triggered a block/mute"
+            label="Enable feature"
+            description="Reveal concealed quoted posts using the public API"
           >
             <Checkbox
-              id="settings-savePostContext"
-              label="Save context"
-              checked={options.savePostContext}
-              onChange={(checked) => updateOption('savePostContext', checked)}
-            />
-          </SettingRow>
-
-          <SettingRow
-            label="Context retention"
-            description="How long to keep post context (0 = forever)"
-            tooltip={SETTINGS_TOOLTIPS.postContextRetention}
-          >
-            <NumberInput
-              id="settings-postContextRetentionDays"
-              value={options.postContextRetentionDays}
-              min={0}
-              max={365}
-              unit="days"
-              onChange={(value) => updateOption('postContextRetentionDays', value)}
-            />
-          </SettingRow>
-        </SettingsSection>
-
-        {/* Amnesty */}
-        <SettingsSection title="Amnesty">
-          <SettingRow
-            label="Forgiveness period"
-            description="How old a block must be to appear in Amnesty review"
-            tooltip={SETTINGS_TOOLTIPS.forgivenessPeriod}
-          >
-            <NumberInput
-              id="settings-forgivenessPeriodDays"
-              value={options.forgivenessPeriodDays}
-              min={1}
-              max={365}
-              unit="days"
-              onChange={(value) => updateOption('forgivenessPeriodDays', value)}
+              id="settings-qtPeekEnabled"
+              label="Enable Peek at quote"
+              checked={options.qtPeekEnabled}
+              onChange={(checked) => updateOption('qtPeekEnabled', checked)}
             />
           </SettingRow>
         </SettingsSection>
@@ -456,8 +435,12 @@ interface SettingRowProps {
 }
 
 function SettingRow({ label, description, children, tooltip }: SettingRowProps): JSX.Element {
+  const id = useId();
   const labelElement = (
-    <div style={{ fontSize: '13px', fontWeight: '500', color: 'var(--text-primary, #333)' }}>
+    <div
+      id={`${id}-label`}
+      style={{ fontSize: '13px', fontWeight: '500', color: 'var(--text-primary, #333)' }}
+    >
       {label}
     </div>
   );
@@ -480,23 +463,27 @@ function SettingRow({ label, description, children, tooltip }: SettingRowProps):
         ) : (
           labelElement
         )}
-        <div style={{ fontSize: '12px', color: 'var(--text-secondary, #666)', marginTop: '2px' }}>
+        <div
+          id={`${id}-description`}
+          style={{ fontSize: '12px', color: 'var(--text-secondary, #666)', marginTop: '2px' }}
+        >
           {description}
         </div>
       </div>
-      <div style={{ flexShrink: 0 }}>{children}</div>
+      <div style={{ flexShrink: 0 }}>{associateSettingControl(children, id)}</div>
     </div>
   );
 }
 
-interface DurationSelectProps {
+interface DurationSelectProps extends SettingControlProps {
   value: number;
   onChange: (value: number) => void;
 }
 
-function DurationSelect({ value, onChange }: DurationSelectProps): JSX.Element {
+function DurationSelect({ value, onChange, ...controlProps }: DurationSelectProps): JSX.Element {
   return (
     <select
+      {...controlProps}
       value={value}
       onChange={(e) => onChange(parseInt((e.target as HTMLSelectElement).value, 10))}
       style={{
@@ -545,55 +532,15 @@ function Checkbox({ id, label, checked, onChange }: CheckboxProps): JSX.Element 
   );
 }
 
-interface RangeSliderProps {
-  id: string;
-  min: number;
-  max: number;
-  value: number;
-  unit: string;
-  onChange: (value: number) => void;
-}
-
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-function RangeSlider({ id, min, max, value, unit, onChange }: RangeSliderProps): JSX.Element {
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-      <input
-        type="range"
-        id={id}
-        min={min}
-        max={max}
-        value={value}
-        onInput={(e) => onChange(parseInt((e.target as HTMLInputElement).value, 10))}
-        style={{ width: '100px', cursor: 'pointer' }}
-      />
-      <span style={{ fontSize: '13px', color: 'var(--text-primary, #333)', minWidth: '50px' }}>
-        {value} {unit}
-      </span>
-    </div>
-  );
-}
-
-const CHECK_INTERVAL_OPTIONS = [
-  { value: 1, label: '1 minute' },
-  { value: 5, label: '5 minutes' },
-  { value: 15, label: '15 minutes' },
-  { value: 30, label: '30 minutes' },
-  { value: 60, label: '1 hour' },
-  { value: 120, label: '2 hours' },
-  { value: 360, label: '6 hours' },
-  { value: 720, label: '12 hours' },
-  { value: 1440, label: '24 hours' },
-];
-
-interface IntervalSelectProps {
+interface IntervalSelectProps extends SettingControlProps {
   value: number;
   onChange: (value: number) => void;
 }
 
-function IntervalSelect({ value, onChange }: IntervalSelectProps): JSX.Element {
+function IntervalSelect({ value, onChange, ...controlProps }: IntervalSelectProps): JSX.Element {
   return (
     <select
+      {...controlProps}
       value={value}
       onChange={(e) => onChange(parseInt((e.target as HTMLSelectElement).value, 10))}
       style={{
@@ -615,7 +562,7 @@ function IntervalSelect({ value, onChange }: IntervalSelectProps): JSX.Element {
   );
 }
 
-interface NumberInputProps {
+interface NumberInputProps extends SettingControlProps {
   id: string;
   value: number;
   min: number;
@@ -624,11 +571,20 @@ interface NumberInputProps {
   onChange: (value: number) => void;
 }
 
-function NumberInput({ id, value, min, max, unit, onChange }: NumberInputProps): JSX.Element {
+function NumberInput({
+  id,
+  value,
+  min,
+  max,
+  unit,
+  onChange,
+  ...controlProps
+}: NumberInputProps): JSX.Element {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
       <input
         type="number"
+        {...controlProps}
         id={id}
         min={min}
         max={max}

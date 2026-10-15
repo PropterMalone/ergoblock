@@ -66,6 +66,11 @@ export function copyAssets() {
   // Copy popup.html
   fs.copyFileSync(path.join(__dirname, '..', 'popup.html'), path.join(distDir, 'popup.html'));
 
+  fs.copyFileSync(
+    path.join(__dirname, '..', 'src', 'styles', 'theme.css'),
+    path.join(distDir, 'theme.css')
+  );
+
   // Copy options.html
   fs.copyFileSync(path.join(__dirname, '..', 'options.html'), path.join(distDir, 'options.html'));
 

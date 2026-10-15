@@ -1,13 +1,7 @@
 /**
- * Quote Sweep — fetch everyone who quote-posted a given Bluesky post, then bulk
- * temp-block/mute a human-selected subset.
- *
- * Two seams behind the GET_QUOTE_POSTERS / BULK_TEMP_ACTION messages:
- *   1. handleFetchQuotePosters — resolve a post ref → at-uri, page getQuotes,
- *      dedupe quoters by DID, hydrate display + viewer state.
- *   2. handleBulkTempAction — loop the human's selection through the UNIFIED
- *      create primitive (handleCreateTempAction), never the raw graph ops, so we
- *      don't re-introduce the create-path divergence Phase 1 removed.
+ * Post actions: fetch a bounded audience of quote authors, reposters or likers,
+ * then apply a confirmed selection through handleCreateTempAction. The legacy
+ * GET_QUOTE_POSTERS message and quoters response field remain compatible.
  */
 
 // pattern: Functional Core (parsePostRef) + Imperative Shell (handlers)
@@ -22,7 +16,7 @@ import {
   getPermanentMutes,
 } from '../platform/storage.js';
 import { createLogger, sleep } from '../platform/utils.js';
-import type { PostView, QuotePoster } from '../types.js';
+import type { PostView, ProfileWithViewer, PostAudience, QuotePoster } from '../types.js';
 
 const log = createLogger('bg:quote-sweep');
 
@@ -107,9 +101,19 @@ interface ResolveHandleResponse {
   did?: string;
 }
 
-interface GetQuotesResponse {
+interface PostAudienceResponse {
   posts?: PostView[];
+  likes?: Array<{ actor: ProfileWithViewer }>;
+  repostedBy?: ProfileWithViewer[];
   cursor?: string;
+}
+
+const activeFetches = new Map<string, { cancelled: boolean }>();
+
+/** Cancellation is cooperative: finish the in-flight read, then stop paging/hydrating. */
+export function cancelPostAudienceFetch(requestId: string): void {
+  const request = activeFetches.get(requestId);
+  if (request) request.cancelled = true;
 }
 
 export interface FetchQuotePostersResult {
@@ -141,93 +145,102 @@ async function resolveAtUri(parsed: ParsedPostRef): Promise<string | null> {
   return `at://${resolved.did}/${POST_COLLECTION}/${parsed.rkey}`;
 }
 
-/**
- * Fetch every account that quote-posted the given post, with display + viewer state.
- */
-export async function handleFetchQuotePosters(postRef: string): Promise<FetchQuotePostersResult> {
+/** Fetch a bounded post audience. Omitted audience preserves the legacy quote-only message. */
+export async function handleFetchQuotePosters(
+  postRef: string,
+  audience: PostAudience = 'quotes',
+  requestId?: string
+): Promise<FetchQuotePostersResult> {
+  const request = { cancelled: false };
+  if (requestId) activeFetches.set(requestId, request);
+  const cancelled = (): FetchQuotePostersResult => ({ success: false, error: 'Fetch cancelled' });
   try {
+    if (!['quotes', 'likes', 'reposts'].includes(audience)) {
+      return { success: false, error: 'Choose quotes, reposts or likes' };
+    }
     const parsed = parsePostRef(postRef);
-    if (!parsed) {
-      return { success: false, error: 'Not a valid Bluesky post URL or at:// URI' };
-    }
-
+    if (!parsed) return { success: false, error: 'Not a valid Bluesky post URL or at:// URI' };
     const atUri = await resolveAtUri(parsed);
-    if (!atUri) {
-      return { success: false, error: `Could not resolve "${parsed.author}" to a post` };
-    }
-
-    // Page through getQuotes, deduping quoters by DID.
-    const quoterDids: string[] = [];
-    const seen = new Set<string>();
+    if (request.cancelled) return cancelled();
+    if (!atUri) return { success: false, error: `Could not resolve "${parsed.author}" to a post` };
+    const auth = await getAuthToken();
+    if (request.cancelled) return cancelled();
+    const endpoint = { quotes: 'getQuotes', likes: 'getLikes', reposts: 'getRepostedBy' }[audience];
+    const candidates = new Map<string, ProfileWithViewer>();
+    const seenCursors = new Set<string>();
     let cursor: string | undefined;
-    let pages = 0;
     let truncated = false;
-
-    do {
-      const params = new URLSearchParams({
-        uri: atUri,
-        limit: String(QUOTES_PAGE_LIMIT),
-      });
+    for (let pages = 0; pages < MAX_QUOTES_PAGES; pages += 1) {
+      const params = new URLSearchParams({ uri: atUri, limit: String(QUOTES_PAGE_LIMIT) });
       if (cursor) params.set('cursor', cursor);
-
-      const page = await bgApiRequestPublic<GetQuotesResponse>(
-        `app.bsky.feed.getQuotes?${params.toString()}`
+      const page = await bgApiRequestPublic<PostAudienceResponse>(
+        `app.bsky.feed.${endpoint}?${params}`
       );
+      if (request.cancelled) return cancelled();
       if (!page) {
-        // A null page on the first request is a hard failure; later it just ends pagination.
-        if (pages === 0) {
-          return { success: false, error: 'Failed to fetch quotes (post may not exist)' };
-        }
+        if (pages === 0)
+          return { success: false, error: `Failed to fetch ${audience} (post may not exist)` };
+        truncated = true;
         break;
       }
-
-      for (const post of page.posts ?? []) {
-        const did = post.author?.did;
-        if (did && !seen.has(did)) {
-          seen.add(did);
-          quoterDids.push(did);
+      const actors =
+        audience === 'quotes'
+          ? page.posts?.map((post) => post.author)
+          : audience === 'likes'
+            ? page.likes?.map((like) => like.actor)
+            : page.repostedBy;
+      for (const actor of actors ?? []) {
+        if (
+          actor?.did &&
+          actor.did !== auth?.did &&
+          !candidates.has(actor.did) &&
+          candidates.size < 5000
+        ) {
+          candidates.set(actor.did, actor);
         }
       }
-
       cursor = page.cursor;
-      pages += 1;
-    } while (cursor && pages < MAX_QUOTES_PAGES);
-
-    // A surviving cursor at the cap means there are more quoters we didn't fetch.
-    if (cursor && pages >= MAX_QUOTES_PAGES) {
-      truncated = true;
+      if (!cursor) break;
+      if (seenCursors.has(cursor) || pages === MAX_QUOTES_PAGES - 1) {
+        truncated = true;
+        break;
+      }
+      seenCursors.add(cursor);
     }
-
-    if (quoterDids.length === 0) {
-      return { success: true, subject: atUri, quoters: [], truncated };
+    const dids = [...candidates.keys()];
+    // Batch here as well as in fetchProfiles so cancellation stops between hydration requests.
+    const profiles: ProfileWithViewer[] = [];
+    if (auth) {
+      for (let start = 0; start < dids.length; start += 25) {
+        if (request.cancelled) return cancelled();
+        profiles.push(
+          ...(await fetchProfiles(dids.slice(start, start + 25), auth.accessJwt, auth.pdsUrl))
+        );
+        if (request.cancelled) return cancelled();
+        if (start + 25 < dids.length) await sleep(API_DELAY_MS);
+      }
     }
-
-    // Hydrate display info + viewer state. Needs auth so viewer.blocking/muted resolve.
-    const auth = await getAuthToken();
-    const profiles = auth ? await fetchProfiles(quoterDids, auth.accessJwt, auth.pdsUrl) : [];
-    const profileByDid = new Map(profiles.map((p) => [p.did, p]));
-
-    // When auth is missing OR the profile fetch came back empty/short, viewer state
-    // (alreadyBlocked/alreadyMuted) is unreliable: we can't tell who the user already
-    // blocks, so a bulk select-all would mass-reblock. Flag it for the tab.
-    const viewerStateUnavailable = !auth || profiles.length < quoterDids.length;
-
-    const quoters: QuotePoster[] = quoterDids.map((did) => {
+    const profileByDid = new Map(profiles.map((profile) => [profile.did, profile]));
+    const viewerStateUnavailable = !auth || dids.some((did) => !profileByDid.get(did)?.viewer);
+    const quoters = dids.map((did): QuotePoster => {
       const profile = profileByDid.get(did);
+      const display = profile ?? candidates.get(did);
       return {
         did,
-        handle: profile?.handle || did,
-        displayName: profile?.displayName,
-        avatar: profile?.avatar,
+        handle: display?.handle || did,
+        displayName: display?.displayName,
+        avatar: display?.avatar,
         alreadyBlocked: !!profile?.viewer?.blocking,
         alreadyMuted: !!profile?.viewer?.muted,
+        followed: !!profile?.viewer?.following,
       };
     });
-
     return { success: true, subject: atUri, quoters, truncated, viewerStateUnavailable };
   } catch (error) {
-    log.error('Fetch quote posters failed:', error);
+    log.error('Fetch post audience failed:', error);
     return { success: false, error: error instanceof Error ? error.message : 'Unknown error' };
+  } finally {
+    if (requestId && activeFetches.get(requestId) === request) activeFetches.delete(requestId);
   }
 }
 
@@ -255,6 +268,10 @@ export async function handleBulkTempAction(
   isPermanent: boolean
 ): Promise<BulkTempActionResult> {
   const result: BulkTempActionResult = { created: 0, failed: 0, skipped: 0, errors: [] };
+  const auth = await getAuthToken();
+  const uniqueDids = [...new Set(dids)];
+  result.skipped = uniqueDids.filter((did) => did === auth?.did).length;
+  dids = uniqueDids.filter((did) => did !== auth?.did);
 
   // Snapshot the relevant storage once so the membership check is cheap per-DID.
   const [tempExisting, permanentExisting] = isMute

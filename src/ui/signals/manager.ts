@@ -8,17 +8,11 @@ import type {
   PostContext,
   SyncState,
   ExtensionOptions,
-  BlocklistAuditState,
-  BlocklistConflictGroup,
-  AmnestyReview,
-  Interaction,
-  OwnedList,
-  ListMember,
   MassOpsScanResult,
   MassOpsSettings,
   ProfileWithViewer,
-  PermanentBlockMute,
   QuotePoster,
+  PostAudience,
 } from '../../types.js';
 import { DEFAULT_MASS_OPS_SETTINGS } from '../../types.js';
 
@@ -30,149 +24,9 @@ export const contexts = signal<PostContext[]>([]);
 export const syncState = signal<SyncState | null>(null);
 export const options = signal<ExtensionOptions | null>(null);
 
-// Amnesty state
-export const amnestyReviewedDids = signal<Set<string>>(new Set());
-export const amnestyReviews = signal<AmnestyReview[]>([]); // Full review records for showing status
-export const amnestyCandidate = signal<ManagedEntry | null>(null);
-export const amnestySearching = signal(false);
-// Track DIDs where we already searched and found no context (avoids repeated searches)
-export const amnestySearchedNoContext = signal<Set<string>>(new Set());
-
-// List audit state (Amnesty mode for auditing list members)
-export type AmnestyMode = 'blocks_mutes' | 'list_members';
-export const amnestyMode = signal<AmnestyMode>('blocks_mutes');
-export const ownedLists = signal<OwnedList[]>([]);
-export const selectedListUri = signal<string | null>(null);
-export const listMembers = signal<ListMember[]>([]);
-export const listAuditCandidate = signal<ListMember | null>(null);
-export const listAuditReviewedDids = signal<Set<string>>(new Set());
-export const listAuditLoading = signal(false);
-
-/**
- * Set the amnesty mode and reset relevant state
- */
-export function setAmnestyMode(mode: AmnestyMode): void {
-  amnestyMode.value = mode;
-  // Reset candidates when switching modes
-  if (mode === 'blocks_mutes') {
-    listAuditCandidate.value = null;
-  } else {
-    amnestyCandidate.value = null;
-  }
-}
-
-/**
- * Select a list for auditing
- */
-export function selectList(uri: string | null): void {
-  selectedListUri.value = uri;
-  listMembers.value = [];
-  listAuditCandidate.value = null;
-  listAuditReviewedDids.value = new Set();
-}
-
-// Computed map of DID -> amnesty status ('denied' or undefined for unreviewed)
-export const amnestyStatusMap = computed(() => {
-  const map = new Map<string, 'denied'>();
-  for (const review of amnestyReviews.value) {
-    // 'kept_blocked' or 'kept_muted' means user decided to keep the block/mute
-    if (review.decision === 'kept_blocked' || review.decision === 'kept_muted') {
-      map.set(review.did, 'denied');
-    }
-    // 'unblocked' or 'unmuted' means they were freed - they won't be in the list anymore
-  }
-  return map;
-});
-
-// Blocklist audit state
-export const blocklistAuditState = signal<BlocklistAuditState | null>(null);
-export const blocklistConflicts = signal<BlocklistConflictGroup[]>([]);
-
-// ============================================================================
-// Review Queue State
-// ============================================================================
-
-export const permanentBlocksRaw = signal<Record<string, PermanentBlockMute>>({});
-export const permanentMutesRaw = signal<Record<string, PermanentBlockMute>>({});
-
-/** Items needing review, sorted most-recent-first */
-export const unreviewedItems = computed(() => {
-  const items: Array<PermanentBlockMute & { actionType: 'block' | 'mute' }> = [];
-
-  for (const block of Object.values(permanentBlocksRaw.value)) {
-    if (block.needsReview === true) {
-      items.push({ ...block, actionType: 'block' });
-    }
-  }
-
-  for (const mute of Object.values(permanentMutesRaw.value)) {
-    if (mute.needsReview === true) {
-      items.push({ ...mute, actionType: 'mute' });
-    }
-  }
-
-  return items.sort((a, b) => b.syncedAt - a.syncedAt);
-});
-
-export type ReviewQueueViewMode = 'card' | 'table';
-export const reviewQueueViewMode = signal<ReviewQueueViewMode>('card');
-export const reviewQueueCurrentIndex = signal(0);
-export const reviewQueueSelectedItems = signal<Set<string>>(new Set());
-
-export function reviewQueueNext(): void {
-  const maxIndex = unreviewedItems.value.length - 1;
-  if (reviewQueueCurrentIndex.value < maxIndex) {
-    reviewQueueCurrentIndex.value += 1;
-  }
-}
-
-export function reviewQueuePrevious(): void {
-  if (reviewQueueCurrentIndex.value > 0) {
-    reviewQueueCurrentIndex.value -= 1;
-  }
-}
-
-export function reviewQueueResetIndex(): void {
-  reviewQueueCurrentIndex.value = 0;
-}
-
-export function reviewQueueToggleSelection(did: string, actionType: 'block' | 'mute'): void {
-  const key = `${did}:${actionType}`;
-  const newSet = new Set(reviewQueueSelectedItems.value);
-  if (newSet.has(key)) {
-    newSet.delete(key);
-  } else {
-    newSet.add(key);
-  }
-  reviewQueueSelectedItems.value = newSet;
-}
-
-export function reviewQueueSelectAll(): void {
-  reviewQueueSelectedItems.value = new Set(
-    unreviewedItems.value.map((item) => `${item.did}:${item.actionType}`)
-  );
-}
-
-export function reviewQueueClearSelection(): void {
-  reviewQueueSelectedItems.value = new Set();
-}
-
-export function reviewQueueToggleViewMode(): void {
-  reviewQueueViewMode.value = reviewQueueViewMode.value === 'card' ? 'table' : 'card';
-}
-
 // UI state
-export type TabType =
-  | 'actions'
-  | 'amnesty'
-  | 'blocklist-audit'
-  | 'review-queue'
-  | 'repost-filters'
-  | 'mass-ops'
-  | 'copy-user'
-  | 'quote-sweep'
-  | 'settings';
-export type SortColumn = 'user' | 'type' | 'source' | 'status' | 'amnesty' | 'expires' | 'date';
+export type TabType = 'actions' | 'mass-ops' | 'copy-user' | 'quote-sweep' | 'settings';
+export type SortColumn = 'user' | 'type' | 'source' | 'status' | 'expires' | 'date';
 export type SortDirection = 'asc' | 'desc';
 export type FilterType = 'all' | 'block' | 'mute' | 'both';
 
@@ -184,67 +38,6 @@ export const sortColumn = signal<SortColumn>('date');
 export const sortDirection = signal<SortDirection>('desc');
 export const selectedItems = signal<Set<string>>(new Set());
 export const loading = signal(true);
-
-// Temp unblock tracking
-export const tempUnblockTimers = signal<Map<string, { timerId: number; expiresAt: number }>>(
-  new Map()
-);
-
-// Find context loading state
-export const findingContext = signal<Set<string>>(new Set());
-
-export function setFindingContext(did: string, loading: boolean): void {
-  const newSet = new Set(findingContext.value);
-  if (loading) {
-    newSet.add(did);
-  } else {
-    newSet.delete(did);
-  }
-  findingContext.value = newSet;
-}
-
-// Expanded row state for viewing all interactions
-export const expandedRows = signal<Set<string>>(new Set());
-export const expandedInteractions = signal<Map<string, Interaction[]>>(new Map());
-export const expandedLoading = signal<Set<string>>(new Set());
-
-export function toggleExpanded(did: string): void {
-  const newSet = new Set(expandedRows.value);
-  if (newSet.has(did)) {
-    newSet.delete(did);
-  } else {
-    newSet.add(did);
-  }
-  expandedRows.value = newSet;
-}
-
-export function setInteractions(did: string, interactions: Interaction[]): void {
-  const newMap = new Map(expandedInteractions.value);
-  newMap.set(did, interactions);
-  expandedInteractions.value = newMap;
-}
-
-export function setExpandedLoading(did: string, loading: boolean): void {
-  const newSet = new Set(expandedLoading.value);
-  if (loading) {
-    newSet.add(did);
-  } else {
-    newSet.delete(did);
-  }
-  expandedLoading.value = newSet;
-}
-
-// Context map computed from contexts
-export const contextMap = computed(() => {
-  const map = new Map<string, PostContext>();
-  for (const ctx of contexts.value) {
-    const existing = map.get(ctx.targetDid);
-    if (!existing || ctx.timestamp > existing.timestamp) {
-      map.set(ctx.targetDid, ctx);
-    }
-  }
-  return map;
-});
 
 // Computed stats
 export const stats = computed(() => ({
@@ -553,6 +346,7 @@ export type { QuotePoster };
 
 export type QuoteActionType = 'block' | 'mute';
 
+export const quoteAudience = signal<PostAudience | ''>('');
 export const quotePostRef = signal<string>('');
 export const quoteSubject = signal<string | null>(null);
 export const quoteQuoters = signal<QuotePoster[]>([]);
@@ -573,6 +367,8 @@ export const quoteAutoFetch = signal(false);
 
 /** Reset all quote-sweep state (used when starting a fresh sweep). */
 export function resetQuoteSweepState(): void {
+  quoteAudience.value = '';
+  quoteAutoFetch.value = false;
   quotePostRef.value = '';
   quoteSubject.value = null;
   quoteQuoters.value = [];

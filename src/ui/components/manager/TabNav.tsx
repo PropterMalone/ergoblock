@@ -1,97 +1,48 @@
 import type { JSX } from 'preact';
+import { useRef } from 'preact/hooks';
 import { currentTab, type TabType } from '../../signals/manager.js';
-import { Tooltip } from '../shared/Tooltip.js';
 
-type TabGroup = 'core' | 'review' | 'advanced' | 'config';
-
-type Tab = {
-  id: TabType;
-  label: string;
-  tooltip: string;
-  group: TabGroup;
-};
-
-const TABS: Tab[] = [
-  {
-    id: 'actions',
-    label: 'Blocks & Mutes',
-    tooltip: 'View and manage all your blocked and muted accounts',
-    group: 'core',
-  },
-  {
-    id: 'amnesty',
-    label: 'Amnesty',
-    tooltip: 'Review old blocks to decide if they should be removed',
-    group: 'review',
-  },
-  {
-    id: 'blocklist-audit',
-    label: 'Blocklist Audit',
-    tooltip: 'Check for conflicts between your follows and blocklist subscriptions',
-    group: 'review',
-  },
-  {
-    id: 'review-queue',
-    label: 'Review Queue',
-    tooltip: 'Review blocks and mutes created outside ErgoBlock',
-    group: 'review',
-  },
-  {
-    id: 'repost-filters',
-    label: 'Repost Filters',
-    tooltip: "Manage accounts whose reposts you've hidden from your feed",
-    group: 'advanced',
-  },
-  {
-    id: 'mass-ops',
-    label: 'Mass Ops',
-    tooltip: 'Detect and undo patterns of rapid automated blocking',
-    group: 'advanced',
-  },
-  {
-    id: 'copy-user',
-    label: 'Copy User',
-    tooltip: "Import another user's blocks or follows to your account",
-    group: 'advanced',
-  },
-  {
-    id: 'quote-sweep',
-    label: 'Quote Sweep',
-    tooltip: 'Fetch everyone who quote-posted a post and bulk block/mute them',
-    group: 'advanced',
-  },
-  {
-    id: 'settings',
-    label: 'Settings',
-    tooltip: 'Configure ErgoBlock behavior and appearance',
-    group: 'config',
-  },
+const PRIMARY: { id: TabType; label: string }[] = [
+  { id: 'actions', label: 'Blocks & Mutes' },
+  { id: 'quote-sweep', label: 'Post actions' },
+  { id: 'settings', label: 'Settings' },
+];
+const ADVANCED: { id: TabType; label: string }[] = [
+  { id: 'mass-ops', label: 'Mass Ops' },
+  { id: 'copy-user', label: 'Copy User' },
 ];
 
 export function TabNav(): JSX.Element {
-  const handleTabClick = (tabId: TabType) => {
-    currentTab.value = tabId;
+  const disclosure = useRef<HTMLDetailsElement>(null);
+  const select = (id: TabType, primary: boolean) => {
+    currentTab.value = id;
+    if (primary && disclosure.current) disclosure.current.open = false;
   };
-
+  const button = (tab: { id: TabType; label: string }, primary: boolean) => (
+    <button
+      key={tab.id}
+      class={`tab ${currentTab.value === tab.id ? 'active' : ''}`}
+      aria-pressed={currentTab.value === tab.id}
+      onClick={() => select(tab.id, primary)}
+    >
+      {tab.label}
+    </button>
+  );
   return (
-    <div class="tabs">
-      {TABS.map((tab, index) => {
-        const prevTab = TABS[index - 1];
-        const isGroupStart = index === 0 || prevTab?.group !== tab.group;
-
-        return (
-          <Tooltip key={tab.id} text={tab.tooltip} position="bottom">
-            <button
-              class={`tab ${currentTab.value === tab.id ? 'active' : ''}`}
-              data-group={tab.group}
-              data-group-start={isGroupStart ? 'true' : undefined}
-              onClick={() => handleTabClick(tab.id)}
-            >
-              {tab.label}
-            </button>
-          </Tooltip>
-        );
-      })}
-    </div>
+    <nav aria-label="Manager sections" class="tabs">
+      {PRIMARY.map((tab) => button(tab, true))}
+      <details
+        ref={disclosure}
+        class="advanced-tools"
+        onToggle={(event) => {
+          if (!event.currentTarget.open && ADVANCED.some((tab) => tab.id === currentTab.value)) {
+            currentTab.value = 'actions';
+          }
+        }}
+      >
+        <summary>Advanced</summary>
+        {ADVANCED.map((tab) => button(tab, false))}
+      </details>
+    </nav>
   );
 }

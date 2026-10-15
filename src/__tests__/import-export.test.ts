@@ -31,6 +31,16 @@ vi.mock('../platform/storage/temp-actions.js', () => ({
 }));
 
 vi.mock('../platform/storage/permanent.js', () => ({
+  updatePermanentBlocks: async (update: (map: Record<string, unknown>) => void) => {
+    const map = await mockGetPermanentBlocks();
+    update(map);
+    await mockSetPermanentBlocks(map);
+  },
+  updatePermanentMutes: async (update: (map: Record<string, unknown>) => void) => {
+    const map = await mockGetPermanentMutes();
+    update(map);
+    await mockSetPermanentMutes(map);
+  },
   getPermanentBlocks: (...args: unknown[]) => mockGetPermanentBlocks(...args),
   setPermanentBlocks: (...args: unknown[]) => mockSetPermanentBlocks(...args),
   getPermanentMutes: (...args: unknown[]) => mockGetPermanentMutes(...args),

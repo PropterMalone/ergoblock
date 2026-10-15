@@ -31,6 +31,7 @@ import { refreshSession, refreshViaRefreshToken } from './api-client.js';
 const mockTabsQuery = vi.mocked(browser.tabs.query);
 const mockTabsSendMessage = vi.mocked(browser.tabs.sendMessage);
 const mockStorageSet = vi.mocked(browser.storage.local.set);
+vi.mocked(browser.storage.local.get).mockImplementation(async () => ({ authToken: AUTH }));
 
 const AUTH = {
   accessJwt: 'old-access',

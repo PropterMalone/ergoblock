@@ -8,6 +8,9 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 vi.mock('./api-client.js', () => ({
   getAuthToken: vi.fn(),
+  captureAuthGeneration: vi.fn(() => 0),
+  AuthSessionChangedError: class extends Error {},
+  withAuthSession: vi.fn(async (_auth: unknown, operation: () => Promise<unknown>) => operation()),
 }));
 
 vi.mock('./graph-ops.js', () => ({
@@ -18,6 +21,16 @@ vi.mock('./graph-ops.js', () => ({
 }));
 
 vi.mock('../platform/storage.js', () => ({
+  updatePermanentBlocks: vi.fn(async (update: (map: Record<string, unknown>) => void) => {
+    const map = await getPermanentBlocks();
+    update(map);
+    await setPermanentBlocks(map);
+  }),
+  updatePermanentMutes: vi.fn(async (update: (map: Record<string, unknown>) => void) => {
+    const map = await getPermanentMutes();
+    update(map);
+    await setPermanentMutes(map);
+  }),
   getTempBlocks: vi.fn().mockResolvedValue({}),
   getTempMutes: vi.fn().mockResolvedValue({}),
   getPermanentBlocks: vi.fn().mockResolvedValue({}),
@@ -56,12 +69,10 @@ import {
   addTempBlock,
   addTempMute,
   addHistoryEntry,
-  addPostContext,
   addPendingRollback,
   preCheckStorageQuota,
   StorageQuotaError,
 } from '../platform/storage.js';
-import type { SerializedPostContext } from '../types.js';
 
 const mockGetAuthToken = vi.mocked(getAuthToken);
 const mockBlockUser = vi.mocked(blockUser);
@@ -77,7 +88,6 @@ const mockSetPermanentMutes = vi.mocked(setPermanentMutes);
 const mockAddTempBlock = vi.mocked(addTempBlock);
 const mockAddTempMute = vi.mocked(addTempMute);
 const mockAddHistoryEntry = vi.mocked(addHistoryEntry);
-const mockAddPostContext = vi.mocked(addPostContext);
 const mockAddPendingRollback = vi.mocked(addPendingRollback);
 const mockPreCheckStorageQuota = vi.mocked(preCheckStorageQuota);
 
@@ -104,8 +114,8 @@ describe('handleCreateTempAction — unified create primitive', () => {
     // Re-establish resolving implementations: clearAllMocks clears call history but NOT
     // implementations, so a prior test's mockRejectedValue would otherwise leak forward.
     mockPreCheckStorageQuota.mockResolvedValue(undefined);
-    mockAddTempBlock.mockResolvedValue(undefined);
-    mockAddTempMute.mockResolvedValue(undefined);
+    mockAddTempBlock.mockResolvedValue({ handle: HANDLE, createdAt: 1, expiresAt: 2 });
+    mockAddTempMute.mockResolvedValue({ handle: HANDLE, createdAt: 1, expiresAt: 2 });
     // Default read-back: entry present after write
     mockGetTempBlocks.mockResolvedValue({
       [TARGET_DID]: { handle: HANDLE, expiresAt: Date.now() + DURATION, createdAt: Date.now() },
@@ -172,7 +182,9 @@ describe('handleCreateTempAction — unified create primitive', () => {
 
     expect(res.success).toBe(true);
     expect(mockBlockUser).toHaveBeenCalledOnce();
-    expect(mockAddTempBlock).toHaveBeenCalledWith(TARGET_DID, HANDLE, DURATION, 'rkey123');
+    expect(mockAddTempBlock).toHaveBeenCalledWith(TARGET_DID, HANDLE, DURATION, 'rkey123', {
+      ownerDid: VALID_AUTH.did,
+    });
     expect(mockAddHistoryEntry).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'blocked', success: true })
     );
@@ -238,7 +250,9 @@ describe('handleCreateTempAction — unified create primitive', () => {
 
     expect(res.success).toBe(true);
     expect(mockMuteUser).toHaveBeenCalledOnce();
-    expect(mockAddTempMute).toHaveBeenCalledWith(TARGET_DID, HANDLE, DURATION);
+    expect(mockAddTempMute).toHaveBeenCalledWith(TARGET_DID, HANDLE, DURATION, {
+      ownerDid: VALID_AUTH.did,
+    });
     expect(mockAddHistoryEntry).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'muted', success: true })
     );
@@ -265,49 +279,19 @@ describe('handleCreateTempAction — unified create primitive', () => {
     expect(mockAddTempMute).not.toHaveBeenCalled();
   });
 
-  it('post context saved when provided', async () => {
-    const ctx: SerializedPostContext = {
-      postUri: 'at://did:plc:target/app.bsky.feed.post/abc',
-      postAuthorDid: TARGET_DID,
-      targetHandle: HANDLE,
-      targetDid: TARGET_DID,
-      actionType: 'block',
-      permanent: false,
-      timestamp: Date.now(),
-    };
-
-    const res = await handleCreateTempAction(TARGET_DID, HANDLE, DURATION, false, false, ctx);
-
-    expect(res.success).toBe(true);
-    expect(mockAddPostContext).toHaveBeenCalledWith(
-      expect.objectContaining({ postUri: ctx.postUri, id: expect.any(String) })
+  it('rejects a different expected owner before any write', async () => {
+    const res = await handleCreateTempAction(
+      TARGET_DID,
+      HANDLE,
+      DURATION,
+      false,
+      false,
+      'did:plc:different'
     );
-  });
-
-  it('post context skipped when null/omitted', async () => {
-    const res = await handleCreateTempAction(TARGET_DID, HANDLE, DURATION, false, false, null);
-
-    expect(res.success).toBe(true);
-    expect(mockAddPostContext).not.toHaveBeenCalled();
-  });
-
-  it('a thrown addPostContext does NOT fail the create (best-effort)', async () => {
-    mockAddPostContext.mockRejectedValue(new Error('idb write failed'));
-    const ctx = {
-      postUri: 'at://did:plc:target/app.bsky.feed.post/abc',
-      postAuthorDid: TARGET_DID,
-      targetHandle: HANDLE,
-      targetDid: TARGET_DID,
-      actionType: 'block' as const,
-      permanent: false,
-      timestamp: Date.now(),
-    };
-
-    const res = await handleCreateTempAction(TARGET_DID, HANDLE, DURATION, false, false, ctx);
-
-    // Create still succeeds even though the context persist threw.
-    expect(res.success).toBe(true);
-    expect(mockAddHistoryEntry).toHaveBeenCalled();
+    expect(res.success).toBe(false);
+    expect(res.error).toContain('Account changed');
+    expect(mockBlockUser).not.toHaveBeenCalled();
+    expect(mockAddTempBlock).not.toHaveBeenCalled();
   });
 
   it('permanent normalization: a -1 duration is collapsed to permanent (never reaches addTempBlock)', async () => {

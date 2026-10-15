@@ -12,19 +12,15 @@
 import browser from './browser.js';
 import type {
   AuthData,
-  RelationshipUser,
-  Interaction,
   PostView,
   ProfileWithViewer,
   MassOpsSettings,
   GraphOperation,
-  OwnedList,
-  ListMember,
   ExportData,
   ImportOptions,
   ImportResult,
-  SerializedPostContext,
   QuotePoster,
+  PostAudience,
 } from '../types.js';
 import type { DismissedCluster } from './storage.js';
 import type { CarCacheStatusInfo } from '../ui/signals/manager.js';
@@ -73,7 +69,11 @@ export interface MessageRegistry {
   // ── Expiration & sync ─────────────────────────────────────────────────
   CHECK_NOW: {
     request: Record<string, never>;
-    response: { success: boolean };
+    response: {
+      success: boolean;
+      outcome?: import('./expiration-health.js').ExpirationOutcome;
+      error?: string;
+    };
   };
   SYNC_NOW: {
     request: Record<string, never>;
@@ -88,7 +88,7 @@ export interface MessageRegistry {
       durationMs: number;
       isMute: boolean;
       isPermanent: boolean;
-      postContext?: SerializedPostContext | null;
+      expectedOwner?: string;
     };
     response: { success: boolean; error?: string };
   };
@@ -109,20 +109,6 @@ export interface MessageRegistry {
     response: { success: boolean; error?: string };
   };
 
-  // ── Context search ────────────────────────────────────────────────────
-  FIND_CONTEXT: {
-    request: { did: string; handle: string; beforeTimestamp?: number };
-    response: { success: boolean; found?: boolean; error?: string };
-  };
-  FETCH_ALL_INTERACTIONS: {
-    request: { did: string; handle: string; beforeTimestamp?: number };
-    response: { success: boolean; interactions?: Interaction[]; error?: string };
-  };
-  FIND_INTERACTIONS_BEFORE: {
-    request: { targetDid: string; beforeTimestamp: number };
-    response: { success: boolean; interactions?: Interaction[]; error?: string };
-  };
-
   // ── Last Word delayed block ───────────────────────────────────────────
   SCHEDULE_DELAYED_BLOCK: {
     request: {
@@ -134,94 +120,6 @@ export interface MessageRegistry {
       mutedFirst?: boolean;
     };
     response: { success: boolean; error?: string; delaySeconds?: number };
-  };
-
-  // ── Blocklist audit ───────────────────────────────────────────────────
-  BLOCKLIST_AUDIT_SYNC: {
-    request: Record<string, never>;
-    response: { success: boolean; error?: string };
-  };
-  UNSUBSCRIBE_BLOCKLIST: {
-    request: { listUri: string };
-    response: { success: boolean; error?: string };
-  };
-  COPY_BLOCKLIST_AS_INDIVIDUAL_BLOCKS: {
-    request: { listUri: string };
-    response: { success: boolean; blocked?: number; skipped?: number; error?: string };
-  };
-
-  // ── List audit ────────────────────────────────────────────────────────
-  FETCH_OWNED_LISTS: {
-    request: Record<string, never>;
-    response: { success: boolean; lists?: OwnedList[]; error?: string };
-  };
-  FETCH_LIST_MEMBERS_WITH_TIMESTAMPS: {
-    request: { listUri: string };
-    response: { success: boolean; members?: ListMember[]; error?: string };
-  };
-  REMOVE_FROM_LIST: {
-    request: { rkey: string };
-    response: { success: boolean; error?: string };
-  };
-
-  // ── Social connections (amnesty) ──────────────────────────────────────
-  GET_FOLLOW_RELATIONSHIPS: {
-    request: { did: string };
-    response: {
-      success: boolean;
-      followsWhoFollowThem?: RelationshipUser[];
-      followersWhoFollowThem?: RelationshipUser[];
-      followsTheyBlock?: RelationshipUser[];
-      error?: string;
-    };
-  };
-  GET_FOLLOWS_WHO_FOLLOW_THEM: {
-    request: { did: string };
-    response: { success: boolean; users?: RelationshipUser[]; error?: string };
-  };
-  GET_FOLLOWERS_WHO_FOLLOW_THEM: {
-    request: { did: string };
-    response: { success: boolean; users?: RelationshipUser[]; error?: string };
-  };
-  GET_FOLLOWS_THEY_BLOCK: {
-    request: { did: string };
-    response: { success: boolean; users?: RelationshipUser[]; error?: string };
-  };
-  GET_FOLLOWS_WHO_BLOCK_THEM: {
-    request: { did: string };
-    response: {
-      success: boolean;
-      users?: RelationshipUser[];
-      count?: number;
-      totalBlockers?: number;
-      cached?: boolean;
-      error?: string;
-    };
-  };
-  GET_FOLLOWS_WHO_BLOCK_THEM_CACHED: {
-    request: { did: string };
-    response: {
-      success: boolean;
-      users?: RelationshipUser[];
-      count?: number;
-      totalBlockers?: number;
-      cached?: boolean;
-      error?: string;
-    };
-  };
-
-  // ── Clearsky cache ────────────────────────────────────────────────────
-  PREWARM_CLEARSKY_CACHE: {
-    request: { targetDids: string[] };
-    response: { success: boolean; queued?: number; alreadyCached?: number };
-  };
-  PREFETCH_CLEARSKY_LOOKAHEAD: {
-    request: { targetDids: string[] };
-    response: { success: boolean; queued?: number; alreadyCached?: number };
-  };
-  CLEAR_CLEARSKY_CACHE: {
-    request: Record<string, never>;
-    response: { success: boolean; error?: string };
   };
 
   // ── Mass operations ───────────────────────────────────────────────────
@@ -316,17 +214,6 @@ export interface MessageRegistry {
       duplicateDetails?: Array<{ did: string; count: number; uris: string[] }>;
     };
   };
-  RECTIFY_AMNESTY_UNBLOCKS: {
-    request: Record<string, never>;
-    response: {
-      success: boolean;
-      checked?: number;
-      fixed?: number;
-      failed?: number;
-      fixedHandles?: string[];
-      error?: string;
-    };
-  };
   GET_PDS_RECORD_COUNTS: {
     request: Record<string, never>;
     response: {
@@ -365,8 +252,12 @@ export interface MessageRegistry {
   };
 
   // ── Quote Sweep ──────────────────────────────────────────────────────
+  CANCEL_POST_AUDIENCE_FETCH: {
+    request: { requestId: string };
+    response: { success: boolean };
+  };
   GET_QUOTE_POSTERS: {
-    request: { postRef: string };
+    request: { postRef: string; audience?: PostAudience; requestId?: string };
     response: {
       success: boolean;
       subject?: string;
@@ -379,6 +270,22 @@ export interface MessageRegistry {
       error?: string;
     };
   };
+  START_POST_BATCH: {
+    request: import('../domains/post-batch.js').BatchInput;
+    response: { id: string };
+  };
+  GET_POST_BATCHES: {
+    request: Record<string, never>;
+    response: { runs: import('../domains/post-batch.js').BatchRun[] };
+  };
+  STOP_POST_BATCH: {
+    request: { id: string };
+    response: { success: boolean };
+  };
+  UNDO_POST_BATCH: {
+    request: { id: string; confirmed: boolean };
+    response: { success: boolean };
+  };
   BULK_TEMP_ACTION: {
     request: {
       dids: string[];
@@ -390,22 +297,10 @@ export interface MessageRegistry {
     response: { created: number; failed: number; skipped: number; errors: string[] };
   };
 
-  // ── Review Queue ────────────────────────────────────────────────────
+  // ── Existing action expiration ─────────────────────────────────────────
   ASSIGN_DURATION_TO_PERMANENT: {
     request: { did: string; actionType: 'block' | 'mute'; duration: number };
     response: { success: boolean; error?: string };
-  };
-  MARK_PERMANENT_REVIEWED: {
-    request: { did: string; actionType: 'block' | 'mute' };
-    response: { success: boolean; error?: string };
-  };
-  DISMISS_REVIEW: {
-    request: { did: string; actionType: 'block' | 'mute' };
-    response: { success: boolean; error?: string };
-  };
-  BACKFILL_REVIEW_QUEUE: {
-    request: Record<string, never>;
-    response: { success: boolean; flaggedBlocks: number; flaggedMutes: number; error?: string };
   };
 }
 

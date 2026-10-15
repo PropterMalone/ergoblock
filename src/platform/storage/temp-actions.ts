@@ -8,10 +8,17 @@ import { isValidDid, isValidDuration, createLogger } from '../utils.js';
 import { STORAGE_KEYS, DEFAULT_DURATION_MS } from './keys.js';
 import { safeSyncStorageWrite } from './quota.js';
 import { setHasCreatedAction } from './state.js';
+import {
+  withTrackingLock,
+  trackingMatches,
+  type TrackingIdentity,
+  type TrackingEntryOptions,
+  type TrackingMutationOptions,
+} from './tracking.js';
 
 const log = createLogger('storage');
 
-export interface TempBlockData {
+export interface TempBlockData extends TrackingIdentity {
   handle: string;
   expiresAt: number;
   createdAt: number;
@@ -50,8 +57,9 @@ export async function addTempBlock(
   did: string,
   handle: string,
   durationMs: number = DEFAULT_DURATION_MS,
-  rkey?: string
-): Promise<void> {
+  rkey?: string,
+  options: TrackingEntryOptions = {}
+): Promise<TempBlockData> {
   // Validate inputs
   if (!isValidDid(did)) {
     throw new Error(`Invalid DID format: ${did}`);
@@ -63,15 +71,21 @@ export async function addTempBlock(
     throw new Error('Handle is required');
   }
 
-  const blocks = await getTempBlocks();
-  blocks[did] = {
-    handle,
-    expiresAt: Date.now() + durationMs,
-    createdAt: Date.now(),
-    rkey,
-  };
-  // Use safe write with quota checking
-  await safeSyncStorageWrite(STORAGE_KEYS.TEMP_BLOCKS, blocks);
+  const entry = await withTrackingLock(async () => {
+    const blocks = await getTempBlocks();
+    const entry: TempBlockData = {
+      handle,
+      expiresAt: Date.now() + durationMs,
+      createdAt: Date.now(),
+      rkey,
+      ...(options.ownerDid ? { ownerDid: options.ownerDid } : {}),
+      trackingId: options.trackingId ?? crypto.randomUUID(),
+    };
+    blocks[did] = entry;
+    await options.beforeWrite?.();
+    await safeSyncStorageWrite(STORAGE_KEYS.TEMP_BLOCKS, blocks);
+    return entry;
+  }, options.lock);
 
   // Mark that user has created their first action for first-run detection
   await setHasCreatedAction();
@@ -84,7 +98,7 @@ export async function addTempBlock(
       try {
         await send('TEMP_BLOCK_ADDED', {
           did,
-          expiresAt: blocks[did].expiresAt,
+          expiresAt: entry.expiresAt,
         });
         return; // Success
       } catch (err) {
@@ -101,17 +115,27 @@ export async function addTempBlock(
       }
     }
   };
-  notifyBackground().catch(() => {});
+  notifyBackground().catch((error) => log.warn('Temp block notification failed:', error));
+  return entry;
 }
 
 /**
  * Remove a temp block
  * @param did - User's DID
  */
-export async function removeTempBlock(did: string): Promise<void> {
-  const blocks = await getTempBlocks();
-  delete blocks[did];
-  await browser.storage.sync.set({ [STORAGE_KEYS.TEMP_BLOCKS]: blocks });
+export async function removeTempBlock(
+  did: string,
+  expected?: TrackingIdentity,
+  options: TrackingMutationOptions = {}
+): Promise<boolean> {
+  return withTrackingLock(async () => {
+    const blocks = await getTempBlocks();
+    if (!blocks[did] || (expected && !trackingMatches(blocks[did], expected))) return false;
+    await options.beforeWrite?.();
+    delete blocks[did];
+    await browser.storage.sync.set({ [STORAGE_KEYS.TEMP_BLOCKS]: blocks });
+    return true;
+  }, options.lock);
 }
 
 /**
@@ -124,8 +148,9 @@ export async function removeTempBlock(did: string): Promise<void> {
 export async function addTempMute(
   did: string,
   handle: string,
-  durationMs: number = DEFAULT_DURATION_MS
-): Promise<void> {
+  durationMs: number = DEFAULT_DURATION_MS,
+  options: TrackingEntryOptions = {}
+): Promise<TempBlockData> {
   // Validate inputs
   if (!isValidDid(did)) {
     throw new Error(`Invalid DID format: ${did}`);
@@ -137,14 +162,20 @@ export async function addTempMute(
     throw new Error('Handle is required');
   }
 
-  const mutes = await getTempMutes();
-  mutes[did] = {
-    handle,
-    expiresAt: Date.now() + durationMs,
-    createdAt: Date.now(),
-  };
-  // Use safe write with quota checking
-  await safeSyncStorageWrite(STORAGE_KEYS.TEMP_MUTES, mutes);
+  const entry = await withTrackingLock(async () => {
+    const mutes = await getTempMutes();
+    const entry: TempBlockData = {
+      handle,
+      expiresAt: Date.now() + durationMs,
+      createdAt: Date.now(),
+      ...(options.ownerDid ? { ownerDid: options.ownerDid } : {}),
+      trackingId: options.trackingId ?? crypto.randomUUID(),
+    };
+    mutes[did] = entry;
+    await options.beforeWrite?.();
+    await safeSyncStorageWrite(STORAGE_KEYS.TEMP_MUTES, mutes);
+    return entry;
+  }, options.lock);
 
   // Mark that user has created their first action for first-run detection
   await setHasCreatedAction();
@@ -152,53 +183,57 @@ export async function addTempMute(
   // Notify background to set alarm
   send('TEMP_MUTE_ADDED', {
     did,
-    expiresAt: mutes[did].expiresAt,
+    expiresAt: entry.expiresAt,
   }).catch((err) => {
     // Background may be inactive in MV3 - alarm will be set on next wake
     log.debug('Background not ready for temp mute notification:', err?.message || err);
   });
+  return entry;
 }
 
 /**
  * Remove a temp mute
  * @param did - User's DID
  */
-export async function removeTempMute(did: string): Promise<void> {
-  const mutes = await getTempMutes();
-  delete mutes[did];
-  await browser.storage.sync.set({ [STORAGE_KEYS.TEMP_MUTES]: mutes });
+export async function removeTempMute(
+  did: string,
+  expected?: TrackingIdentity,
+  options: TrackingMutationOptions = {}
+): Promise<boolean> {
+  return withTrackingLock(async () => {
+    const mutes = await getTempMutes();
+    if (!mutes[did] || (expected && !trackingMatches(mutes[did], expected))) return false;
+    await options.beforeWrite?.();
+    delete mutes[did];
+    await browser.storage.sync.set({ [STORAGE_KEYS.TEMP_MUTES]: mutes });
+    return true;
+  }, options.lock);
 }
 
 /**
  * Remove all expired temp blocks
  */
 export async function removeAllExpiredBlocks(): Promise<void> {
-  const blocks = await getTempBlocks();
-  const now = Date.now();
-  const updated: TempBlocksMap = {};
-
-  for (const [did, data] of Object.entries(blocks)) {
-    if (data.expiresAt > now) {
-      updated[did] = data;
+  await withTrackingLock(async () => {
+    const blocks = await getTempBlocks();
+    const now = Date.now();
+    for (const [did, data] of Object.entries(blocks)) {
+      if (data.expiresAt <= now) delete blocks[did];
     }
-  }
-
-  await browser.storage.sync.set({ [STORAGE_KEYS.TEMP_BLOCKS]: updated });
+    await browser.storage.sync.set({ [STORAGE_KEYS.TEMP_BLOCKS]: blocks });
+  });
 }
 
 /**
  * Remove all expired temp mutes
  */
 export async function removeAllExpiredMutes(): Promise<void> {
-  const mutes = await getTempMutes();
-  const now = Date.now();
-  const updated: TempBlocksMap = {};
-
-  for (const [did, data] of Object.entries(mutes)) {
-    if (data.expiresAt > now) {
-      updated[did] = data;
+  await withTrackingLock(async () => {
+    const mutes = await getTempMutes();
+    const now = Date.now();
+    for (const [did, data] of Object.entries(mutes)) {
+      if (data.expiresAt <= now) delete mutes[did];
     }
-  }
-
-  await browser.storage.sync.set({ [STORAGE_KEYS.TEMP_MUTES]: updated });
+    await browser.storage.sync.set({ [STORAGE_KEYS.TEMP_MUTES]: mutes });
+  });
 }

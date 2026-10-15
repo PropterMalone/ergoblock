@@ -14,6 +14,7 @@ import {
   type ExportData,
 } from '../../types.js';
 import { STORAGE_KEYS } from './keys.js';
+import { normalizeCheckInterval } from '../check-interval.js';
 
 // ── Options ──────────────────────────────────────────────────────────────────
 
@@ -31,6 +32,7 @@ export async function getOptions(): Promise<ExtensionOptions> {
   return {
     ...DEFAULT_OPTIONS,
     ...stored,
+    checkInterval: normalizeCheckInterval(stored.checkInterval ?? DEFAULT_OPTIONS.checkInterval),
   };
 }
 
@@ -38,7 +40,12 @@ export async function getOptions(): Promise<ExtensionOptions> {
  * Set extension options in local storage
  */
 export async function setOptions(options: ExtensionOptions): Promise<void> {
-  await browser.storage.local.set({ [STORAGE_KEYS.OPTIONS]: options });
+  await browser.storage.local.set({
+    [STORAGE_KEYS.OPTIONS]: {
+      ...options,
+      checkInterval: normalizeCheckInterval(options.checkInterval),
+    },
+  });
 }
 
 // ── Sync State ───────────────────────────────────────────────────────────────

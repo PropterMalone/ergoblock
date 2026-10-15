@@ -4,17 +4,18 @@
  */
 
 import browser from '../platform/browser.js';
-import { getAuthToken, bgApiRequest, PAGINATION_DELAY } from './api-client.js';
+import { getAuthToken, bgApiRequest, PAGINATION_DELAY, withAuthSession } from './api-client.js';
+import { reconcileTracking } from '../platform/storage/reconcile-tracking.js';
 import { fetchViewerStates } from './graph-ops.js';
 import {
   getTempBlocks,
   removeTempBlock,
   getPermanentBlocks,
-  setPermanentBlocks,
+  updatePermanentBlocks,
   getTempMutes,
   removeTempMute,
   getPermanentMutes,
-  setPermanentMutes,
+  updatePermanentMutes,
   addHistoryEntry,
   updateSyncState,
 } from '../platform/storage.js';
@@ -168,6 +169,8 @@ async function syncBlocks(
   let removed = 0;
   const newBlocks: Array<{ did: string; handle: string }> = [];
 
+  const [tempBlocks, permanentBlocks] = await Promise.all([getTempBlocks(), getPermanentBlocks()]);
+
   // Fetch both profile data and block records in parallel
   const [bskyBlocks, blockRecords] = await Promise.all([
     fetchAllBlocks(auth),
@@ -187,9 +190,6 @@ async function syncBlocks(
       });
     }
   }
-
-  // Get current storage first to identify NEW blocks
-  const [tempBlocks, permanentBlocks] = await Promise.all([getTempBlocks(), getPermanentBlocks()]);
 
   // Only fetch viewer states for NEW blocks (not already in permanent storage)
   // This dramatically reduces API calls for users with large block lists
@@ -243,13 +243,11 @@ async function syncBlocks(
       syncedAt: permanentBlocks[block.did]?.syncedAt || now,
       rkey: recordData?.rkey || permanentBlocks[block.did]?.rkey,
       viewer,
-      // Review queue: new blocks are external until reviewed, existing blocks preserve their state
-      ...(isNewBlock
-        ? { needsReview: true, source: 'external' as const }
-        : {
-            needsReview: permanentBlocks[block.did]?.needsReview,
-            source: permanentBlocks[block.did]?.source,
-          }),
+      // Preserve legacy metadata without classifying new actions for review.
+      ...(permanentBlocks[block.did] && {
+        needsReview: permanentBlocks[block.did].needsReview,
+        source: permanentBlocks[block.did].source,
+      }),
     };
 
     if (isNewBlock) {
@@ -274,7 +272,8 @@ async function syncBlocks(
         continue;
       }
       log.info('Temp block removed externally:', tempBlocks[did].handle);
-      await removeTempBlock(did);
+      const removedEntry = await withAuthSession(auth, () => removeTempBlock(did, tempBlocks[did]));
+      if (!removedEntry) continue;
       await addHistoryEntry({
         did,
         handle: tempBlocks[did].handle,
@@ -287,7 +286,11 @@ async function syncBlocks(
     }
   }
 
-  await setPermanentBlocks(newPermanentBlocks);
+  await withAuthSession(auth, () =>
+    updatePermanentBlocks((current) => {
+      reconcileTracking(current, permanentBlocks, newPermanentBlocks, auth.did, now);
+    })
+  );
   return { added, removed, newBlocks };
 }
 
@@ -302,12 +305,11 @@ async function syncMutes(auth: AuthData): Promise<{ added: number; removed: numb
   let added = 0;
   let removed = 0;
 
+  const [tempMutes, permanentMutes] = await Promise.all([getTempMutes(), getPermanentMutes()]);
+
   // Fetch current mutes from Bluesky
   const bskyMutes = await fetchAllMutes(auth);
   const bskyMuteDids = new Set(bskyMutes.map((m) => m.did));
-
-  // Get current storage first to identify NEW mutes
-  const [tempMutes, permanentMutes] = await Promise.all([getTempMutes(), getPermanentMutes()]);
 
   // Only fetch viewer states for NEW mutes (not already in permanent storage)
   // This dramatically reduces API calls for users with large mute lists
@@ -354,13 +356,11 @@ async function syncMutes(auth: AuthData): Promise<{ added: number; removed: numb
       avatar: mute.avatar,
       syncedAt: permanentMutes[mute.did]?.syncedAt || now,
       viewer,
-      // Review queue: new mutes are external until reviewed, existing mutes preserve their state
-      ...(isNewMute
-        ? { needsReview: true, source: 'external' as const }
-        : {
-            needsReview: permanentMutes[mute.did]?.needsReview,
-            source: permanentMutes[mute.did]?.source,
-          }),
+      // Preserve legacy metadata without classifying new actions for review.
+      ...(permanentMutes[mute.did] && {
+        needsReview: permanentMutes[mute.did].needsReview,
+        source: permanentMutes[mute.did].source,
+      }),
     };
 
     if (isNewMute) {
@@ -382,7 +382,8 @@ async function syncMutes(auth: AuthData): Promise<{ added: number; removed: numb
         continue;
       }
       log.info('Temp mute removed externally:', tempMutes[did].handle);
-      await removeTempMute(did);
+      const removedEntry = await withAuthSession(auth, () => removeTempMute(did, tempMutes[did]));
+      if (!removedEntry) continue;
       await addHistoryEntry({
         did,
         handle: tempMutes[did].handle,
@@ -395,7 +396,11 @@ async function syncMutes(auth: AuthData): Promise<{ added: number; removed: numb
     }
   }
 
-  await setPermanentMutes(newPermanentMutes);
+  await withAuthSession(auth, () =>
+    updatePermanentMutes((current) => {
+      reconcileTracking(current, permanentMutes, newPermanentMutes, auth.did, now);
+    })
+  );
   return { added, removed };
 }
 
@@ -447,10 +452,6 @@ export async function performFullSync(): Promise<{
       if (muteSettled.status === 'rejected') {
         log.error('Mute sync failed:', muteSettled.reason);
       }
-
-      // NOTE: Context searching is now on-demand only.
-      // Users can search for context via the "Find" button in All Blocks or through Amnesty.
-      // This keeps sync fast - we only fetch block/mute lists, not search for interactions.
 
       await updateSyncState({
         syncInProgress: false,

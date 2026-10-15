@@ -235,6 +235,8 @@ export interface GetMutesResponse {
  * Permanent block/mute from Bluesky (not managed by ErgoBlock)
  */
 export interface PermanentBlockMute {
+  ownerDid?: string;
+  trackingId?: string;
   did: string;
   handle: string;
   displayName?: string;
@@ -245,16 +247,18 @@ export interface PermanentBlockMute {
   mutualBlock?: boolean; // True if user has also blocked us back
   // Relationship state (from getProfiles viewer)
   viewer?: ProfileViewerState;
-  // Review queue fields
-  needsReview?: boolean; // True if this block/mute was created externally and needs review
+  // Legacy metadata retained for stored-data compatibility; no new review classification.
+  needsReview?: boolean;
   source?: 'ergoblock' | 'external'; // Origin of this block/mute
 }
 
 /**
- * A single quoter row returned by GET_QUOTE_POSTERS and rendered in the Quote Sweep tab.
+ * An account in a post audience, returned through the legacy GET_QUOTE_POSTERS message.
  * Canonical definition — imported by the domain handler, the message registry, and the
  * manager signals so the three never drift.
  */
+export type PostAudience = 'quotes' | 'reposts' | 'likes';
+
 export interface QuotePoster {
   did: string;
   handle: string;
@@ -262,6 +266,7 @@ export interface QuotePoster {
   avatar?: string;
   alreadyBlocked: boolean;
   alreadyMuted: boolean;
+  followed?: boolean;
 }
 
 /**

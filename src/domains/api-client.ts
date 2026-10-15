@@ -2,12 +2,102 @@ import browser from '../platform/browser.js';
 import { executeApiRequest } from '../platform/api.js';
 import { getOptions } from '../platform/storage.js';
 import type { AuthData, DidDocument } from '../types.js';
-import { createLogger, LRUCache } from '../platform/utils.js';
+import { createLogger, LRUCache, Mutex } from '../platform/utils.js';
 
 const log = createLogger('bg:api-client');
 
 export const PLC_DIRECTORY = 'https://plc.directory';
 export const PAGINATION_DELAY = 100; // ms between paginated requests (was 500ms)
+
+const authSessionMutex = new Mutex();
+const refreshedGenerations = new WeakMap<AuthData, number>();
+let authGeneration = 0;
+
+/** Capture before work starts; never recapture after a network reply to authorize its commit. */
+export function captureAuthGeneration(): number {
+  return authGeneration;
+}
+
+/** Exact generation assigned when this refresh result was committed. */
+export function refreshedAuthGeneration(auth: AuthData): number | undefined {
+  return refreshedGenerations.get(auth);
+}
+
+function sameAuth(left: AuthData | null, right: AuthData | null): boolean {
+  return (
+    left === right ||
+    !!(
+      left &&
+      right &&
+      left.did === right.did &&
+      left.accessJwt === right.accessJwt &&
+      left.refreshJwt === right.refreshJwt &&
+      left.pdsUrl === right.pdsUrl
+    )
+  );
+}
+
+export class AuthSessionChangedError extends Error {
+  constructor() {
+    super('Auth session changed; retry from the connected account.');
+  }
+}
+
+/** Serialize all background auth writes with guarded local commits. */
+export async function saveAuthToken(auth: AuthData): Promise<void> {
+  await authSessionMutex.runExclusive(async () => {
+    const changed = !sameAuth(await getAuthToken(), auth);
+    await browser.storage.local.set({ authToken: auth });
+    if (changed) authGeneration++;
+  });
+}
+
+/** Only local work belongs inside this lock; never hold it across network requests. */
+export async function withAuthSession<T>(
+  expectedAuth: AuthData,
+  operation: () => Promise<T>,
+  expectedGeneration?: number
+): Promise<T> {
+  return authSessionMutex.runExclusive(async () => {
+    const current = await getAuthToken();
+    if (
+      !sameAuth(current, expectedAuth) ||
+      (expectedGeneration !== undefined && expectedGeneration !== authGeneration)
+    )
+      throw new AuthSessionChangedError();
+    return operation();
+  });
+}
+
+async function saveAuthStatus(status: 'valid' | 'invalid'): Promise<void> {
+  try {
+    await browser.storage.local.set({ authStatus: status });
+  } catch {
+    log.warn('Could not save authentication status.');
+  }
+}
+
+async function commitRefreshedAuth(
+  expected: AuthData | null,
+  generation: number,
+  fresh: AuthData
+): Promise<boolean> {
+  return authSessionMutex.runExclusive(async () => {
+    if (
+      generation !== authGeneration ||
+      !sameAuth(await getAuthToken(), expected) ||
+      (expected && fresh.did !== expected.did)
+    ) {
+      log.info('Discarding auth refresh because the session changed.');
+      return false;
+    }
+    await browser.storage.local.set({ authToken: fresh });
+    if (!sameAuth(expected, fresh)) authGeneration++;
+    refreshedGenerations.set(fresh, authGeneration);
+    await saveAuthStatus('valid');
+    return true;
+  });
+}
 
 export async function getAuthToken(): Promise<AuthData | null> {
   const result = await browser.storage.local.get('authToken');
@@ -19,7 +109,12 @@ export async function getAuthToken(): Promise<AuthData | null> {
  * Sends a message to all tabs with bsky.app to trigger auth sync
  * Returns fresh auth if available, or null
  */
-export async function requestFreshAuth(): Promise<AuthData | null> {
+export async function requestFreshAuth(
+  expectedAuth?: AuthData,
+  beforeRequest?: () => void | Promise<void>
+): Promise<AuthData | null> {
+  const generation = authGeneration;
+  const expected = expectedAuth ?? (await getAuthToken());
   try {
     // Query all tabs that might have Bluesky open
     const tabs = await browser.tabs.query({ url: '*://*.bsky.app/*' });
@@ -32,13 +127,13 @@ export async function requestFreshAuth(): Promise<AuthData | null> {
     // Request auth from the first available tab
     for (const tab of tabs) {
       if (tab.id) {
+        await beforeRequest?.();
         try {
           const response = (await browser.tabs.sendMessage(tab.id, { type: 'REQUEST_AUTH' })) as
             | { auth: AuthData | null }
             | undefined;
           if (response?.auth) {
-            // Store the fresh auth
-            await browser.storage.local.set({ authToken: response.auth, authStatus: 'valid' });
+            if (!(await commitRefreshedAuth(expected, generation, response.auth))) return null;
             log.info('Got fresh auth from tab', tab.id);
             return response.auth;
           }
@@ -51,8 +146,8 @@ export async function requestFreshAuth(): Promise<AuthData | null> {
 
     log.info('Could not get fresh auth from any tab');
     return null;
-  } catch (error) {
-    log.error('Error requesting fresh auth:', error);
+  } catch {
+    log.error('Could not request fresh authentication.');
     return null;
   }
 }
@@ -76,11 +171,17 @@ export function isExpiredTokenError(error: Error): boolean {
  * Bluesky tab. With no tab there is no live webapp session to disrupt, and without this the
  * action silently fails (the historical "block sometimes doesn't take" bug).
  */
-export async function refreshViaRefreshToken(auth: AuthData): Promise<AuthData | null> {
+export async function refreshViaRefreshToken(
+  auth: AuthData,
+  beforeRequest?: () => void | Promise<void>
+): Promise<AuthData | null> {
+  const generation = authGeneration;
+  if (!sameAuth(await getAuthToken(), auth)) return null;
   if (!auth.refreshJwt) {
     log.info('No refresh token stored; cannot refresh directly');
     return null;
   }
+  await beforeRequest?.();
   try {
     const response = await fetch(`${auth.pdsUrl}/xrpc/com.atproto.server.refreshSession`, {
       method: 'POST',
@@ -112,11 +213,11 @@ export async function refreshViaRefreshToken(auth: AuthData): Promise<AuthData |
       did: data.did,
       pdsUrl: auth.pdsUrl,
     };
-    await browser.storage.local.set({ authToken: newAuth, authStatus: 'valid' });
+    if (!(await commitRefreshedAuth(auth, generation, newAuth))) return null;
     log.info('Refreshed session via stored refresh token');
     return newAuth;
-  } catch (error) {
-    log.error('Direct refreshSession error:', error);
+  } catch {
+    log.error('Direct session refresh failed.');
     return null;
   }
 }
@@ -136,12 +237,18 @@ export async function refreshViaRefreshToken(auth: AuthData): Promise<AuthData |
  * with no live session to disrupt and no tab to source fresh auth from, the action was dropped.
  * The fallback only fires when there is no tab, so nothing the user can see gets logged out.
  */
-export async function refreshSession(auth: AuthData): Promise<AuthData | null> {
+export async function refreshSession(
+  auth: AuthData,
+  beforeRequest?: () => void | Promise<void>
+): Promise<AuthData | null> {
   log.info('Access token expired, requesting fresh auth from tab');
-  const fromTab = await requestFreshAuth();
+  const generation = authGeneration;
+  if (!sameAuth(await getAuthToken(), auth)) return null;
+  const fromTab = await requestFreshAuth(auth, beforeRequest);
   if (fromTab) return fromTab;
+  if (generation !== authGeneration || !sameAuth(await getAuthToken(), auth)) return null;
   log.info('No Bluesky tab available; falling back to direct refreshSession');
-  return refreshViaRefreshToken(auth);
+  return refreshViaRefreshToken(auth, beforeRequest);
 }
 
 const BSKY_PUBLIC_API = 'https://public.api.bsky.app';
@@ -162,9 +269,72 @@ function resolveBgBase(endpoint: string, method: string, pdsUrl: string): string
   return pdsUrl;
 }
 
-/**
- * Wrapper for API requests that handles auth status updates and token refresh
- */
+function isAuthFailure(error: unknown): error is Error {
+  return (
+    error instanceof Error &&
+    (isExpiredTokenError(error) ||
+      error.message.includes('401') ||
+      error.message.includes('Auth error'))
+  );
+}
+
+export interface PinnedRequestOptions {
+  refresh?: boolean;
+  beforeRequest?: () => void | Promise<void>;
+  expectedGeneration?: number;
+  /** Snapshot used by successful HTTP, not the session observed after its reply. */
+  onSuccessSession?: (auth: AuthData, generation: number) => void;
+}
+
+/** Never retry using auth from another session, including a newer same-owner token. */
+export async function pinnedApiRequest<T>(
+  endpoint: string,
+  method: string,
+  body: unknown,
+  auth: AuthData,
+  options: PinnedRequestOptions = {}
+): Promise<T | null> {
+  let expected = auth;
+  let generation = options.expectedGeneration ?? authGeneration;
+  const checkSession = async () => {
+    const current = await getAuthToken();
+    if (generation !== authGeneration || !sameAuth(current, expected))
+      throw new AuthSessionChangedError();
+  };
+  const request = async () => {
+    await options.beforeRequest?.();
+    await checkSession();
+    return executeApiRequest<T>(
+      endpoint,
+      method,
+      body,
+      expected,
+      resolveBgBase(endpoint, method, expected.pdsUrl)
+    );
+  };
+  let result: T | null;
+  try {
+    result = await request();
+  } catch (error) {
+    if (!isAuthFailure(error) || options.refresh === false) throw error;
+    await options.beforeRequest?.();
+    await checkSession();
+    const fresh = await refreshSession(expected, options.beforeRequest);
+    if (!fresh) {
+      await checkSession();
+      await saveAuthStatus('invalid');
+      throw error;
+    }
+    expected = fresh;
+    generation = refreshedGenerations.get(fresh) ?? generation;
+    result = await request();
+  }
+  options.onSuccessSession?.(expected, generation);
+  await saveAuthStatus('valid');
+  return result;
+}
+
+/** Wrapper for ordinary API requests and optional authentication bookkeeping. */
 export async function bgApiRequest<T>(
   endpoint: string,
   method: string,
@@ -172,6 +342,7 @@ export async function bgApiRequest<T>(
   token: string,
   pdsUrl: string
 ): Promise<T | null> {
+  const initialAuth = await getAuthToken();
   const base = resolveBgBase(endpoint, method, pdsUrl);
   const doRequest = async (accessJwt: string): Promise<T | null> => {
     const result = await executeApiRequest<T>(endpoint, method, body, { accessJwt, pdsUrl }, base);
@@ -183,7 +354,7 @@ export async function bgApiRequest<T>(
     const result = await doRequest(token);
 
     // If request was successful, ensure status is valid
-    await browser.storage.local.set({ authStatus: 'valid' });
+    await saveAuthStatus('valid');
     return result;
   } catch (error) {
     if (error instanceof Error) {
@@ -199,27 +370,31 @@ export async function bgApiRequest<T>(
         log.info('Auth/token error, attempting refresh...');
 
         const auth = await getAuthToken();
-        if (!auth) {
-          log.error('No auth available for refresh');
-          await browser.storage.local.set({ authStatus: 'invalid' });
-          throw error;
-        }
+        if (
+          !initialAuth ||
+          !auth ||
+          !sameAuth(initialAuth, auth) ||
+          initialAuth.accessJwt !== token ||
+          initialAuth.pdsUrl !== pdsUrl
+        )
+          throw new AuthSessionChangedError();
 
         const newAuth = await refreshSession(auth);
         if (newAuth) {
           log.info('Retrying request with refreshed token...');
           try {
             const result = await doRequest(newAuth.accessJwt);
-            await browser.storage.local.set({ authStatus: 'valid' });
+            await saveAuthStatus('valid');
             return result;
           } catch (retryError) {
-            log.error('Retry after refresh failed:', retryError);
-            await browser.storage.local.set({ authStatus: 'invalid' });
+            log.error('Retry after refresh failed.');
+            await saveAuthStatus('invalid');
             throw retryError;
           }
         }
+        if (!sameAuth(await getAuthToken(), initialAuth)) throw new AuthSessionChangedError();
         log.error('Token refresh failed, marking session invalid');
-        await browser.storage.local.set({ authStatus: 'invalid' });
+        await saveAuthStatus('invalid');
         throw error;
       }
     }

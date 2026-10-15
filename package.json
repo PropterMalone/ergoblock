@@ -32,7 +32,7 @@
     "@types/webextension-polyfill": "^0.12.4",
     "@typescript-eslint/eslint-plugin": "^8.51.0",
     "@typescript-eslint/parser": "^8.51.0",
-    "@vitest/coverage-v8": "^4.0.16",
+    "@vitest/coverage-v8": "4.1.11",
     "chrome-webstore-upload": "^4.0.3",
     "esbuild": "^0.27.2",
     "eslint": "^9.39.2",
@@ -43,11 +43,11 @@
     "jsdom": "^27.4.0",
     "jsonwebtoken": "^9.0.3",
     "knip": "6.12.2",
-    "lint-staged": "^16.2.7",
+    "lint-staged": "16.4.0",
     "prettier": "^3.7.4",
-    "sharp": "^0.34.5",
+    "sharp": "0.35.5",
     "typescript": "^5.9.3",
-    "vitest": "^4.0.16"
+    "vitest": "4.1.11"
   },
   "lint-staged": {
     "src/**/*.{ts,tsx}": [

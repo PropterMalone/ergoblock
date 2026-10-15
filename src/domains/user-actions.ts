@@ -2,27 +2,31 @@
  * User Actions - Handle user-initiated block/unblock/mute/unmute operations
  */
 
-import { getAuthToken } from './api-client.js';
+import {
+  getAuthToken,
+  withAuthSession,
+  AuthSessionChangedError,
+  captureAuthGeneration,
+} from './api-client.js';
 import { unblockUser, unmuteUser, blockUser, muteUser } from './graph-ops.js';
+import type { AuthData } from '../types.js';
 import {
   getTempBlocks,
   getTempMutes,
   getPermanentBlocks,
-  setPermanentBlocks,
-  getPermanentMutes,
-  setPermanentMutes,
+  updatePermanentBlocks,
+  updatePermanentMutes,
   addTempBlock,
   addTempMute,
   addHistoryEntry,
   setHasCreatedAction,
-  addPostContext,
   addPendingRollback,
   preCheckStorageQuota,
   calculateEntrySize,
   StorageQuotaError,
 } from '../platform/storage.js';
-import type { SerializedPostContext } from '../types.js';
-import { createLogger, generateId } from '../platform/utils.js';
+import { createLogger } from '../platform/utils.js';
+import { pinnedAuth, pinnedRequest } from './post-batch-actions.js';
 
 const log = createLogger('bg:user-actions');
 
@@ -127,6 +131,7 @@ export async function handleReblockUser(
   did: string
 ): Promise<{ success: boolean; error?: string }> {
   try {
+    const generation = captureAuthGeneration();
     const auth = await getAuthToken();
     if (!auth?.accessJwt || !auth?.did || !auth?.pdsUrl) {
       return { success: false, error: 'Not authenticated' };
@@ -139,11 +144,21 @@ export async function handleReblockUser(
     if (result) {
       const rkey = result.uri.split('/').pop();
       if (rkey) {
-        const permanentBlocks = await getPermanentBlocks();
-        if (permanentBlocks[did]) {
-          permanentBlocks[did].rkey = rkey;
-          await setPermanentBlocks(permanentBlocks);
-        }
+        await withAuthSession(
+          auth,
+          () =>
+            updatePermanentBlocks((blocks) => {
+              if (blocks[did] && (!blocks[did].ownerDid || blocks[did].ownerDid === auth.did)) {
+                blocks[did] = {
+                  ...blocks[did],
+                  rkey,
+                  ownerDid: auth.did,
+                  trackingId: crypto.randomUUID(),
+                };
+              }
+            }),
+          generation
+        );
       }
     }
 
@@ -174,8 +189,8 @@ export async function handleReblockUser(
  * temp → temp storage (SYNC). A permanent action never flows through a 0/-1 duration.
  *
  * DID resolution stays in the content script (the background has no page session), so
- * callers pass a resolved `did`. An optional serialized post-context (DOM-derived in
- * the content script) is persisted here when present.
+ * callers pass a resolved `did`. An optional expected owner pins automated callers to
+ * the account whose selection the user confirmed.
  */
 export async function handleCreateTempAction(
   did: string,
@@ -183,18 +198,36 @@ export async function handleCreateTempAction(
   durationMs: number,
   isMute: boolean,
   isPermanent: boolean,
-  postContext?: SerializedPostContext | null
-): Promise<{ success: boolean; error?: string }> {
+  expectedOwner?: string
+): Promise<{
+  success: boolean;
+  error?: string;
+  receipt?: { owner: string; did: string; rkey?: string; cid?: string };
+  uncertain?: boolean;
+}> {
   try {
     // Permanent normalization: callers historically passed 0 (popup/content) or -1
     // (quote-sweep) for "permanent". Collapse to a single convention so a stray -1 can
     // never reach addTempBlock/addTempMute as a duration. Permanent ignores durationMs.
     if (isPermanent) durationMs = 0;
 
+    let generation = captureAuthGeneration();
     const auth = await getAuthToken();
+    let commitAuth = auth;
+    const sessionOptions = () => ({
+      expectedGeneration: generation,
+      onSuccessSession: (used: AuthData, usedGeneration: number) => {
+        commitAuth = used;
+        generation = usedGeneration;
+      },
+    });
     if (!auth?.accessJwt || !auth?.did || !auth?.pdsUrl) {
       // Actionable, pre-formatted error STRING (no auth → no API call).
       return { success: false, error: 'Not authenticated. Open Bluesky in a tab to connect.' };
+    }
+
+    if (expectedOwner && auth.did !== expectedOwner) {
+      return { success: false, error: 'Account changed. Review and confirm again.' };
     }
 
     // Quota pre-check BEFORE the API call (temp writes go to bounded sync storage).
@@ -210,39 +243,79 @@ export async function handleCreateTempAction(
 
     const now = Date.now();
 
+    if (expectedOwner) await pinnedAuth(expectedOwner);
     if (isMute) {
-      await muteUser(did, auth.accessJwt, auth.pdsUrl);
+      if (expectedOwner)
+        await pinnedRequest(
+          expectedOwner,
+          'app.bsky.graph.muteActor',
+          { actor: did },
+          false,
+          undefined,
+          true,
+          sessionOptions()
+        );
+      else await muteUser(did, auth.accessJwt, auth.pdsUrl);
 
       try {
-        if (isPermanent) {
-          const permanentMutes = await getPermanentMutes();
-          permanentMutes[did] = { did, handle, createdAt: now, syncedAt: now };
-          await setPermanentMutes(permanentMutes);
-          await setHasCreatedAction();
-        } else {
-          await addTempMute(did, handle, durationMs);
-        }
+        await withAuthSession(
+          commitAuth ?? auth,
+          async () => {
+            if (isPermanent) {
+              await updatePermanentMutes((mutes) => {
+                mutes[did] = {
+                  did,
+                  handle,
+                  createdAt: now,
+                  syncedAt: now,
+                  ownerDid: auth.did,
+                  trackingId: crypto.randomUUID(),
+                };
+              });
+              await setHasCreatedAction();
+            } else {
+              await addTempMute(did, handle, durationMs, { ownerDid: auth.did });
+              if (!(await getTempMutes())[did])
+                throw new Error('Storage verification failed: mute not found after write');
+            }
+          },
+          generation
+        );
       } catch (storageError) {
+        if (
+          storageError instanceof AuthSessionChangedError ||
+          (await getAuthToken())?.did !== auth.did ||
+          expectedOwner
+        )
+          return {
+            success: false,
+            uncertain: true,
+            receipt: { owner: auth.did, did },
+            error:
+              'Bluesky accepted the mute but tracking is uncertain. Check the original account manually.',
+          };
         return rollbackMute(did, handle, auth, storageError);
       }
-
-      // Read-back verification (TEMP only): confirm the mute landed in the quota-constrained
-      // sync store. For PERMANENT (local storage), a non-throwing set() is authoritative — a
-      // read-back miss from a storage-read race must NOT trigger an unmute (wrong-direction
-      // desync: we'd undo a mute that actually succeeded).
-      if (!isPermanent) {
-        const verified = !!(await getTempMutes())[did];
-        if (!verified) {
-          return rollbackMute(
-            did,
-            handle,
-            auth,
-            new Error('Storage verification failed: mute not found after write')
-          );
-        }
-      }
     } else {
-      const result = await blockUser(did, auth.accessJwt, auth.did, auth.pdsUrl);
+      const result = expectedOwner
+        ? await pinnedRequest<{ uri: string; cid: string }>(
+            expectedOwner,
+            'com.atproto.repo.createRecord',
+            {
+              repo: expectedOwner,
+              collection: 'app.bsky.graph.block',
+              record: {
+                $type: 'app.bsky.graph.block',
+                subject: did,
+                createdAt: new Date().toISOString(),
+              },
+            },
+            false,
+            undefined,
+            true,
+            sessionOptions()
+          )
+        : await blockUser(did, auth.accessJwt, auth.did, auth.pdsUrl);
       // A null/falsy result is a soft (non-throwing) API failure — do NOT write storage
       // or report success. Throwing here surfaces the failure to the caller.
       if (!result) {
@@ -251,33 +324,43 @@ export async function handleCreateTempAction(
       const rkey = result.uri ? result.uri.split('/').pop() || undefined : undefined;
 
       try {
-        if (isPermanent) {
-          const permanentBlocks = await getPermanentBlocks();
-          permanentBlocks[did] = { did, handle, createdAt: now, syncedAt: now, rkey };
-          await setPermanentBlocks(permanentBlocks);
-          await setHasCreatedAction();
-        } else {
-          await addTempBlock(did, handle, durationMs, rkey);
-        }
+        await withAuthSession(
+          commitAuth ?? auth,
+          async () => {
+            if (isPermanent) {
+              await updatePermanentBlocks((blocks) => {
+                blocks[did] = {
+                  did,
+                  handle,
+                  createdAt: now,
+                  syncedAt: now,
+                  rkey,
+                  ownerDid: auth.did,
+                  trackingId: crypto.randomUUID(),
+                };
+              });
+              await setHasCreatedAction();
+            } else {
+              await addTempBlock(did, handle, durationMs, rkey, { ownerDid: auth.did });
+              if (!(await getTempBlocks())[did])
+                throw new Error('Storage verification failed: block not found after write');
+            }
+          },
+          generation
+        );
       } catch (storageError) {
+        if (
+          storageError instanceof AuthSessionChangedError ||
+          (await getAuthToken())?.did !== auth.did ||
+          expectedOwner
+        )
+          return {
+            success: false,
+            uncertain: true,
+            receipt: { owner: auth.did, did, rkey, cid: result.cid },
+            error: `Bluesky accepted the block (${rkey ?? 'unknown record'}) but tracking is uncertain. Check the original account manually.`,
+          };
         return rollbackBlock(did, handle, rkey, auth, storageError);
-      }
-
-      // Read-back verification (TEMP only): confirm the block landed in the quota-constrained
-      // sync store. For PERMANENT (local storage), a non-throwing set() is authoritative — a
-      // read-back miss from a storage-read race must NOT trigger an unblock (wrong-direction
-      // desync: we'd undo a block that actually succeeded).
-      if (!isPermanent) {
-        const verified = !!(await getTempBlocks())[did];
-        if (!verified) {
-          return rollbackBlock(
-            did,
-            handle,
-            rkey,
-            auth,
-            new Error('Storage verification failed: block not found after write')
-          );
-        }
       }
     }
 
@@ -290,15 +373,6 @@ export async function handleCreateTempAction(
       success: true,
       duration: isPermanent ? undefined : durationMs,
     });
-
-    if (postContext) {
-      try {
-        await addPostContext({ id: generateId('ctx'), ...postContext });
-      } catch (e) {
-        // Post context is best-effort; never fail the create over it.
-        log.warn('Failed to persist post context:', e);
-      }
-    }
 
     return { success: true };
   } catch (error) {

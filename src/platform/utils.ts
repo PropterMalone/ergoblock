@@ -641,15 +641,15 @@ export class Mutex {
    */
   async acquire(): Promise<() => void> {
     return new Promise((resolve) => {
-      const tryAcquire = () => {
-        if (!this._locked) {
-          this._locked = true;
-          resolve(() => this.release());
-        } else {
-          this._queue.push(tryAcquire);
-        }
+      const grant = () => {
+        this._locked = true;
+        resolve(() => this.release());
       };
-      tryAcquire();
+      if (this._locked) {
+        this._queue.push(grant);
+      } else {
+        grant();
+      }
     });
   }
 

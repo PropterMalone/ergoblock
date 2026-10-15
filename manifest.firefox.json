@@ -16,8 +16,7 @@
   "host_permissions": [
     "https://*.bsky.app/*",
     "https://*.bsky.social/*",
-    "https://*.bsky.network/*",
-    "https://*.clearsky.services/*"
+    "https://*.bsky.network/*"
   ],
   "background": {
     "scripts": ["background.js"],

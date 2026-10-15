@@ -14,9 +14,9 @@ import {
 } from '../platform/storage/temp-actions.js';
 import {
   getPermanentBlocks,
-  setPermanentBlocks,
+  updatePermanentBlocks,
   getPermanentMutes,
-  setPermanentMutes,
+  updatePermanentMutes,
 } from '../platform/storage/permanent.js';
 import { addPostContext } from '../platform/storage/history.js';
 
@@ -65,15 +65,15 @@ export async function handleImportData(
           await addTempBlock(block.did, block.handle, options.tempDuration, rkey);
         } else {
           // Add as permanent block
-          const permBlocks = await getPermanentBlocks();
-          permBlocks[block.did] = {
-            did: block.did,
-            handle: block.handle,
-            syncedAt: Date.now(),
-            createdAt: block.createdAt ?? Date.now(),
-            rkey,
-          };
-          await setPermanentBlocks(permBlocks);
+          await updatePermanentBlocks((permBlocks) => {
+            permBlocks[block.did] = {
+              did: block.did,
+              handle: block.handle,
+              syncedAt: Date.now(),
+              createdAt: block.createdAt ?? Date.now(),
+              rkey,
+            };
+          });
         }
 
         result.blocksImported++;
@@ -110,14 +110,14 @@ export async function handleImportData(
           await addTempMute(mute.did, mute.handle, options.tempDuration);
         } else {
           // Add as permanent mute
-          const permMutes = await getPermanentMutes();
-          permMutes[mute.did] = {
-            did: mute.did,
-            handle: mute.handle,
-            syncedAt: Date.now(),
-            createdAt: mute.createdAt ?? Date.now(),
-          };
-          await setPermanentMutes(permMutes);
+          await updatePermanentMutes((permMutes) => {
+            permMutes[mute.did] = {
+              did: mute.did,
+              handle: mute.handle,
+              syncedAt: Date.now(),
+              createdAt: mute.createdAt ?? Date.now(),
+            };
+          });
         }
 
         result.mutesImported++;

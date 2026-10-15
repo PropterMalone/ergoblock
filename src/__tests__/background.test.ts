@@ -6,6 +6,8 @@ const mockedBrowser = vi.mocked(browser);
 
 // Mock all dependencies from storage.js before importing background.ts
 vi.mock('../platform/storage.js', () => ({
+  withTrackingLock: vi.fn(async (work: () => Promise<unknown>) => work()),
+  trackingMatches: vi.fn(() => true),
   getTempBlocks: vi.fn().mockResolvedValue({}),
   getTempMutes: vi.fn().mockResolvedValue({}),
   removeTempBlock: vi.fn().mockResolvedValue(undefined),
@@ -22,6 +24,7 @@ vi.mock('../platform/storage.js', () => ({
   updateBlocklistAuditState: vi.fn().mockResolvedValue(undefined),
   // Pending rollback queue functions
   getProcessableRollbacks: vi.fn().mockResolvedValue([]),
+  getPendingRollbacks: vi.fn().mockResolvedValue([]),
   updatePendingRollback: vi.fn().mockResolvedValue(undefined),
   removePendingRollback: vi.fn().mockResolvedValue(undefined),
   cleanupOldRollbacks: vi.fn().mockResolvedValue(0),
@@ -37,6 +40,7 @@ describe('Background Service Worker', () => {
       .fn()
       .mockResolvedValue({ authToken: { accessJwt: 'test', did: 'test', pdsUrl: 'test' } });
     mockedBrowser.storage.local.set = vi.fn().mockResolvedValue(undefined);
+    mockedBrowser.storage.local.remove = vi.fn().mockResolvedValue(undefined);
 
     vi.stubGlobal('fetch', vi.fn());
   });
@@ -53,6 +57,33 @@ describe('Background Service Worker', () => {
     expect(chrome.runtime.onMessage.addListener).toHaveBeenCalled();
     expect(chrome.runtime.onInstalled.addListener).toHaveBeenCalled();
     expect(chrome.runtime.onStartup.addListener).toHaveBeenCalled();
+  });
+
+  it('does not schedule retired jobs or mutate legacy feature data at startup', async () => {
+    await import('../background.js');
+    await vi.waitFor(() => expect(browser.alarms.clear).toHaveBeenCalledWith('clearskyQueue'));
+    expect(browser.alarms.clear).toHaveBeenCalledWith('followsSync');
+    for (const [name] of vi.mocked(browser.alarms.create).mock.calls) {
+      expect(['checkExpirations', 'syncWithBluesky']).toContain(name);
+    }
+    expect(browser.storage.local.remove).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'FIND_CONTEXT',
+    'FETCH_ALL_INTERACTIONS',
+    'FIND_INTERACTIONS_BEFORE',
+    'BACKFILL_REVIEW_QUEUE',
+    'DISMISS_REVIEW',
+    'MARK_PERMANENT_REVIEWED',
+    'BLOCKLIST_AUDIT_SYNC',
+    'RECTIFY_AMNESTY_UNBLOCKS',
+    'PREWARM_CLEARSKY_CACHE',
+  ])('rejects retired message %s', async (type) => {
+    await import('../background.js');
+    const listener = vi.mocked(browser.runtime.onMessage.addListener).mock.calls[0][0];
+    const result = await listener({ type }, {}, vi.fn());
+    expect(result).toBeUndefined();
   });
 
   it('should setup alarm correctly', async () => {
@@ -100,17 +131,34 @@ describe('Background Service Worker', () => {
     expect(fetch).toHaveBeenCalled();
   });
 
-  it('should mark auth invalid when no token is available during check', async () => {
+  it('CHECK_NOW reports skipped auth and successful checks truthfully', async () => {
+    await import('../background.js');
+    vi.mocked(mockedBrowser.storage.local.get).mockResolvedValue({});
+    const listener = vi.mocked(browser.runtime.onMessage.addListener).mock.calls[0][0];
+    expect(await listener({ type: 'CHECK_NOW' }, {}, vi.fn())).toMatchObject({
+      success: false,
+      outcome: { status: 'needs_auth', authNeedsAttention: true },
+    });
+    vi.mocked(mockedBrowser.storage.local.get).mockResolvedValue({
+      authToken: { accessJwt: 'test', did: 'test', pdsUrl: 'test' },
+    });
+    const storage = await import('../platform/storage.js');
+    vi.mocked(storage.getTempBlocks).mockResolvedValue({});
+    vi.mocked(storage.getTempMutes).mockResolvedValue({});
+    expect(await listener({ type: 'CHECK_NOW' }, {}, vi.fn())).toMatchObject({
+      success: true,
+      outcome: { status: 'success', healthSaved: true },
+    });
+  });
+
+  it('reports authentication attention when no token is available during check', async () => {
     const { checkExpirations } = await import('../background.js');
 
     // Mock no auth token
     (chrome.storage.local.get as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({});
-
-    await checkExpirations();
-
-    expect(chrome.storage.local.set).toHaveBeenCalledWith(
-      expect.objectContaining({ authStatus: 'invalid' })
-    );
+    const result = await checkExpirations();
+    expect(result.status).toBe('needs_auth');
+    expect(result.authNeedsAttention).toBe(true);
   });
 
   it('should unblock user correctly', async () => {
@@ -173,6 +221,9 @@ describe('Background Service Worker', () => {
   });
 
   it('should mark auth invalid on 401 error', async () => {
+    mockedBrowser.storage.local.get = vi.fn().mockResolvedValue({
+      authToken: { accessJwt: 'token', did: 'owner', pdsUrl: 'https://pds.com' },
+    });
     const { unblockUser } = await import('../background.js');
 
     (fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
@@ -211,118 +262,10 @@ describe('Background Service Worker', () => {
 
     // Test SET_AUTH_TOKEN message
     onMessageListener({ type: 'SET_AUTH_TOKEN', auth: { accessJwt: 'new' } }, {}, sendResponse);
-    expect(chrome.storage.local.set).toHaveBeenCalledWith(
-      expect.objectContaining({ authToken: { accessJwt: 'new' } })
+    await vi.waitFor(() =>
+      expect(chrome.storage.local.set).toHaveBeenCalledWith(
+        expect.objectContaining({ authToken: { accessJwt: 'new' } })
+      )
     );
-  });
-});
-
-describe('isSearchPostInteraction', () => {
-  const createMockPost = (overrides: {
-    text?: string;
-    replyParentUri?: string;
-    embedType?: string;
-    embedRecordUri?: string;
-  }) => ({
-    uri: 'at://did:test/app.bsky.feed.post/123',
-    cid: 'cid123',
-    author: { did: 'did:author', handle: 'author.bsky.social' },
-    record: {
-      $type: 'app.bsky.feed.post' as const,
-      text: overrides.text || 'Hello world',
-      createdAt: '2024-01-01T00:00:00Z',
-      reply: overrides.replyParentUri
-        ? { parent: { uri: overrides.replyParentUri }, root: { uri: overrides.replyParentUri } }
-        : undefined,
-      embed: overrides.embedType
-        ? {
-            $type: overrides.embedType,
-            ...(overrides.embedRecordUri ? { record: { uri: overrides.embedRecordUri } } : {}),
-          }
-        : undefined,
-    },
-    indexedAt: '2024-01-01T00:00:00Z',
-  });
-
-  it('should detect reply to logged-in user', async () => {
-    const { isSearchPostInteraction } = await import('../background.js');
-
-    const post = createMockPost({
-      replyParentUri: 'at://did:loggedin:user/app.bsky.feed.post/456',
-    });
-
-    expect(isSearchPostInteraction(post, 'did:loggedin:user')).toBe(true);
-    expect(isSearchPostInteraction(post, 'did:other:user')).toBe(false);
-  });
-
-  it('should detect quote post of logged-in user', async () => {
-    const { isSearchPostInteraction } = await import('../background.js');
-
-    const post = createMockPost({
-      embedType: 'app.bsky.embed.record',
-      embedRecordUri: 'at://did:loggedin:user/app.bsky.feed.post/789',
-    });
-
-    expect(isSearchPostInteraction(post, 'did:loggedin:user')).toBe(true);
-    expect(isSearchPostInteraction(post, 'did:other:user')).toBe(false);
-  });
-
-  it('should detect @mention in text', async () => {
-    const { isSearchPostInteraction } = await import('../background.js');
-
-    const post = createMockPost({
-      text: 'Hey @myhandle.bsky.social check this out!',
-    });
-
-    expect(isSearchPostInteraction(post, 'did:any', 'myhandle.bsky.social')).toBe(true);
-    expect(isSearchPostInteraction(post, 'did:any', 'otherhandle.bsky.social')).toBe(false);
-  });
-
-  it('should be case-insensitive for handle mentions', async () => {
-    const { isSearchPostInteraction } = await import('../background.js');
-
-    const post = createMockPost({
-      text: 'Hey @MyHandle.bsky.social check this out!',
-    });
-
-    expect(isSearchPostInteraction(post, 'did:any', 'myhandle.bsky.social')).toBe(true);
-  });
-
-  it('should return false for unrelated posts', async () => {
-    const { isSearchPostInteraction } = await import('../background.js');
-
-    const post = createMockPost({
-      text: 'Just a random post with no interaction',
-    });
-
-    expect(isSearchPostInteraction(post, 'did:loggedin:user', 'myhandle.bsky.social')).toBe(false);
-  });
-
-  it('should not match embed types other than record', async () => {
-    const { isSearchPostInteraction } = await import('../background.js');
-
-    const post = createMockPost({
-      embedType: 'app.bsky.embed.images',
-      embedRecordUri: 'at://did:loggedin:user/app.bsky.feed.post/789',
-    });
-
-    expect(isSearchPostInteraction(post, 'did:loggedin:user')).toBe(false);
-  });
-
-  it('should work without handle parameter', async () => {
-    const { isSearchPostInteraction } = await import('../background.js');
-
-    const replyPost = createMockPost({
-      replyParentUri: 'at://did:loggedin:user/app.bsky.feed.post/456',
-    });
-
-    // Should still detect reply even without handle
-    expect(isSearchPostInteraction(replyPost, 'did:loggedin:user')).toBe(true);
-
-    // Text mention won't be detected without handle
-    const mentionPost = createMockPost({
-      text: 'Hey @myhandle.bsky.social!',
-    });
-    expect(isSearchPostInteraction(mentionPost, 'did:any')).toBe(false);
   });
 });

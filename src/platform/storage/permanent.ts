@@ -6,8 +6,14 @@ import browser from '../browser.js';
 import type { PermanentBlockMute, ManagedEntry } from '../../types.js';
 import { STORAGE_KEYS } from './keys.js';
 import { getTempBlocks, getTempMutes } from './temp-actions.js';
+import {
+  withTrackingLock,
+  trackingMatches,
+  type TrackingIdentity,
+  type TrackingMutationOptions,
+} from './tracking.js';
 
-interface PermanentBlocksMutesMap {
+export interface PermanentBlocksMutesMap {
   [did: string]: PermanentBlockMute;
 }
 
@@ -24,17 +30,44 @@ export async function getPermanentBlocks(): Promise<PermanentBlocksMutesMap> {
 /**
  * Set permanent blocks in local storage
  */
-export async function setPermanentBlocks(blocks: PermanentBlocksMutesMap): Promise<void> {
-  await browser.storage.local.set({ [STORAGE_KEYS.PERMANENT_BLOCKS]: blocks });
+export async function setPermanentBlocks(
+  blocks: PermanentBlocksMutesMap,
+  options: TrackingMutationOptions = {}
+): Promise<void> {
+  await withTrackingLock(async () => {
+    await options.beforeWrite?.();
+    await browser.storage.local.set({ [STORAGE_KEYS.PERMANENT_BLOCKS]: blocks });
+  }, options.lock);
+}
+
+/** Read and mutate under one boundary; do not build replacement maps before entering. */
+export async function updatePermanentBlocks(
+  update: (blocks: PermanentBlocksMutesMap) => void | Promise<void>,
+  options: TrackingMutationOptions = {}
+): Promise<void> {
+  await withTrackingLock(async (lock) => {
+    const blocks = await getPermanentBlocks();
+    await update(blocks);
+    await setPermanentBlocks(blocks, { ...options, lock });
+  }, options.lock);
 }
 
 /**
  * Remove a permanent block from local storage
  */
-export async function removePermanentBlock(did: string): Promise<void> {
-  const blocks = await getPermanentBlocks();
-  delete blocks[did];
-  await browser.storage.local.set({ [STORAGE_KEYS.PERMANENT_BLOCKS]: blocks });
+export async function removePermanentBlock(
+  did: string,
+  expected?: TrackingIdentity,
+  options: TrackingMutationOptions = {}
+): Promise<boolean> {
+  let removed = false;
+  await updatePermanentBlocks((blocks) => {
+    if (blocks[did] && (!expected || trackingMatches(blocks[did], expected))) {
+      delete blocks[did];
+      removed = true;
+    }
+  }, options);
+  return removed;
 }
 
 // ── Permanent Mutes ──────────────────────────────────────────────────────────
@@ -50,17 +83,43 @@ export async function getPermanentMutes(): Promise<PermanentBlocksMutesMap> {
 /**
  * Set permanent mutes in local storage
  */
-export async function setPermanentMutes(mutes: PermanentBlocksMutesMap): Promise<void> {
-  await browser.storage.local.set({ [STORAGE_KEYS.PERMANENT_MUTES]: mutes });
+export async function setPermanentMutes(
+  mutes: PermanentBlocksMutesMap,
+  options: TrackingMutationOptions = {}
+): Promise<void> {
+  await withTrackingLock(async () => {
+    await options.beforeWrite?.();
+    await browser.storage.local.set({ [STORAGE_KEYS.PERMANENT_MUTES]: mutes });
+  }, options.lock);
+}
+
+export async function updatePermanentMutes(
+  update: (mutes: PermanentBlocksMutesMap) => void | Promise<void>,
+  options: TrackingMutationOptions = {}
+): Promise<void> {
+  await withTrackingLock(async (lock) => {
+    const mutes = await getPermanentMutes();
+    await update(mutes);
+    await setPermanentMutes(mutes, { ...options, lock });
+  }, options.lock);
 }
 
 /**
  * Remove a permanent mute from local storage
  */
-export async function removePermanentMute(did: string): Promise<void> {
-  const mutes = await getPermanentMutes();
-  delete mutes[did];
-  await browser.storage.local.set({ [STORAGE_KEYS.PERMANENT_MUTES]: mutes });
+export async function removePermanentMute(
+  did: string,
+  expected?: TrackingIdentity,
+  options: TrackingMutationOptions = {}
+): Promise<boolean> {
+  let removed = false;
+  await updatePermanentMutes((mutes) => {
+    if (mutes[did] && (!expected || trackingMatches(mutes[did], expected))) {
+      delete mutes[did];
+      removed = true;
+    }
+  }, options);
+  return removed;
 }
 
 // ── Merged Views ─────────────────────────────────────────────────────────────

@@ -239,9 +239,11 @@ describe('handleFetchQuotePosters', () => {
   });
 
   it('sets truncated when pagination hits the page cap', async () => {
-    // Always return a cursor so the loop runs until MAX_QUOTES_PAGES (50) and stops with
-    // the cursor still set → truncated.
-    mockBgApiRequestPublic.mockResolvedValue(quotesPage(['did:plc:a'], 'more'));
+    // Distinct cursors exercise the page cap rather than repeated-cursor protection.
+    let page = 0;
+    mockBgApiRequestPublic.mockImplementation(async () =>
+      quotesPage(['did:plc:a'], String(++page))
+    );
     mockFetchProfiles.mockResolvedValue([{ did: 'did:plc:a', handle: 'a', viewer: {} } as never]);
 
     const res = await handleFetchQuotePosters(AT_URI);
@@ -268,6 +270,25 @@ describe('handleBulkTempAction', () => {
     mockGetTempMutes.mockResolvedValue({});
     mockGetPermanentMutes.mockResolvedValue({});
     mockHandleCreateTempAction.mockResolvedValue({ success: true });
+  });
+
+  it('excludes the authenticated account and deduplicates selected DIDs before any writes', async () => {
+    mockGetAuthToken.mockResolvedValue(AUTH);
+    const result = await handleBulkTempAction(
+      [AUTH.did, 'did:plc:a', 'did:plc:a'],
+      {},
+      true,
+      -1,
+      true
+    );
+    expect(result).toEqual({ created: 1, skipped: 1, failed: 0, errors: [] });
+    expect(mockHandleCreateTempAction).toHaveBeenCalledExactlyOnceWith(
+      'did:plc:a',
+      'did:plc:a',
+      -1,
+      true,
+      true
+    );
   });
 
   it('creates one entry per DID and accounts created/failed/skipped', async () => {
